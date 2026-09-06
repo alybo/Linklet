@@ -1,0 +1,29 @@
+# macOS and local editor state
+.DS_Store
+.idea/
+.vscode/
+
+# Xcode and Swift build products
+build/
+DerivedData/
+.build/
+xcuserdata/
+*.xcuserstate
+*.app/
+*.xcarchive/
+*.dSYM/
+*.dSYM.zip
+*.ipa
+*.zip
+PeekRoute-0.1.0-source/Linklet 20*/
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
