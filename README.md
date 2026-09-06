@@ -45,7 +45,6 @@ xcodebuild -project Linklet/Linklet.xcodeproj \
 ## Repository contents
 
 - `Linklet/`: application source, Xcode project, tests, and documentation.
-- `design/`: additional design assets.
 
 Build products, exported applications, source ZIP backups, credentials, and
 personal Xcode settings are excluded from Git. Swift package versions are
