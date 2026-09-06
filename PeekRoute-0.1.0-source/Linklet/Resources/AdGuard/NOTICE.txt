@@ -1,0 +1,23 @@
+Linklet uses AdGuard filtering rules and SafariConverterLib.
+This is an independent integration, not the AdGuard application.
+
+SafariConverterLib (ContentBlockerConverter)
+Copyright AdGuard Software Ltd. and contributors
+https://github.com/AdguardTeam/SafariConverterLib
+Revision: 10543ff46807c5b4cea9a4a9c7794924f7400e44
+License: GNU GPL v3; see SafariConverterLib-LICENSE.txt.
+
+Bundled AdGuard Base filter (includes EasyList) and Russian filter
+Copyright their respective authors and contributors.
+https://github.com/AdguardTeam/AdguardFilters
+https://github.com/AdguardTeam/FiltersRegistry
+https://easylist.to/
+License: GNU GPL v3; see Filters-LICENSE.txt.
+Downloaded 2026-09-05 from:
+https://filters.adtidy.org/extension/safari/filters/2_optimized.txt
+https://filters.adtidy.org/extension/safari/filters/1_optimized.txt
+Version and update timestamps are retained in each filter's header.
+
+Additional converter dependencies and their licenses are available in the
+pinned Swift Package sources (Package.resolved): PunycodeSwift, swift-psl,
+and swift-argument-parser (converter command-line tooling).
