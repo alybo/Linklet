@@ -5,6 +5,19 @@ Preview links in a compact window and open them in your preferred browser or
 Orion profile. Includes English and Russian interfaces and optional AdGuard
 content blocking.
 
+## Download
+
+Signed builds will be published on the [Releases page](https://github.com/alybo/Linklet/releases).
+The first signed release is not available yet. Source code is available now.
+
+## License
+
+Linklet original source code is licensed under **GNU GPL version 3 only**
+(`GPL-3.0-only`); see [LICENSE](LICENSE). Copyright (C) 2026 Linklet contributors.
+You may use, modify, and redistribute it under that license, without warranty.
+Third-party components retain their own licenses and copyright notices.
+See [release instructions](RELEASING.md) for corresponding-source requirements.
+
 ## Development
 
 Development repository (private): https://github.com/alybo/Linklet-dev.
