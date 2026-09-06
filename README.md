@@ -7,6 +7,11 @@ content blocking.
 
 ## Development
 
+Development repository (private): https://github.com/alybo/Linklet-dev.
+Public distribution repository: https://github.com/alybo/Linklet.
+The local `origin` must point to `Linklet-dev`.
+See [release plan](PeekRoute-0.1.0-source/docs/RELEASE-PLAN.md) for the agreed repository roles and next steps.
+
 Requirements: macOS 14 or newer and Xcode 16 or newer.
 
 1. Open `PeekRoute-0.1.0-source/Linklet.xcodeproj` in Xcode.
