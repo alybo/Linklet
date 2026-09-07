@@ -1,54 +1,60 @@
-# Linklet
+<div align="center">
+  <img src="Linklet/docs/media/linklet-icon.png" width="128" alt="Иконка Linklet">
 
-Native macOS link previewer and browser router built with Swift and WebKit.
-Preview links in a compact window and open them in your preferred browser or
-Orion profile. Includes English and Russian interfaces and optional AdGuard
-content blocking.
+  <h1>Linklet</h1>
 
-## Download
+  <p><strong>Откройте ссылку сначала — решите потом, где её читать.</strong></p>
 
-Signed builds will be published on the [Releases page](https://github.com/alybo/Linklet/releases).
-The first signed release is not available yet. Source code is available now.
+  <p>Небольшое приложение для macOS, которое показывает ссылку в аккуратном окне-превью<br>
+  и позволяет открыть её в нужном браузере или профиле Orion.</p>
 
-## License
+  <p><a href="#скачать">Скачать</a> · <a href="#как-это-работает">Как это работает</a> · <a href="#возможности">Возможности</a></p>
+</div>
 
-Linklet original source code is licensed under **GNU GPL version 3 only**
-(`GPL-3.0-only`); see [LICENSE](LICENSE). Copyright (C) 2026 Linklet contributors.
-You may use, modify, and redistribute it under that license, without warranty.
-Third-party components retain their own licenses and copyright notices.
-See [release instructions](RELEASING.md) for corresponding-source requirements.
+<p align="center">
+  <img src="Linklet/docs/media/linklet-preview.png" alt="Окно предпросмотра Linklet" width="900">
+</p>
 
-## Development
+## Что такое Linklet
 
-Development, source code, and releases: https://github.com/alybo/Linklet.
-The local `origin` points to this public repository.
-See [release plan](Linklet/docs/RELEASE-PLAN.md) for the release workflow.
+Linklet — это удобная «первая остановка» для ссылок из Почты, Telegram, Slack,
+Сообщений и других приложений. Вместо того чтобы сразу открывать незнакомую
+страницу в браузере, Linklet сначала показывает её в компактном окне. Вы сами
+решаете, оставить её в превью или продолжить в Safari, Chrome, Firefox, Orion
+или другом установленном браузере.
 
-Requirements: macOS 14 or newer and Xcode 16 or newer.
+## Как это работает
 
-1. Open `Linklet/Linklet.xcodeproj` in Xcode.
-2. Select the `Linklet` scheme and `My Mac` destination.
-3. Run with Command-R.
+1. Вы нажимаете на ссылку в любом приложении.
+2. Linklet показывает страницу в отдельном окне-превью.
+3. Вы выбираете, где открыть её дальше.
 
-See the [application README](Linklet/README.md) for setup,
-features, and privacy details, and the
-[signing handoff](Linklet/docs/SIGNING-HANDOFF.md) for distribution.
+## Скачать
 
-Run tests from the repository root:
+Скачать Linklet можно на странице [Releases](https://github.com/alybo/Linklet/releases).
 
-```sh
-xcodebuild -project Linklet/Linklet.xcodeproj \
-  -scheme Linklet -destination 'platform=macOS' \
-  -derivedDataPath /tmp/LinkletDerivedData test CODE_SIGNING_ALLOWED=NO
-```
+1. Откройте страницу [Releases](https://github.com/alybo/Linklet/releases).
+2. Нажмите на самый свежий релиз — он находится сверху.
+3. Внизу раскройте раздел **Assets**.
+4. Скачайте файл с расширением `.dmg` или `.zip`.
+5. Откройте скачанный файл и перетащите **Linklet** в папку **Программы**.
 
-## Repository contents
+После этого запустите Linklet и при желании назначьте его браузером по умолчанию
+в настройках приложения. Никаких знаний о GitHub не требуется.
 
-- `Linklet/`: application source, Xcode project, tests, and documentation.
+## Возможности
 
-Build products, exported applications, source ZIP backups, credentials, and
-personal Xcode settings are excluded from Git. Swift package versions are
-tracked in `Package.resolved`.
+- Быстрое предпросмотривание ссылок в компактном окне.
+- Открытие текущей страницы в выбранном браузере.
+- Поддержка профилей Orion.
+- Кнопки «Назад» и «Вперёд», жесты трекпада и копирование URL.
+- Временная сессия WebKit: cookies и история превью не сохраняются после выхода.
+- Русский и английский интерфейс.
+- Необязательная блокировка рекламы на базе AdGuard.
 
-Third-party license texts and notices are included in
-`Linklet/Linklet/Resources/AdGuard/`.
+## Лицензия
+
+Исходный код Linklet распространяется по лицензии
+[GNU GPL v3](LICENSE). Проект находится в активной разработке.
+
+<div align="center"><sub>Linklet · простой способ не открывать ссылку вслепую</sub></div>
