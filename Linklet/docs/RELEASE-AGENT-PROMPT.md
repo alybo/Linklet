@@ -10,6 +10,11 @@ https://github.com/alybo/Linklet. Ты работаешь на Mac челове�
 Linklet/docs/UPDATES.md. Sparkle 2.9.6 уже подключён. Кнопка открытия в браузере
 уже использует исходную ссылку; сохрани это поведение.
 
+Вручную загружай в Assets ровно два файла: Linklet-VERSION.dmg и
+Linklet-VERSION-source.tar.gz. ZIP приложения, SHA256SUMS.txt, appcast.xml и
+release-description.md туда не загружай. Контрольные суммы включай в описание
+релиза. Автоматические ссылки Source code от GitHub остаются как есть.
+
 1. Получи актуальный main, сохрани чужие незакоммиченные изменения. Проверь
    существующие релизы, версию приложения, номер сборки и доступность Developer ID,
    нотарификации и GitHub. Используй настроенные учётные данные; не выводи в чат
@@ -52,18 +57,22 @@ Linklet/docs/UPDATES.md. Sparkle 2.9.6 уже подключён. Кнопка �
    подписаны при экспорте. Debug-entitlement disable-library-validation
    в релиз включать нельзя. Пройди нотарификацию Apple и прикрепи ticket.
 
-5. Проверь подпись, Gatekeeper и stapling. Подготовь финальный ZIP и appcast:
+5. Подготовь финальный DMG с приложением и ссылкой на /Applications. Подпиши
+   и нотарифицируй сам DMG, прикрепи ticket. Все изменения образа нужно закончить
+   до подписи Sparkle. Проверь подпись, Gatekeeper и stapling приложения и DMG.
+   Подготовь полный архив соответствующих исходников с зависимостями и лицензиями
+   согласно RELEASING.md; автоматический архив GitHub для этого недостаточен.
+   Затем запусти:
 
    ```sh
-   bash scripts/prepare-sparkle-update.sh /path/Linklet.app /path/Sparkle/bin
+   bash scripts/prepare-sparkle-update.sh /path/Linklet.dmg /path/Linklet-source.tar.gz /path/Sparkle/bin
    ```
 
    Скрипт использует account app.linklet.sparkle, создаёт файлы в build/sparkle/
-   и готовит ссылки на GitHub Release с тегом vVERSION. Проверь подпись Sparkle,
-   номер сборки и ссылки в appcast. Подготовь соответствующие исходники со всеми
-   необходимыми зависимостями и лицензиями согласно RELEASING.md; автоматический
-   архив исходников GitHub для этого недостаточен. Дополни SHA256SUMS.txt суммами
-   всех публикуемых файлов.
+   и готовит ссылки на GitHub Release с тегом vVERSION. Каталог release/ содержит
+   два файла для Assets, feed/appcast.xml публикуется отдельно через Pages,
+   release-description.md содержит текст для описания релиза с SHA-256.
+   Проверь подпись Sparkle, номер сборки и ссылку на DMG в appcast.
 
 6. Настрой GitHub Pages для репозитория: Settings → Pages → Source: GitHub Actions.
    Workflow .github/workflows/updates.yml уже подготовлен. Ожидаемый адрес:
@@ -76,11 +85,12 @@ Linklet/docs/UPDATES.md. Sparkle 2.9.6 уже подключён. Кнопка �
    не публикуй в основном appcast. Если такую проверку выполнить не удалось,
    оставь релиз черновиком и явно сообщи, что осталось проверить.
 
-8. Опубликуй согласованный тег vVERSION и GitHub Release с финальным ZIP,
-   соответствующими исходниками, контрольными суммами и описанием изменений.
+8. Опубликуй согласованный тег vVERSION и GitHub Release с ДВУМЯ файлами из release/:
+   DMG и архивом исходников. В описание включи текст release-description.md и
+   изменения версии. Не загружай всю папку build/sparkle/ целиком или через wildcard.
    Проверь доступность скачивания. ПОСЛЕ ЭТОГО скопируй подготовленный appcast.xml
    в updates/appcast.xml, закоммить и отправь в main. Дождись успешного workflow
-   Pages и проверь публичный appcast и его ссылки. Уже подписанный ZIP не меняй.
+   Pages и проверь публичный appcast и его ссылки. Уже подписанный DMG не меняй.
 
 9. В конце сообщи ссылку на релиз, commit/tag, версию и номер сборки, Team ID,
    архитектуры, SHA-256, адрес appcast и результаты тестов, нотарификации и
