@@ -1,6 +1,28 @@
 import AppKit
 import SwiftUI
 
+private struct AppUpdatesSettingsView: View {
+    @ObservedObject private var language = AppLanguage.shared
+    @ObservedObject var updates: AppUpdateService
+
+    var body: some View {
+        GroupBox(L("Updates")) {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(L("Automatically check for updates"), isOn: Binding(
+                    get: { updates.automaticallyChecksForUpdates },
+                    set: updates.setAutomaticallyChecksForUpdates
+                ))
+                .toggleStyle(.switch)
+                Text(L("Linklet checks for new versions and asks before installing an update."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                CheckForAppUpdatesButton(updates: updates)
+            }
+            .padding(8)
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var model: AppModel
@@ -30,6 +52,7 @@ struct SettingsView: View {
                     previewSection
                     browserShelfSection
                     performanceSection
+                    AppUpdatesSettingsView(updates: model.appUpdates)
                 }
                 .padding(28)
             }

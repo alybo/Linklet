@@ -18,7 +18,7 @@ send it to the browser and identity that belong to the task.
 1. Another macOS app opens an HTTP or HTTPS URL.
 2. Linklet appears over the current workspace and loads the page.
 3. The bottom target shelf shows browsers and profiles.
-4. The user dismisses the preview or promotes its current URL to a target.
+4. The user dismisses the preview or opens its original incoming URL in a target.
 
 ## MVP boundary
 

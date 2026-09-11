@@ -31,6 +31,8 @@ private struct MenuBarView: View {
         }
         .keyboardShortcut(",")
 
+        CheckForAppUpdatesButton(updates: model.appUpdates)
+
         Divider()
 
         Picker(L("Window behavior"), selection: Binding(
@@ -49,6 +51,18 @@ private struct MenuBarView: View {
             NSApp.terminate(nil)
         }
         .keyboardShortcut("q")
+    }
+}
+
+struct CheckForAppUpdatesButton: View {
+    @ObservedObject private var language = AppLanguage.shared
+    @ObservedObject var updates: AppUpdateService
+
+    var body: some View {
+        Button(updates.availableVersion.map { L("Update to %@…", $0) } ?? L("Check for Updates…")) {
+            updates.checkForUpdates()
+        }
+        .disabled(!updates.canCheckForUpdates)
     }
 }
 
@@ -75,6 +89,11 @@ final class AppLanguage: ObservableObject {
 [
         "Welcome to Linklet": "Знакомство с Linklet",
         "Settings…": "Настройки…",
+        "Check for Updates…": "Проверить обновления…",
+        "Update to %@…": "Обновить до %@…",
+        "Updates": "Обновления",
+        "Automatically check for updates": "Автоматически проверять обновления",
+        "Linklet checks for new versions and asks before installing an update.": "Linklet проверяет наличие новых версий и предлагает установить обновление.",
         "Quit Linklet": "Завершить Linklet",
         "Window behavior": "Поведение окна",
         "Enable AdGuard ad blocker": "Включить блокировщик рекламы AdGuard",

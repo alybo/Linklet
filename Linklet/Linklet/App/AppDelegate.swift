@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         model.refreshTargets()
         model.showWelcomeIfNeeded()
+        model.appUpdates.start()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

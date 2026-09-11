@@ -14,7 +14,8 @@ continue in an installed browser or a specific Orion profile.
 - Provides current-URL copying and a frequency-ranked Open in action.
 - Discovers installed browsers through Launch Services.
 - Discovers Orion profile proxy apps in the user's Applications folder.
-- Opens the current preview URL in an explicitly selected target app.
+- Opens the original incoming URL in an explicitly selected target app, even
+  after redirects or navigation within the preview.
 - Uses an ephemeral WebKit data store: preview cookies and history are removed
   when the app process ends and are never shared with browsers.
 - Reuses one preview window. Each external link gets a fresh WebView with the
@@ -74,7 +75,7 @@ Orion release used for distribution.
 
 The preview uses `WKWebsiteDataStore.nonPersistent()`. It does not read cookies,
 passwords, history, or extensions from Safari, Orion, Chrome, or Firefox.
-Opening a target browser sends only the current URL, so the page reloads in that
+Opening a target browser sends only the original incoming URL, so the page reloads in that
 browser with its own profile and session.
 
 ## Next milestones
@@ -83,7 +84,19 @@ browser with its own profile and session.
 - Add automatic routing rules by domain and source application.
 - Add dedicated Chrome and Firefox profile discovery.
 - Add persistent and disposable preview modes.
-- Add signed builds and auto-update.
+- Publish signed builds and activate the prepared Sparkle update feed.
+
+## App updates
+
+Sparkle 2.9.6 provides Check for Updates in the menu bar and Settings, plus an
+automatic-check preference. Automatic installation defaults to off. Release
+archives are signed with a dedicated EdDSA key; its public half is in Info.plist.
+Only Debug disables library validation for local ad-hoc builds. Release retains
+Hardened Runtime and must be distributed using Developer ID signing.
+
+The repository includes the GitHub Pages feed and release preparation workflow;
+public updates still require activating Pages and publishing signed releases. See
+[Updates](docs/UPDATES.md) for setup, key ownership, and release instructions.
 
 ## Welcome page
 

@@ -279,7 +279,7 @@ struct PreviewOpenInToolbarView: View {
 
     private func primaryButton(for target: BrowserTarget) -> some View {
         Button {
-            model.openCurrentURL(in: target)
+            model.openOriginalURL(in: target)
         } label: {
             HStack(spacing: 7) {
                 Image(nsImage: TargetIconCache.shared.icon(for: target.applicationURL))
@@ -322,7 +322,7 @@ struct PreviewOpenInToolbarView: View {
                 targets: Array(targets.dropFirst()),
                 onOpen: { target in
                     isPickerPresented = false
-                    model.openCurrentURL(in: target)
+                    model.openOriginalURL(in: target)
                 }
             )
         }

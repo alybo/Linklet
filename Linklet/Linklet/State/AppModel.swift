@@ -49,6 +49,7 @@ final class AppModel: ObservableObject {
     @Published private var targetUsageCounts: [String: Int]
 
     let previewSession: PreviewSession
+    let appUpdates = AppUpdateService()
     let adBlockService: AdBlockService
     @Published private(set) var isAdBlockingEnabled: Bool
 
@@ -142,8 +143,8 @@ final class AppModel: ObservableObject {
         previewWindowController.show(url: url)
     }
 
-    func openCurrentURL(in target: BrowserTarget) {
-        guard let url = previewSession.currentURL else { return }
+    func openOriginalURL(in target: BrowserTarget) {
+        guard let url = previewSession.originalURL else { return }
 
         launchService.open(url, in: target) { [weak self] error in
             if let error {
@@ -191,7 +192,7 @@ final class AppModel: ObservableObject {
         isAdBlockingEnabled = enabled
         adBlockService.setEnabled(enabled)
         if !previewSession.isWelcome, let url = previewSession.currentURL {
-            previewSession.load(url)
+            previewSession.load(url, preservingOriginalURL: true)
         }
     }
 

@@ -5,6 +5,8 @@ import WebKit
 @MainActor
 final class PreviewSession: ObservableObject {
     @Published private(set) var navigationID = UUID()
+    // Browser handoff keeps the incoming link even after redirects and navigation.
+    @Published private(set) var originalURL: URL?
     @Published private(set) var currentURL: URL?
     @Published private(set) var pageTitle = ""
     @Published private(set) var isLoading = false
@@ -55,7 +57,7 @@ final class PreviewSession: ObservableObject {
         }
     }
 
-    func load(_ url: URL) {
+    func load(_ url: URL, preservingOriginalURL: Bool = false) {
         guard URLPolicy.canPreview(url) else {
             errorMessage = L("Only HTTP and HTTPS links can be previewed.")
             return
@@ -67,6 +69,7 @@ final class PreviewSession: ObservableObject {
         requestedURL = url
         pendingURL = url
         isPreparingNewPage = true
+        if !preservingOriginalURL { originalURL = url }
         currentURL = url
         addressText = url.absoluteString
         pageTitle = ""
@@ -82,6 +85,7 @@ final class PreviewSession: ObservableObject {
         webView = nil
         pendingURL = nil
         requestedURL = nil
+        originalURL = nil
         currentURL = nil
         addressText = ""
         errorMessage = nil

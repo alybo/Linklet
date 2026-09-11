@@ -1,5 +1,5 @@
 {
-  "originHash" : "b3469bf4db7eca006e3f05526b66afddbb35458e8f1d2ce6706d9665c94a4a64",
+  "originHash" : "d63a94cef70428c2074540cb792a922ce923d59ae526fcbb97cf7bb9f6a175b6",
   "pins" : [
     {
       "identity" : "punycodeswift",
@@ -16,6 +16,15 @@
       "location" : "https://github.com/AdguardTeam/SafariConverterLib.git",
       "state" : {
         "revision" : "10543ff46807c5b4cea9a4a9c7794924f7400e44"
+      }
+    },
+    {
+      "identity" : "sparkle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sparkle-project/Sparkle",
+      "state" : {
+        "revision" : "ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a",
+        "version" : "2.9.6"
       }
     },
     {

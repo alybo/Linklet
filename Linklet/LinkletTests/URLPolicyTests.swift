@@ -77,6 +77,7 @@ final class AppModelPreferencesTests: XCTestCase {
 
         session.load(url)
 
+        XCTAssertEqual(session.originalURL, url)
         XCTAssertEqual(session.currentURL, url)
         XCTAssertEqual(session.addressText, url.absoluteString)
         XCTAssertTrue(session.isPreparingNewPage)
@@ -122,6 +123,10 @@ final class AppModelPreferencesTests: XCTestCase {
 final class PreviewHistoryTests: XCTestCase {
     func testBackForwardBranchingAndNewExternalLinkHistory() async throws {
         let session = PreviewSession()
+        let originalURL = URL(string: "https://example.com/shared-link")!
+        var expectedOriginalURL = originalURL
+        session.load(originalURL)
+        session.stopLoading() // Preserve the incoming link while navigating offline fixtures.
         let fixture = HistoryPageFixture()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = session.websiteDataStore
@@ -136,6 +141,7 @@ final class PreviewHistoryTests: XCTestCase {
             observer.finished = finished
             action()
             await fulfillment(of: [finished], timeout: 10)
+            XCTAssertEqual(session.originalURL, expectedOriginalURL)
         }
 
         await navigate { webView.load(URLRequest(url: URL(string: "history-test://pages/a")!)) }
@@ -167,6 +173,8 @@ final class PreviewHistoryTests: XCTestCase {
         let dataStore = session.websiteDataStore
         let externalURL = URL(string: "https://example.com/new-preview")!
         session.load(externalURL)
+        expectedOriginalURL = externalURL
+        XCTAssertEqual(session.originalURL, externalURL)
         XCTAssertNotEqual(session.navigationID, previousNavigationID)
         XCTAssertNil(session.webView)
         XCTAssertFalse(session.canGoBack)
