@@ -49,9 +49,12 @@ build=$(/usr/bin/plutil -extract CFBundleVersion raw "$app_plist")
 public_key=$(/usr/bin/plutil -extract SUPublicEDKey raw "$app_plist")
 expected_key=$(/usr/bin/plutil -extract SUPublicEDKey raw "$repo_root/Linklet/Linklet/Info.plist")
 feed_url=$(/usr/bin/plutil -extract SUFeedURL raw "$app_plist")
+automatic_checks=$(/usr/bin/plutil -extract SUEnableAutomaticChecks raw "$app_plist")
+automatic_updates=$(/usr/bin/plutil -extract SUAutomaticallyUpdate raw "$app_plist")
 [[ "$bundle_id" == Linklet && "$public_key" == "$expected_key" ]] || { echo "Wrong app or Sparkle public key" >&2; exit 1; }
 [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ && "$build" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "Invalid release version/build" >&2; exit 1; }
 [[ "$feed_url" == https://alybo.github.io/Linklet/appcast.xml ]] || { echo "Unexpected update feed" >&2; exit 1; }
+[[ "$automatic_checks" == true && "$automatic_updates" == true ]] || { echo "Automatic Sparkle updates are not enabled" >&2; exit 1; }
 
 /usr/bin/python3 - "$repo_root/updates/appcast.xml" "$build" <<'PY'
 import sys

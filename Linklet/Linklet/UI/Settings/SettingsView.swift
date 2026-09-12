@@ -8,12 +8,20 @@ private struct AppUpdatesSettingsView: View {
     var body: some View {
         GroupBox(L("Updates")) {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle(L("Automatically check for updates"), isOn: Binding(
+                Toggle(L("Check for updates automatically"), isOn: Binding(
                     get: { updates.automaticallyChecksForUpdates },
                     set: updates.setAutomaticallyChecksForUpdates
                 ))
                 .toggleStyle(.switch)
-                Text(L("Linklet checks for new versions and asks before installing an update."))
+
+                Toggle(L("Download and install updates automatically"), isOn: Binding(
+                    get: { updates.automaticallyDownloadsUpdates },
+                    set: updates.setAutomaticallyDownloadsUpdates
+                ))
+                .toggleStyle(.switch)
+                .disabled(!updates.automaticallyChecksForUpdates)
+
+                Text(L("Downloaded updates are installed when Linklet quits."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 CheckForAppUpdatesButton(updates: updates)

@@ -88,8 +88,9 @@ browser with its own profile and session.
 
 ## App updates
 
-Sparkle 2.9.6 provides Check for Updates in the menu bar and Settings, plus an
-automatic-check preference. Automatic installation defaults to off. Release
+Sparkle 2.9.6 checks for updates and installs downloaded releases automatically
+by default. Both preferences remain user-controlled in Settings, and Check for
+Updates is also available from the menu bar. Release
 archives are signed with a dedicated EdDSA key; its public half is in Info.plist.
 Only Debug disables library validation for local ad-hoc builds. Release retains
 Hardened Runtime and must be distributed using Developer ID signing.

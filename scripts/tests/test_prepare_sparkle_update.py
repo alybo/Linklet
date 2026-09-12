@@ -34,6 +34,8 @@ class PrepareDMGReleaseTests(unittest.TestCase):
             "CFBundleVersion": "2",
             "SUPublicEDKey": "fixture-public-key",
             "SUFeedURL": "https://alybo.github.io/Linklet/appcast.xml",
+            "SUEnableAutomaticChecks": True,
+            "SUAutomaticallyUpdate": True,
         }
         for path in (self.fixture / "Info.plist", self.root / "Linklet/Linklet/Info.plist"):
             path.write_bytes(plistlib.dumps(self.info))
@@ -134,6 +136,15 @@ if os.environ.get("TEST_MODIFY_DMG"):
         result = self.run_script(TEST_UNSIGNED_FEED="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.output / "feed/appcast.xml").exists())
+
+    def test_disabled_automatic_updates_stop_release(self):
+        self.info["SUAutomaticallyUpdate"] = False
+        (self.fixture / "Info.plist").write_bytes(plistlib.dumps(self.info))
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Automatic Sparkle updates are not enabled", result.stderr)
+        self.assertTrue((self.root / "detached").exists())
+        self.assertFalse(self.output.exists())
 
     def test_modified_dmg_is_rejected(self):
         result = self.run_script(TEST_MODIFY_DMG="1")

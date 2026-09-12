@@ -6,6 +6,7 @@ import Sparkle
 final class AppUpdateService: NSObject, ObservableObject, @preconcurrency SPUStandardUserDriverDelegate {
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var automaticallyChecksForUpdates = false
+    @Published private(set) var automaticallyDownloadsUpdates = false
     @Published private(set) var availableVersion: String?
 
     private lazy var controller = SPUStandardUpdaterController(
@@ -21,6 +22,8 @@ final class AppUpdateService: NSObject, ObservableObject, @preconcurrency SPUSta
             .assign(to: &$canCheckForUpdates)
         controller.updater.publisher(for: \.automaticallyChecksForUpdates)
             .assign(to: &$automaticallyChecksForUpdates)
+        controller.updater.publisher(for: \.automaticallyDownloadsUpdates)
+            .assign(to: &$automaticallyDownloadsUpdates)
     }
 
     func start() {
@@ -38,6 +41,10 @@ final class AppUpdateService: NSObject, ObservableObject, @preconcurrency SPUSta
 
     func setAutomaticallyChecksForUpdates(_ enabled: Bool) {
         controller.updater.automaticallyChecksForUpdates = enabled
+    }
+
+    func setAutomaticallyDownloadsUpdates(_ enabled: Bool) {
+        controller.updater.automaticallyDownloadsUpdates = enabled
     }
 
     // Linklet stays in the menu bar. Mark available updates there so scheduled

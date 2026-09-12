@@ -409,6 +409,12 @@ private final class AdBlockPageDelegate: NSObject, WKNavigationDelegate {
 
 @MainActor
 final class SettingsLanguageTests: XCTestCase {
+    func testAutomaticUpdatesDefaultToEnabled() {
+        let updates = AppUpdateService()
+        XCTAssertTrue(updates.automaticallyChecksForUpdates)
+        XCTAssertTrue(updates.automaticallyDownloadsUpdates)
+    }
+
     func testWindowBehaviorSegmentsChangeLanguageWithoutReopeningSettings() async throws {
         let suite = "LinkletSettingsLanguageTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
