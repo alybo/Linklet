@@ -76,6 +76,9 @@ struct WebPreview: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
             synchronize(webView)
             session?.welcomeDidFinish()
+            if let session, session.webView === webView, !session.isWelcome, session.siteData.isEnabled {
+                Task { @MainActor in await session.siteData.refresh() }
+            }
         }
 
         func webView(

@@ -22,8 +22,9 @@ final class PreviewSession: ObservableObject {
     private var welcomeIsDefault = false
 
     weak var webView: WKWebView?
-    // Keep cookies for the lifetime of Linklet, but start fresh history for each external link.
-    let websiteDataStore = WKWebsiteDataStore.nonPersistent()
+    let siteData: SiteDataService
+    var websiteDataStore: WKWebsiteDataStore { siteData.dataStore }
+    @Published private(set) var isActive = false
     private var pendingURL: URL?
     private var requestedURL: URL?
 
@@ -33,8 +34,32 @@ final class PreviewSession: ObservableObject {
         self.init(adBlockService: AdBlockService())
     }
 
-    init(adBlockService: AdBlockService) {
+    init(adBlockService: AdBlockService, siteData: SiteDataService? = nil) {
         self.adBlockService = adBlockService
+        self.siteData = siteData ?? SiteDataService()
+    }
+
+    func endSession(resetTemporaryData: Bool = true) {
+        webView?.stopLoading()
+        webView?.navigationDelegate = nil
+        webView?.uiDelegate = nil
+        webView?.loadHTMLString("", baseURL: nil)
+        webView = nil
+        pendingURL = nil
+        requestedURL = nil
+        isActive = false
+        isWelcome = false
+        originalURL = nil
+        currentURL = nil
+        pageTitle = ""
+        addressText = ""
+        isLoading = false
+        canGoBack = false
+        canGoForward = false
+        isPreparingNewPage = false
+        errorMessage = nil
+        navigationID = UUID()
+        if resetTemporaryData && !siteData.isEnabled { siteData.rotateTemporaryStore() }
     }
 
     func attach(_ webView: WKWebView) {
@@ -62,6 +87,7 @@ final class PreviewSession: ObservableObject {
             errorMessage = L("Only HTTP and HTTPS links can be previewed.")
             return
         }
+        isActive = true
         isWelcome = false
         errorMessage = nil
         webView?.stopLoading()
@@ -81,6 +107,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func showWelcome(isDefault: Bool) {
+        isActive = true
         webView?.stopLoading()
         webView = nil
         pendingURL = nil
@@ -142,6 +169,7 @@ final class PreviewSession: ObservableObject {
         guard self.webView === webView else { return }
         requestedURL = nil
         isPreparingNewPage = false
+        if !isWelcome, let url = webView.url { siteData.recordVisit(url) }
         synchronize(from: webView)
     }
 

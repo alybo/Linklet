@@ -16,10 +16,13 @@ continue in an installed browser or a specific Orion profile.
 - Discovers Orion profile proxy apps in the user's Applications folder.
 - Opens the original incoming URL in an explicitly selected target app, even
   after redirects or navigation within the preview.
-- Uses an ephemeral WebKit data store: preview cookies and history are removed
-  when the app process ends and are never shared with browsers.
-- Reuses one preview window. Each external link gets a fresh WebView with the
-  same temporary website data store, keeping cookies while resetting history.
+- Defaults to temporary website data, cleared when the preview closes or hides,
+  including when switching apps in Hide mode. Each external link resets navigation history.
+- Offers an explicit first-link choice to save sign-ins and site preferences locally.
+  Settings can delete individual sites or all data, and expire sites after 7, 30,
+  or 90 days without a top-level visit. Background requests do not renew visits.
+- Provides four settings pages and a persistent manual browser order when usage
+  sorting is disabled. About includes developer links and a support sheet.
 - Offers three window behaviors when switching apps: hide (default on first launch), keep open, or keep on top. Saved preferences are preserved.
 - Can launch at login when enabled in Settings.
 - Closes the preview with `Escape` or the close button. Space is passed through
@@ -73,7 +76,12 @@ Orion release used for distribution.
 
 ## Privacy model
 
-The preview uses `WKWebsiteDataStore.nonPersistent()`. It does not read cookies,
+The preview defaults to `WKWebsiteDataStore.nonPersistent()`, rotated at every
+close/hide boundary. Opting in uses Linklet's persistent WebKit store. Turning
+saving off requires confirmation and deletes all stored website data. Cleanup
+runs before the next preview; an active page is never cleared by a background timer.
+Visit timestamps are stored only with saving enabled. Data for embedded domains
+without a top-level visit ages from first discovery. The preview does not read cookies,
 passwords, history, or extensions from Safari, Orion, Chrome, or Firefox.
 Opening a target browser sends only the original incoming URL, so the page reloads in that
 browser with its own profile and session.
@@ -83,13 +91,12 @@ browser with its own profile and session.
 - Remember favorite and last-used targets.
 - Add automatic routing rules by domain and source application.
 - Add dedicated Chrome and Firefox profile discovery.
-- Add persistent and disposable preview modes.
 - Publish signed builds and activate the prepared Sparkle update feed.
 
 ## App updates
 
 Sparkle 2.9.6 provides Check for Updates in the menu bar and Settings, plus an
-automatic-check preference. Automatic installation defaults to off. Release
+automatic-check preference. Automatic downloading/installation is disabled; downloading requires confirmation. Release
 archives are signed with a dedicated EdDSA key; its public half is in Info.plist.
 Only Debug disables library validation for local ad-hoc builds. Release retains
 Hardened Runtime and must be distributed using Developer ID signing.

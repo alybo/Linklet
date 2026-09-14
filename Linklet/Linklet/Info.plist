@@ -24,6 +24,8 @@
 	<string>https://alybo.github.io/Linklet/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>1JNn7enc6zhYyHvTsfA9z8hy/M+CJIIs95eiE0QyNu4=</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
 	<key>CFBundleURLTypes</key>

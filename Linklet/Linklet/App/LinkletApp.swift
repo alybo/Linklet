@@ -14,6 +14,12 @@ struct LinkletApp: App {
                 .accessibilityLabel("Linklet")
         }
         .menuBarExtraStyle(.menu)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button(L("Settings…")) { appDelegate.model.showSettings() }
+                    .keyboardShortcut(",")
+            }
+        }
     }
 }
 
@@ -87,6 +93,65 @@ final class AppLanguage: ObservableObject {
     }
     static let russian: [String: String] = 
 [
+        "General": "Основные",
+        "Website data": "Данные сайтов",
+        "About": "О программе",
+        "Block ads": "Блокировать рекламу",
+        "AdGuard filter lists": "Фильтры блокировки AdGuard",
+        "Drag to reorder. The first enabled browser is the primary action.": "Перетаскивайте браузеры для изменения порядка. Первый включённый браузер — основной.",
+        "Usage counts only links opened through Linklet.": "Учитываются только ссылки, открытые через Linklet.",
+        "Show %@": "Показывать %@",
+        "Primary": "Основной",
+        "Opened through Linklet: %d": "Открыто через Linklet: %d",
+        "Move up": "Переместить выше",
+        "Move down": "Переместить ниже",
+        "Turn off saving and delete website data?": "Выключить сохранение и удалить данные сайтов?",
+        "Delete all website data?": "Удалить данные всех сайтов?",
+        "Delete data for %@?": "Удалить данные сайта %@?",
+        "Save website data": "Сохранять данные сайтов",
+        "Keep sign-ins and website preferences between previews.": "Сохраняет вход в аккаунты и настройки сайтов между открытиями.",
+        "When saving is off, closing or hiding the preview deletes its data, including when switching apps.": "Если сохранение выключено, данные удаляются при закрытии или скрытии окна, в том числе при переключении в другое приложение.",
+        "Data is stored only in Linklet on this Mac, separately from your other browsers.": "Данные хранятся в Linklet на этом Mac, отдельно от других браузеров.",
+        "Delete data for websites not visited for": "Удалять данные сайтов без посещений",
+        "Never": "Никогда",
+        "%d days": "%d дней",
+        "Inactive website data is removed before the next preview. Background requests do not count as visits.": "Данные неиспользуемых сайтов удаляются перед следующим просмотром. Фоновые запросы не считаются посещениями.",
+        "Stored websites": "Сохранённые данные",
+        "Search websites": "Поиск сайтов",
+        "Updating website data…": "Обновление данных сайтов…",
+        "No stored website data.": "Сохранённых данных сайтов нет.",
+        "No matching websites.": "Сайты не найдены.",
+        "Last visited: %@": "Последнее посещение: %@",
+        "Delete data…": "Удалить данные…",
+        "Delete all data…": "Удалить все данные…",
+        "Cancel": "Отмена",
+        "Turn off and delete": "Выключить и удалить",
+        "Delete data": "Удалить данные",
+        "The current preview will close. You may need to sign in again. This does not affect your other browsers.": "Текущее окно просмотра закроется. Возможно, потребуется снова войти в аккаунт. Данные других браузеров не изменятся.",
+        "Cookies": "Cookies",
+        "Cache": "Кэш",
+        "Local storage": "Локальное хранилище",
+        "Version %@": "Версия %@",
+        "Build %@": "Сборка %@",
+        "Author — @alybo": "Автор — @alybo",
+        "Support development": "Благодарность",
+        "Contact the author": "Написать автору",
+        "Updates are downloaded and installed only after your confirmation.": "Скачивание и установка обновлений — только после вашего подтверждения.",
+        "If you find the app useful, you can support its development.\nThank you for your support!": "Если приложение вам полезно,\nвы можете поддержать разработку.\nСпасибо за поддержку!",
+        "TRON network": "Сеть TRON",
+        "Copy address": "Скопировать адрес",
+        "Send only USDT on the TRON (TRC20) network.": "Отправляйте только USDT\nв сети TRON (TRC20).",
+        "Done": "Готово",
+        "Keep website sign-ins?": "Сохранять вход на сайты?",
+        "Choose how Linklet handles website data.": "Выберите, как Linklet будет обращаться с данными сайтов.",
+        "Without saving": "Без сохранения",
+        "With saving": "С сохранением",
+        "For quick link previews. Website data is deleted when the window closes. You will need to sign in again the next time you open websites.": "Для быстрого просмотра ссылок. Данные сайтов удаляются при закрытии окна. При следующем открытии сайтов потребуется повторная авторизация.",
+        "For websites you use regularly. Linklet remembers sign-ins and website preferences. Data stays on this Mac; you can delete it manually or set up automatic cleanup.": "Для сайтов, которыми вы пользуетесь регулярно. Linklet сохраняет вход в аккаунты и настройки сайтов. Данные хранятся на этом Mac; их можно удалить вручную или настроить автоматическую очистку.",
+        "This choice applies to all websites in Linklet.": "Выбор действует для всех сайтов в Linklet.",
+        "Continue": "Продолжить",
+        "Selected": "Выбрано",
+        "Not selected": "Не выбрано",
         "Welcome to Linklet": "Знакомство с Linklet",
         "Settings…": "Настройки…",
         "Check for Updates…": "Проверить обновления…",

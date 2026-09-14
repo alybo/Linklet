@@ -65,7 +65,7 @@ struct PreviewRootView: View {
 
             Spacer(minLength: 12)
 
-            if !session.isWelcome {
+            if !session.isWelcome && session.isActive {
                 PreviewCopyToolbarView(session: session)
                 PreviewOpenInToolbarView(model: model)
             }
@@ -77,9 +77,20 @@ struct PreviewRootView: View {
 
     private var webContent: some View {
         ZStack(alignment: .top) {
-            WebPreview(session: session)
-                .id(session.navigationID)
-                .background(Color(nsColor: .textBackgroundColor))
+            if session.isActive {
+                WebPreview(session: session)
+                    .id(session.navigationID)
+                    .background(Color(nsColor: .textBackgroundColor))
+            } else {
+                Color(nsColor: .windowBackgroundColor)
+            }
+
+            if model.isChoosingDataMode {
+                SiteDataChoiceView(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.isPreparingPreview {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             if session.isPreparingNewPage {
                 Rectangle()
@@ -401,5 +412,61 @@ private struct BrowserTargetPickerRow: View {
         .onHover { isHovered = $0 }
         .applyShortcut(shortcutNumber)
         .help(L("Open in %@", target.displayName))
+    }
+}
+
+
+private struct SiteDataChoiceView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject private var language = AppLanguage.shared
+    @State private var savesData = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L("Keep website sign-ins?")).font(.title2.bold())
+                Text(L("Choose how Linklet handles website data."))
+                    .foregroundStyle(.secondary)
+            }
+            VStack(spacing: 12) {
+                option(false, title: "Without saving", detail: "For quick link previews. Website data is deleted when the window closes. You will need to sign in again the next time you open websites.")
+                option(true, title: "With saving", detail: "For websites you use regularly. Linklet remembers sign-ins and website preferences. Data stays on this Mac; you can delete it manually or set up automatic cleanup.")
+            }
+            Text(L("This choice applies to all websites in Linklet."))
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button(L("Settings…"), action: model.openDataSettingsFromChoice)
+                Spacer()
+                Button(L("Continue")) { model.completeDataChoice(save: savesData) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: 560)
+    }
+
+    private func option(_ value: Bool, title: String, detail: String) -> some View {
+        Button { savesData = value } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: savesData == value ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(savesData == value ? Color.accentColor : .secondary)
+                    .font(.system(size: 17))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L(title)).font(.headline)
+                    Text(L(detail)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(16)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(savesData == value ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(L(title))
+        .accessibilityValue(savesData == value ? L("Selected") : L("Not selected"))
+        .accessibilityHint(L(detail))
     }
 }

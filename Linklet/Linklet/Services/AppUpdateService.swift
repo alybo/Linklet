@@ -27,6 +27,7 @@ final class AppUpdateService: NSObject, ObservableObject, @preconcurrency SPUSta
         // Hosted unit tests must never schedule real updates or show permission dialogs.
         guard !hasStarted, NSClassFromString("XCTestCase") == nil else { return }
         hasStarted = true
+        controller.updater.automaticallyDownloadsUpdates = false
         controller.startUpdater()
     }
 

@@ -3,6 +3,7 @@ import Combine
 import SwiftUI
 
 private final class PreviewPanel: NSPanel {
+    var onEscape: (() -> Void)?
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .keyDown,
               !event.isARepeat
@@ -19,7 +20,7 @@ private final class PreviewPanel: NSPanel {
         ])
 
         if event.keyCode == 53, commandModifiers.isEmpty {
-            performClose(nil)
+            if let onEscape { onEscape() } else { performClose(nil) }
             return
         }
 
@@ -69,6 +70,10 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
 
         super.init(window: panel)
         panel.delegate = self
+        panel.onEscape = { [weak model, weak panel] in
+            if model?.isChoosingDataMode == true { model?.completeDataChoice(save: false) }
+            else { panel?.performClose(nil) }
+        }
         let hostingController = NSHostingController(rootView: PreviewRootView(model: model))
         // AppKit owns the window size; the initially empty WebView must not shrink it.
         hostingController.sizingOptions = []
@@ -108,6 +113,8 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         present { model.previewSession.load(url) }
     }
 
+    func showDataChoice() { present {} }
+
     func showWelcome() {
         present { model.previewSession.showWelcome(isDefault: model.isDefaultBrowser) }
     }
@@ -139,6 +146,6 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        model.previewSession.stopLoading()
+        model.previewDidEnd()
     }
 }

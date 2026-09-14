@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import WebKit
 
 enum PreviewWindowBehavior: String, CaseIterable, Identifiable {
     case hide
@@ -36,6 +37,17 @@ final class AppModel: ObservableObject {
         static let keepsPreviewAboveOtherWindows = "keepsPreviewAboveOtherWindows"
     }
 
+    @Published var settingsPage: SettingsPage {
+        didSet { defaults.set(settingsPage.rawValue, forKey: "settingsPage") }
+    }
+    @Published var isChoosingDataMode = false
+    @Published private(set) var isPreparingPreview = false
+    private var pendingPreviewURL: URL?
+    private var resumeAfterSettingsURL: URL?
+    private var previewRequestID = UUID()
+    @Published private var manualTargetOrder: [String]
+    let siteData: SiteDataService
+
     @Published private(set) var targets: [BrowserTarget] = []
     @Published private(set) var isDefaultBrowser = false
     @Published private(set) var isLaunchAtLoginEnabled = false
@@ -54,17 +66,22 @@ final class AppModel: ObservableObject {
     @Published private(set) var isAdBlockingEnabled: Bool
 
     private let defaults: UserDefaults
-    private let discoveryService = BrowserDiscoveryService()
+    private let discoverTargets: () -> [BrowserTarget]
     private let launchService = BrowserLaunchService()
     private let defaultBrowserService = DefaultBrowserService()
     private lazy var previewWindowController = PreviewWindowController(model: self)
     private lazy var settingsWindowController = SettingsWindowController(model: self)
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, siteData: SiteDataService? = nil, discoverTargets: (() -> [BrowserTarget])? = nil) {
         self.defaults = defaults
+        self.discoverTargets = discoverTargets ?? { BrowserDiscoveryService().discoverTargets() }
+        settingsPage = SettingsPage(rawValue: defaults.string(forKey: "settingsPage") ?? "") ?? .general
+        manualTargetOrder = defaults.stringArray(forKey: "manualTargetOrder") ?? []
+        let data = siteData ?? SiteDataService(defaults: defaults)
+        self.siteData = data
         let blocker = AdBlockService(defaults: defaults)
         adBlockService = blocker
-        previewSession = PreviewSession(adBlockService: blocker)
+        previewSession = PreviewSession(adBlockService: blocker, siteData: data)
         isAdBlockingEnabled = blocker.isEnabled
         showsFullURL = defaults.bool(forKey: PreferenceKey.showsFullURL)
         sortsTargetsByUsage = Self.bool(
@@ -91,17 +108,44 @@ final class AppModel: ObservableObject {
             }
     }
 
-    var visibleTargets: [BrowserTarget] {
-        let visible = targets.filter { !hiddenTargetIDs.contains($0.id) }
-        guard sortsTargetsByUsage else { return visible }
+    var manuallyOrderedTargets: [BrowserTarget] {
+        targets.sorted { lhs, rhs in
+            let left = manualTargetOrder.firstIndex(of: lhs.id) ?? Int.max
+            let right = manualTargetOrder.firstIndex(of: rhs.id) ?? Int.max
+            if left != right { return left < right }
+            return (targets.firstIndex(of: lhs) ?? 0) < (targets.firstIndex(of: rhs) ?? 0)
+        }
+    }
 
-        return visible.enumerated()
-            .sorted { lhs, rhs in
-                let leftCount = targetUsageCounts[lhs.element.id, default: 0]
-                let rightCount = targetUsageCounts[rhs.element.id, default: 0]
-                return leftCount == rightCount ? lhs.offset < rhs.offset : leftCount > rightCount
-            }
-            .map { $0.element }
+    var orderedTargets: [BrowserTarget] {
+        let manual = manuallyOrderedTargets
+        guard sortsTargetsByUsage else { return manual }
+        return manual.enumerated().sorted {
+            let left = targetUsageCount($0.element), right = targetUsageCount($1.element)
+            return left == right ? $0.offset < $1.offset : left > right
+        }.map(\.element)
+    }
+
+    var visibleTargets: [BrowserTarget] { orderedTargets.filter { isTargetVisible($0) } }
+
+    func moveTarget(_ id: String, before destination: String?) {
+        guard !sortsTargetsByUsage, id != destination else { return }
+        var ids = manuallyOrderedTargets.map(\.id)
+        guard ids.contains(id) else { return }
+        ids.removeAll { $0 == id }
+        let position = destination.flatMap { ids.firstIndex(of: $0) } ?? ids.endIndex
+        ids.insert(id, at: position)
+        manualTargetOrder = ids
+        defaults.set(ids, forKey: "manualTargetOrder")
+    }
+
+    func moveTarget(_ id: String, offset: Int) {
+        var ids = manuallyOrderedTargets.map(\.id)
+        guard !sortsTargetsByUsage, let index = ids.firstIndex(of: id),
+              ids.indices.contains(index + offset) else { return }
+        ids.swapAt(index, index + offset)
+        manualTargetOrder = ids
+        defaults.set(ids, forKey: "manualTargetOrder")
     }
 
     var preferredTarget: BrowserTarget? {
@@ -125,7 +169,12 @@ final class AppModel: ObservableObject {
     }
 
     func refreshTargets() {
-        targets = discoveryService.discoverTargets()
+        targets = discoverTargets()
+        let newIDs = targets.map(\.id).filter { !manualTargetOrder.contains($0) }
+        if !newIDs.isEmpty {
+            manualTargetOrder.append(contentsOf: newIDs)
+            defaults.set(manualTargetOrder, forKey: "manualTargetOrder")
+        }
         refreshDefaultBrowserStatus()
         isLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     }
@@ -140,7 +189,82 @@ final class AppModel: ObservableObject {
     }
 
     func showPreview(url: URL) {
-        previewWindowController.show(url: url)
+        previewRequestID = UUID()
+        let requestID = previewRequestID
+        pendingPreviewURL = url
+        resumeAfterSettingsURL = nil
+        previewSession.endSession(resetTemporaryData: false)
+        if !siteData.hasChosenMode {
+            isChoosingDataMode = true
+            isPreparingPreview = false
+            previewWindowController.showDataChoice()
+        } else {
+            isChoosingDataMode = false
+            isPreparingPreview = true
+            previewWindowController.showDataChoice()
+            Task { @MainActor in
+                await siteData.prepareForPreview()
+                guard requestID == previewRequestID else { return }
+                isPreparingPreview = false
+                pendingPreviewURL = nil
+                previewWindowController.show(url: url)
+            }
+        }
+    }
+
+    func completeDataChoice(save: Bool) {
+        guard let url = pendingPreviewURL else { return }
+        let requestID = previewRequestID
+        isChoosingDataMode = false
+        isPreparingPreview = true
+        Task { @MainActor in
+            await siteData.setEnabled(save)
+            await siteData.prepareForPreview()
+            guard previewRequestID == requestID else { return }
+            isPreparingPreview = false
+            pendingPreviewURL = nil
+            previewWindowController.show(url: url)
+        }
+    }
+
+    func openDataSettingsFromChoice() {
+        let url = pendingPreviewURL
+        isChoosingDataMode = false
+        previewWindowController.close()
+        resumeAfterSettingsURL = url
+        showSettings(page: .sites)
+    }
+
+    func settingsDidClose() {
+        guard let url = resumeAfterSettingsURL else { return }
+        resumeAfterSettingsURL = nil
+        siteData.markModeChosen()
+        showPreview(url: url)
+    }
+
+    func previewDidEnd() {
+        previewRequestID = UUID()
+        pendingPreviewURL = nil
+        isChoosingDataMode = false
+        isPreparingPreview = false
+        previewSession.endSession()
+        if siteData.isEnabled { Task { await siteData.refresh() } }
+    }
+
+    func previewApplicationDidHide() {
+        if !keepsPreviewVisibleWhenInactive || NSApp.isHidden {
+            previewWindowController.close()
+        }
+    }
+
+    func setSavesSiteData(_ enabled: Bool) async {
+        previewWindowController.close()
+        await siteData.setEnabled(enabled)
+    }
+
+    func deleteSiteData(_ record: WKWebsiteDataRecord?) async {
+        previewWindowController.close()
+        await siteData.delete(record)
     }
 
     func openOriginalURL(in target: BrowserTarget) {
@@ -241,11 +365,13 @@ final class AppModel: ObservableObject {
     func showWelcomeIfNeeded() {
         guard !defaults.bool(forKey: "hasShownWelcome") else { return }
         // A link delivered during launch takes priority over onboarding.
-        guard previewSession.currentURL == nil else { return }
+        guard previewSession.currentURL == nil, pendingPreviewURL == nil, resumeAfterSettingsURL == nil else { return }
         showWelcome()
     }
 
     func showWelcome() {
+        previewDidEnd()
+        resumeAfterSettingsURL = nil
         refreshTargets()
         previewSession.onOpenSettings = { [weak self] in self?.showSettings() }
         previewWindowController.showWelcome()
@@ -261,17 +387,27 @@ final class AppModel: ObservableObject {
         AppLanguage.shared.set(selection)
         statusMessage = nil
         previewSession.errorMessage = nil
-        settingsWindowController.window?.title = L("Linklet Settings")
+        settingsWindowController.window?.title = settingsPage.title
         if previewSession.isWelcome {
             previewSession.showWelcome(isDefault: isDefaultBrowser)
         }
         objectWillChange.send()
     }
 
-    func showSettings() {
+    func showSettings(page: SettingsPage? = nil) {
+        if let page { settingsPage = page }
         settingsWindowController.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindowController.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func openDeveloperLink(_ address: String) {
+        guard let url = URL(string: address) else { return }
+        // Avoid routing our own links back through Linklet when it is the default browser.
+        guard let target = preferredTarget ?? targets.first else { return }
+        launchService.open(url, in: target) { [weak self] error in
+            if let error { self?.statusMessage = error.localizedDescription }
+        }
     }
 
     private func recordUsage(of target: BrowserTarget) {

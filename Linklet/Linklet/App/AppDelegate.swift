@@ -10,6 +10,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.appUpdates.start()
     }
 
+    func applicationDidResignActive(_ notification: Notification) {
+        model.previewApplicationDidHide()
+    }
+
+    func applicationDidHide(_ notification: Notification) {
+        model.previewApplicationDidHide()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.previewDidEnd()
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         model.refreshDefaultBrowserStatus()
         model.adBlockService.checkForUpdates()
