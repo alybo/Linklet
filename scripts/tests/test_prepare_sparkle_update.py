@@ -30,10 +30,13 @@ class PrepareDMGReleaseTests(unittest.TestCase):
         self.fixture.mkdir(parents=True)
         self.info = {
             "CFBundleIdentifier": "Linklet",
-            "CFBundleShortVersionString": "1.2.3",
-            "CFBundleVersion": "2",
+            "CFBundleShortVersionString": "1.2",
+            "CFBundleVersion": "3",
             "SUPublicEDKey": "fixture-public-key",
             "SUFeedURL": "https://alybo.github.io/Linklet/appcast.xml",
+            "SUEnableAutomaticChecks": True,
+            "SUAutomaticallyUpdate": False,
+            "SUAllowsAutomaticUpdates": False,
         }
         for path in (self.fixture / "Info.plist", self.root / "Linklet/Linklet/Info.plist"):
             path.write_bytes(plistlib.dumps(self.info))
@@ -69,11 +72,15 @@ folder = pathlib.Path(sys.argv[-1])
 # Source archives must never be presented as update candidates.
 assert not list(folder.glob("*.tar.gz"))
 dmg, = folder.glob("*.dmg")
+assert "--embed-release-notes" in sys.argv
 prefix = sys.argv[sys.argv.index("--download-url-prefix") + 1]
 ns = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 tree = ET.parse(folder / "appcast.xml")
 item = ET.SubElement(tree.find("channel"), "item")
-ET.SubElement(item, "{" + ns + "}version").text = "2"
+notes = dmg.with_suffix(".html")
+if notes.exists():
+    ET.SubElement(item, "description").text = notes.read_text()
+ET.SubElement(item, "{" + ns + "}version").text = "3"
 attrs = {"url": prefix + dmg.name}
 if not os.environ.get("TEST_UNSIGNED_FEED"):
     attrs["{" + ns + "}edSignature"] = "fixture-signature"
@@ -88,7 +95,7 @@ if os.environ.get("TEST_MODIFY_DMG"):
             script = script.replace(prefix + name, str(self.bin / name))
         self.script = self.root / "scripts/prepare-sparkle-update.sh"
         self.script.write_text(script)
-        self.output = self.root / "build/sparkle/1.2.3-2"
+        self.output = self.root / "build/sparkle/1.2-3"
 
     def make_tool(self, name, code):
         path = self.bin / name
@@ -107,9 +114,9 @@ if os.environ.get("TEST_MODIFY_DMG"):
         self.assertEqual(result.returncode, 0, result.stderr)
         assets = self.output / "release"
         self.assertEqual(sorted(p.name for p in assets.iterdir()),
-                         ["Linklet-1.2.3-source.tar.gz", "Linklet-1.2.3.dmg"])
-        self.assertEqual((assets / "Linklet-1.2.3.dmg").read_bytes(), self.dmg.read_bytes())
-        self.assertEqual((assets / "Linklet-1.2.3-source.tar.gz").read_bytes(), self.source.read_bytes())
+                         ["Linklet-1.2-source.tar.gz", "Linklet-1.2.dmg"])
+        self.assertEqual((assets / "Linklet-1.2.dmg").read_bytes(), self.dmg.read_bytes())
+        self.assertEqual((assets / "Linklet-1.2-source.tar.gz").read_bytes(), self.source.read_bytes())
         self.assertTrue((self.output / "feed/appcast.xml").exists())
         description = (self.output / "release-description.md").read_text()
         for path in (self.dmg, self.source):
@@ -120,6 +127,23 @@ if os.environ.get("TEST_MODIFY_DMG"):
         result = self.run_script(TEST_FAIL_SIGNING="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.output.exists())
+
+    def test_release_notes_are_embedded_without_extra_assets(self):
+        notes = self.root / "Linklet/docs/releases"
+        notes.mkdir(parents=True)
+        html = "<h2>Linklet 1.2</h2><p>Website data controls.</p>"
+        markdown = "## Linklet 1.2\n\nWebsite data controls.\n"
+        (notes / "1.2.html").write_text(html)
+        (notes / "1.2.md").write_text(markdown)
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import xml.etree.ElementTree as ET
+        feed = ET.parse(self.output / "feed/appcast.xml")
+        self.assertEqual(feed.findtext("./channel/item/description"), html)
+        self.assertIn(markdown, (self.output / "release-description.md").read_text())
+        self.assertEqual((self.output / "release-notes.html").read_text(), html)
+        self.assertEqual(sorted(p.name for p in (self.output / "release").iterdir()),
+                         ["Linklet-1.2-source.tar.gz", "Linklet-1.2.dmg"])
 
     def test_wrong_public_key_stops_and_ejects_image(self):
         self.info["SUPublicEDKey"] = "wrong-key"
@@ -134,6 +158,32 @@ if os.environ.get("TEST_MODIFY_DMG"):
         result = self.run_script(TEST_UNSIGNED_FEED="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.output / "feed/appcast.xml").exists())
+
+    def test_automatic_downloads_stop_release(self):
+        self.info["SUAutomaticallyUpdate"] = True
+        (self.fixture / "Info.plist").write_bytes(plistlib.dumps(self.info))
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Updates must check automatically and require confirmation before downloading", result.stderr)
+        self.assertTrue((self.root / "detached").exists())
+        self.assertFalse(self.output.exists())
+
+    def test_disallow_automatic_updates_is_required(self):
+        self.info["SUAllowsAutomaticUpdates"] = True
+        (self.fixture / "Info.plist").write_bytes(plistlib.dumps(self.info))
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "detached").exists())
+        self.assertFalse(self.output.exists())
+
+    def test_published_build_cannot_be_reused(self):
+        (self.root / "updates/appcast.xml").write_text(
+            '<rss xmlns:s="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>'
+            '<item><s:version>3</s:version></item></channel></rss>')
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Build number must exceed", result.stderr)
+        self.assertFalse(self.output.exists())
 
     def test_modified_dmg_is_rejected(self):
         result = self.run_script(TEST_MODIFY_DMG="1")

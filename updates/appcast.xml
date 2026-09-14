@@ -1,9 +1,17 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>Linklet Updates</title>
-    <link>https://github.com/alybo/Linklet</link>
-    <description>Official Linklet releases for macOS.</description>
-    <language>en</language>
-  </channel>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Linklet Updates</title>
+        <link>https://github.com/alybo/Linklet</link>
+        <description>Official Linklet releases for macOS.</description>
+        <language>en</language>
+        <item>
+            <title>0.1.1</title>
+            <pubDate>Sat, 12 Sep 2026 22:35:24 +0300</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/alybo/Linklet/releases/download/v0.1.1/Linklet-0.1.1.dmg" length="5484259" type="application/octet-stream" sparkle:edSignature="bOQF+r80dz6J9w5bIRRIRc934Vhf3IMRsBZzu1wiwk5gOHoJcM6sBYhIrGjOH+2vyAAMmXV/a2Ltagplav1yBw=="/>
+        </item>
+    </channel>
 </rss>

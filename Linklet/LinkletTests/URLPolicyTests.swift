@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 import WebKit
+import Sparkle
 @testable import Linklet
 
 final class URLPolicyTests: XCTestCase {
@@ -409,6 +410,28 @@ private final class AdBlockPageDelegate: NSObject, WKNavigationDelegate {
 
 @MainActor
 final class SettingsLanguageTests: XCTestCase {
+    func testAutomaticChecksDefaultToEnabledButDownloadsRequireConfirmation() {
+        // Existing users may have opted out of checks, so verify the install default
+        // without overwriting their saved preference. Automatic downloads are forbidden.
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "SUEnableAutomaticChecks") as? Bool, true)
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "SUAutomaticallyUpdate") as? Bool, false)
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "SUAllowsAutomaticUpdates") as? Bool, false)
+        XCTAssertFalse(AppUpdateService().automaticallyDownloadsUpdates)
+    }
+
+    func testUpdateFromPublished011KeepsIdentityAndUsesHigherBuild() throws {
+        let bundle = Bundle.main
+        let build = try XCTUnwrap(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
+        let version = try XCTUnwrap(bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+        XCTAssertEqual(SUStandardVersionComparator().compareVersion("2", toVersion: build), .orderedAscending)
+        XCTAssertEqual(version.split(separator: ".").count, 2)
+        XCTAssertEqual(bundle.bundleIdentifier, "Linklet")
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+                       "se2KhBLlhCaMRw3PEox9XshU29f+wlHRQTXQsvgVAF8=")
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+                       "https://alybo.github.io/Linklet/appcast.xml")
+    }
+
     func testWindowBehaviorSegmentsChangeLanguageWithoutReopeningSettings() async throws {
         let suite = "LinkletSettingsLanguageTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!

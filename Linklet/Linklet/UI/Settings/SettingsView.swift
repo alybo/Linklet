@@ -380,7 +380,7 @@ private struct AboutSettingsView: View {
                 }.buttonStyle(.link)
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
-                        Toggle(L("Automatically check for updates"), isOn: Binding(
+                        Toggle(L("Check for updates automatically"), isOn: Binding(
                             get: { updates.automaticallyChecksForUpdates }, set: updates.setAutomaticallyChecksForUpdates))
                             .toggleStyle(.switch)
                         Text(L("Updates are downloaded and installed only after your confirmation."))

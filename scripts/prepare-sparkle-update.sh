@@ -49,9 +49,13 @@ build=$(/usr/bin/plutil -extract CFBundleVersion raw "$app_plist")
 public_key=$(/usr/bin/plutil -extract SUPublicEDKey raw "$app_plist")
 expected_key=$(/usr/bin/plutil -extract SUPublicEDKey raw "$repo_root/Linklet/Linklet/Info.plist")
 feed_url=$(/usr/bin/plutil -extract SUFeedURL raw "$app_plist")
+automatic_checks=$(/usr/bin/plutil -extract SUEnableAutomaticChecks raw "$app_plist")
+automatic_updates=$(/usr/bin/plutil -extract SUAutomaticallyUpdate raw "$app_plist")
+allows_automatic_updates=$(/usr/bin/plutil -extract SUAllowsAutomaticUpdates raw "$app_plist")
 [[ "$bundle_id" == Linklet && "$public_key" == "$expected_key" ]] || { echo "Wrong app or Sparkle public key" >&2; exit 1; }
 [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ && "$build" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "Invalid release version/build" >&2; exit 1; }
 [[ "$feed_url" == https://alybo.github.io/Linklet/appcast.xml ]] || { echo "Unexpected update feed" >&2; exit 1; }
+[[ "$automatic_checks" == true && "$automatic_updates" == false && "$allows_automatic_updates" == false ]] || { echo "Updates must check automatically and require confirmation before downloading" >&2; exit 1; }
 
 /usr/bin/python3 - "$repo_root/updates/appcast.xml" "$build" <<'PY'
 import sys
@@ -80,11 +84,17 @@ source_name="Linklet-$version-source.tar.gz"
 cp "$dmg_path" "$output_dir/release/$archive_name"
 cp "$repo_root/updates/appcast.xml" "$output_dir/release/appcast.xml"
 
-# Generate while this directory contains only the app DMG. The source tarball
+notes_html="$repo_root/Linklet/docs/releases/$version.html"
+if [[ -f "$notes_html" ]]; then
+    cp "$notes_html" "$output_dir/release/Linklet-$version.html"
+fi
+
+# Generate while this directory contains only the app DMG and optional release notes. The source tarball
 # must not be scanned by Sparkle as another application update.
 "$sparkle_bin/generate_appcast" \
     --account app.linklet.sparkle \
     --maximum-deltas 0 \
+    --embed-release-notes \
     --download-url-prefix "https://github.com/alybo/Linklet/releases/download/v$version/" \
     "$output_dir/release"
 
@@ -107,11 +117,18 @@ PY
 cmp "$dmg_path" "$output_dir/release/$archive_name"
 mv "$output_dir/release/appcast.xml" "$output_dir/feed/appcast.xml"
 cp "$source_path" "$output_dir/release/$source_name"
+if [[ -f "$output_dir/release/Linklet-$version.html" ]]; then
+    mv "$output_dir/release/Linklet-$version.html" "$output_dir/release-notes.html"
+fi
 
 # Checksums go into the release description, not another downloadable asset.
 {
     echo "Для установки скачайте **$archive_name** и перетащите Linklet в Программы."
     echo
+    if [[ -f "$repo_root/Linklet/docs/releases/$version.md" ]]; then
+        cat "$repo_root/Linklet/docs/releases/$version.md"
+        echo
+    fi
     echo 'Контрольные суммы SHA-256:'
     echo '```text'
     (cd "$output_dir/release" && /usr/bin/shasum -a 256 "$archive_name" "$source_name")
