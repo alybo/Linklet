@@ -6,6 +6,40 @@
         <description>Official Linklet releases for macOS.</description>
         <language>en</language>
         <item>
+            <title>1.2</title>
+            <pubDate>Wed, 16 Sep 2026 13:27:58 +0300</pubDate>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>1.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<h2>Linklet 1.2</h2>
+<h3>Что нового</h3>
+<ul>
+<li>Четыре раздела настроек с боковой навигацией.</li>
+<li>Необязательное сохранение входа в аккаунты и настроек сайтов на этом Mac. Объяснение режимов при первом открытии ссылки.</li>
+<li>Удаление данных отдельных сайтов или всех сайтов; очистка после 7, 30 или 90 дней без посещений.</li>
+<li>Ручной порядок браузеров перетаскиванием при выключенной сортировке по использованию.</li>
+<li>Раздел «О программе», ссылки разработчика и окно благодарности.</li>
+</ul>
+<h3>Изменения</h3>
+<p><strong>Без сохранения данные удаляются при закрытии или скрытии окна просмотра.</strong> Для сохранения авторизации включите «Сохранять данные сайтов».</p>
+<p>Начиная с 1.2 скачивание и установка обновлений требуют подтверждения. Само обновление с 0.1.1 выполняется по настройкам старой версии.</p>
+<p>Новые номера версий состоят из двух частей: 1.2, 1.3 и далее. Требуется macOS 14 или новее.</p>
+<hr>
+<h3>What's new</h3>
+<ul>
+<li>Four settings pages with sidebar navigation.</li>
+<li>Optional local persistence for website sign-ins and preferences, with a first-link introduction.</li>
+<li>Delete individual sites or all website data; expire data after 7, 30, or 90 days without a visit.</li>
+<li>Drag to set browser priority when usage sorting is off.</li>
+<li>About page, developer links, and a support sheet.</li>
+</ul>
+<p><strong>Without saving, website data is deleted when the preview closes or hides.</strong> Enable Save Website Data to retain sign-ins.</p>
+<p>Starting with 1.2, update downloads and installation require confirmation. Updating from 0.1.1 follows the old version's saved preferences.</p>
+<p>Version numbers now use two components: 1.2, 1.3, and so on. Requires macOS 14 or later.</p>
+]]></description>
+            <enclosure url="https://github.com/alybo/Linklet/releases/download/v1.2/Linklet-1.2.dmg" length="5702195" type="application/octet-stream" sparkle:edSignature="92ZQWGriy5WKon4os7SY4FCfqK/MH7GZzSQ9ujINTADnqoWdDHdHnukhG+S/GLMDgms61SP81UdgjOuyW0SmAQ=="/>
+        </item>
+        <item>
             <title>0.1.1</title>
             <pubDate>Sat, 12 Sep 2026 22:35:24 +0300</pubDate>
             <sparkle:version>2</sparkle:version>
