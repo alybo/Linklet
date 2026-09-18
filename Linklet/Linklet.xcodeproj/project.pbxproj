@@ -35,6 +35,12 @@
         B10000000000000000000001 = {isa = PBXBuildFile; fileRef = B20000000000000000000001; };
         B10000000000000000000002 = {isa = PBXBuildFile; fileRef = B20000000000000000000002; };
         B10000000000000000000003 = {isa = PBXBuildFile; productRef = B30000000000000000000001; };
+        E10000000000000000000001 = {isa = PBXBuildFile; fileRef = E20000000000000000000001; };
+        E10000000000000000000002 = {isa = PBXBuildFile; fileRef = E20000000000000000000002; };
+        E10000000000000000000003 = {isa = PBXBuildFile; fileRef = E20000000000000000000003; };
+        E10000000000000000000004 = {isa = PBXBuildFile; fileRef = E20000000000000000000004; };
+        E10000000000000000000005 = {isa = PBXBuildFile; fileRef = E20000000000000000000005; };
+        E10000000000000000000006 = {isa = PBXBuildFile; fileRef = E20000000000000000000006; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -77,6 +83,12 @@
 		A20000000000000000000016 /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
         B20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdBlockService.swift; sourceTree = "<group>"; };
         B20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/AdGuard; sourceTree = "<group>"; };
+        E20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/SearchEngine.swift; sourceTree = "<group>"; };
+        E20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SearchSettings.swift; sourceTree = "<group>"; };
+        E20000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Search/SearchWindowController.swift; sourceTree = "<group>"; };
+        E20000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Settings/SearchSettingsView.swift; sourceTree = "<group>"; };
+        E20000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchTests.swift; sourceTree = "<group>"; };
+        E20000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Search/SearchEngineControl.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -115,7 +127,12 @@
 			path = Linklet;
 			sourceTree = "<group>";
 			children = (
-				A70000000000000000000003 /* App */,
+				E20000000000000000000001,
+                E20000000000000000000002,
+                E20000000000000000000003,
+                E20000000000000000000004,
+                E20000000000000000000006,
+                A70000000000000000000003 /* App */,
 				A70000000000000000000004 /* Models */,
 				A70000000000000000000005 /* Services */,
 				A70000000000000000000006 /* State */,
@@ -182,7 +199,8 @@
 			path = LinkletTests;
 			sourceTree = "<group>";
 			children = (
-				A20000000000000000000010 /* URLPolicyTests.swift */,
+				E20000000000000000000005,
+                A20000000000000000000010 /* URLPolicyTests.swift */,
  D20000000000000000000002,
 				A20000000000000000000011 /* OrionProfileLocatorTests.swift */,
 			);
@@ -342,7 +360,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000001 /* LinkletApp.swift in Sources */,
+				E10000000000000000000001,
+                E10000000000000000000002,
+                E10000000000000000000003,
+                E10000000000000000000004,
+                E10000000000000000000006,
+                A10000000000000000000001 /* LinkletApp.swift in Sources */,
 				A10000000000000000000002 /* AppDelegate.swift in Sources */,
 				A10000000000000000000003 /* BrowserTarget.swift in Sources */,
 				A10000000000000000000004 /* URLPolicy.swift in Sources */,
@@ -368,7 +391,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000010 /* URLPolicyTests.swift in Sources */,
+				E10000000000000000000005,
+                A10000000000000000000010 /* URLPolicyTests.swift in Sources */,
  D10000000000000000000002,
 				A10000000000000000000011 /* OrionProfileLocatorTests.swift in Sources */,
 			);
@@ -502,7 +526,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -511,7 +535,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
+				MARKETING_VERSION = 1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = Linklet;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -525,7 +549,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -534,7 +558,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
+				MARKETING_VERSION = 1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = Linklet;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

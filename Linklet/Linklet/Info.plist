@@ -32,6 +32,14 @@
 	<true/>
 	<key>CFBundleURLTypes</key>
 	<array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLName</key>
+            <string>Linklet Search</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>linklet</string></array>
+        </dict>
 		<dict>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>

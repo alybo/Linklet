@@ -46,6 +46,7 @@ final class AppModel: ObservableObject {
     private var resumeAfterSettingsURL: URL?
     private var previewRequestID = UUID()
     @Published private var manualTargetOrder: [String]
+    let searchSettings: SearchSettings
     let siteData: SiteDataService
 
     @Published private(set) var targets: [BrowserTarget] = []
@@ -70,10 +71,14 @@ final class AppModel: ObservableObject {
     private let launchService = BrowserLaunchService()
     private let defaultBrowserService = DefaultBrowserService()
     private lazy var previewWindowController = PreviewWindowController(model: self)
+    private lazy var searchWindowController = SearchWindowController(settings: searchSettings) { [weak self] url in
+        self?.showPreview(url: url)
+    }
     private lazy var settingsWindowController = SettingsWindowController(model: self)
 
     init(defaults: UserDefaults = .standard, siteData: SiteDataService? = nil, discoverTargets: (() -> [BrowserTarget])? = nil) {
         self.defaults = defaults
+        searchSettings = SearchSettings(defaults: defaults)
         self.discoverTargets = discoverTargets ?? { BrowserDiscoveryService().discoverTargets() }
         settingsPage = SettingsPage(rawValue: defaults.string(forKey: "settingsPage") ?? "") ?? .general
         manualTargetOrder = defaults.stringArray(forKey: "manualTargetOrder") ?? []
@@ -179,7 +184,19 @@ final class AppModel: ObservableObject {
         isLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     }
 
+    func startSearchShortcut() {
+        // Prepare the panel once; the hotkey path performs no asynchronous work.
+        _ = searchWindowController
+        searchSettings.start { [weak self] in self?.toggleSearch() }
+    }
+
+    func toggleSearch() { searchWindowController.toggle() }
+
     func handleIncoming(urls: [URL]) {
+        if let query = urls.compactMap(SearchRequest.query).first {
+            showPreview(url: searchSettings.engine.searchURL(for: query))
+            return
+        }
         guard let url = urls.first(where: URLPolicy.canPreview) else {
             statusMessage = L("Linklet received no previewable web links.")
             return
@@ -189,6 +206,7 @@ final class AppModel: ObservableObject {
     }
 
     func showPreview(url: URL) {
+        searchWindowController.close()
         previewRequestID = UUID()
         let requestID = previewRequestID
         pendingPreviewURL = url
@@ -395,6 +413,7 @@ final class AppModel: ObservableObject {
     }
 
     func showSettings(page: SettingsPage? = nil) {
+        searchWindowController.close()
         if let page { settingsPage = page }
         settingsWindowController.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)

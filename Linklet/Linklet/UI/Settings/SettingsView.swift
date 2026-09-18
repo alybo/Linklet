@@ -4,11 +4,12 @@ import UniformTypeIdentifiers
 import WebKit
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, browsers, sites, about
+    case general, search, browsers, sites, about
     var id: String { rawValue }
     var title: String {
         switch self {
         case .general: return L("General")
+        case .search: return L("Search")
         case .browsers: return L("Browsers")
         case .sites: return L("Website data")
         case .about: return L("About")
@@ -17,6 +18,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: return "gearshape"
+        case .search: return "magnifyingglass"
         case .browsers: return "globe"
         case .sites: return "externaldrive"
         case .about: return "info.circle"
@@ -49,6 +51,7 @@ struct SettingsView: View {
                 Group {
                     switch model.settingsPage {
                     case .general: general
+                    case .search: SearchSettingsView(settings: model.searchSettings, showSearch: model.toggleSearch)
                     case .browsers: BrowserSettingsView(model: model)
                     case .sites: SiteDataSettingsView(model: model, data: model.siteData)
                     case .about: AboutSettingsView(model: model, updates: model.appUpdates)

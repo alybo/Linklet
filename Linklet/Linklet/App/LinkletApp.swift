@@ -28,6 +28,8 @@ private struct MenuBarView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
+        Button(L("Quick Search")) { model.toggleSearch() }
+
         Button(L("Welcome to Linklet")) {
             model.showWelcome()
         }
@@ -93,6 +95,27 @@ final class AppLanguage: ObservableObject {
     }
     static let russian: [String: String] = 
 [
+        "Search with %@": "Искать через %@",
+        "Search": "Поиск",
+        "Quick Search": "Быстрый поиск",
+        "Yandex": "Яндекс",
+        "Space": "Пробел",
+        "Search or enter address": "Поиск или адрес сайта",
+        "Search engine": "Поисковик",
+        "Choose a search engine for this query": "Выбрать поисковик для этого запроса",
+        "Open search": "Открыть поиск",
+        "Press a shortcut…": "Нажмите сочетание…",
+        "Record shortcut": "Задать сочетание",
+        "Press Escape to cancel recording": "Нажмите Escape для отмены",
+        "Remove shortcut": "Убрать сочетание",
+        "Keyboard shortcut": "Горячая клавиша",
+        "Default search engine": "Основной поисковик",
+        "Choose a combination with ⌘, ⌥ or ⌃. Linklet must be running.": "Выберите сочетание с ⌘, ⌥ или ⌃. Linklet должен быть запущен.",
+        "Choose a combination with ⌘, ⌥ or ⌃.": "Выберите сочетание с ⌘, ⌥ или ⌃.",
+        "This shortcut is unavailable. Choose another combination.": "Это сочетание недоступно. Выберите другое.",
+        "You can change the engine in the search bar for a single query. Web addresses open directly.": "В строке поиска можно выбрать другой поисковик для одного запроса. Адреса сайтов открываются напрямую.",
+        "Open search bar": "Открыть строку поиска",
+        "Results open in the usual Linklet window. Each search starts with an empty field.": "Результаты открываются в обычном окне Linklet. Каждый поиск начинается с пустой строки.",
         "General": "Основные",
         "Website data": "Данные сайтов",
         "About": "О программе",

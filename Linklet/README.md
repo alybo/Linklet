@@ -21,7 +21,7 @@ continue in an installed browser or a specific Orion profile.
 - Offers an explicit first-link choice to save sign-ins and site preferences locally.
   Settings can delete individual sites or all data, and expire sites after 7, 30,
   or 90 days without a top-level visit. Background requests do not renew visits.
-- Provides four settings pages and a persistent manual browser order when usage
+- Provides five settings pages and a persistent manual browser order when usage
   sorting is disabled. About includes developer links and a support sheet.
 - Offers three window behaviors when switching apps: hide (default on first launch), keep open, or keep on top. Saved preferences are preserved.
 - Can launch at login when enabled in Settings.
@@ -155,3 +155,35 @@ No separate tracker, cookie-banner, or annoyance lists are enabled.
 Third-party notices and GPL v3 license texts are bundled in
 Linklet/Resources/AdGuard. Distribution of the linked converter and filters
 must comply with their licenses, including corresponding-source obligations.
+
+## Quick Search
+
+Press Control–Option–Space (configurable in Settings → Search) or choose
+**Quick Search** from the menu bar. The compact native glass panel accepts
+search queries and web addresses. Google is the initial search engine; Settings
+also offers Yandex, DuckDuckGo, and Bing. The split button in the panel uses monochrome engine marks and a popover,
+matching the preview’s browser selector. Its primary action submits the query;
+the chevron changes the engine only for the current query. Enter opens the destination through the ordinary Linklet
+preview flow. Escape, switching focus, or pressing the shortcut again dismisses
+and clears the panel. Every opening starts empty with the configured default
+engine; queries are not saved.
+
+The global shortcut opens the empty search panel synchronously on key-down.
+The panel is prepared at startup. There is no selection inspection, clipboard
+copying, polling, key-release wait, or Accessibility permission requirement.
+Built-in search of selected text is deferred to a future release.
+
+The optional [Raycast extension](../integrations/raycast-linklet/README.md) gets
+selected text through Raycast and sends it to Linklet. Linklet uses its configured
+default search engine and opens results in the normal preview window. The
+integration accepts `linklet://search?text=<percent-encoded text>`. Selected text
+is always searched; web addresses entered manually in the panel open directly.
+Raycast is not required for Linklet’s own search panel or normal link previews.
+
+The hotkey registration does not require Input Monitoring. Recording supports
+Command, Option, or Control combinations and reports unavailable system/app
+shortcuts. Linklet must be running. macOS 26 and later use native Liquid Glass,
+with a native visual-effect material on macOS 14–15.
+
+Web previews keep WebKit’s native desktop user agent and add Safari’s version
+and product tokens so websites can recognize the embedded desktop browser.

@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        model.startSearchShortcut()
         model.refreshTargets()
         model.showWelcomeIfNeeded()
         model.appUpdates.start()

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "linklet",
+  "title": "Linklet",
+  "description": "Search selected text in Linklet using your default search engine.",
+  "icon": "icon.png",
+  "author": "alybo",
+  "platforms": [
+    "macOS"
+  ],
+  "categories": [
+    "Productivity",
+    "Web"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "search-selection",
+      "title": "Search Selected Text",
+      "subtitle": "Linklet",
+      "description": "Search text selected in the frontmost app in a Linklet window.",
+      "mode": "no-view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "application",
+      "title": "Linklet Application",
+      "description": "Choose the installed Linklet app. The search engine is configured in Linklet \u2192 Settings \u2192 Search.",
+      "type": "appPicker",
+      "required": true,
+      "default": "Linklet"
+    }
+  ],
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "lint:source": "eslint src && prettier --check src"
+  },
+  "dependencies": {
+    "@raycast/api": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0",
+    "eslint": "^9.0.0",
+    "@raycast/eslint-config": "latest",
+    "prettier": "^3.0.0"
+  },
+  "type": "module"
+}

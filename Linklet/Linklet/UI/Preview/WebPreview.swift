@@ -4,15 +4,26 @@ import WebKit
 struct WebPreview: NSViewRepresentable {
     @ObservedObject var session: PreviewSession
 
+    static func configuration(websiteDataStore: WKWebsiteDataStore) -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = websiteDataStore
+        configuration.preferences.isElementFullscreenEnabled = true
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        // Preserve WebKit's native Macintosh/engine tokens and add Safari's
+        // browser identity. Generic WKWebView UA lacks these tokens, so sites
+        // such as Google may fall back to an unsupported-browser/basic page.
+        let safariVersion = Bundle(url: URL(fileURLWithPath: "/Applications/Safari.app"))?
+            .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "17.0"
+        configuration.applicationNameForUserAgent = "Version/\(safariVersion) Safari/605.1.15"
+        return configuration
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(session: session)
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = session.websiteDataStore
-        configuration.preferences.isElementFullscreenEnabled = true
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        let configuration = Self.configuration(websiteDataStore: session.websiteDataStore)
         // Let WebKit own scrolling, including macOS preferences and site CSS.
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
