@@ -35,6 +35,7 @@ final class AppModel: ObservableObject {
         static let targetUsageCounts = "targetUsageCounts"
         static let keepsPreviewVisibleWhenInactive = "keepsPreviewVisibleWhenInactive"
         static let keepsPreviewAboveOtherWindows = "keepsPreviewAboveOtherWindows"
+        static let opensLinksInNewWindows = "opensLinksInNewWindows"
     }
 
     @Published var settingsPage: SettingsPage {
@@ -48,6 +49,7 @@ final class AppModel: ObservableObject {
     @Published private var manualTargetOrder: [String]
     let searchSettings: SearchSettings
     let siteData: SiteDataService
+    let windowGeometry: WindowGeometryService
 
     @Published private(set) var targets: [BrowserTarget] = []
     @Published private(set) var isDefaultBrowser = false
@@ -56,6 +58,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var sortsTargetsByUsage: Bool
     @Published private(set) var keepsPreviewVisibleWhenInactive: Bool
     @Published private(set) var keepsPreviewAboveOtherWindows: Bool
+    @Published private(set) var opensLinksInNewWindows: Bool
     @Published var statusMessage: String?
 
     @Published private var hiddenTargetIDs: Set<String>
@@ -75,8 +78,17 @@ final class AppModel: ObservableObject {
         self?.showPreview(url: url)
     }
     private lazy var settingsWindowController = SettingsWindowController(model: self)
+    private var childPreviewModels: [AppModel] = []
+    private var onPreviewClosed: (() -> Void)?
+    // Child preview models report Dock state to the coordinator that owns all windows.
+    private var dockVisibilityHandler: (() -> Void)?
 
-    init(defaults: UserDefaults = .standard, siteData: SiteDataService? = nil, discoverTargets: (() -> [BrowserTarget])? = nil) {
+    init(
+        defaults: UserDefaults = .standard,
+        siteData: SiteDataService? = nil,
+        windowGeometry: WindowGeometryService? = nil,
+        discoverTargets: (() -> [BrowserTarget])? = nil
+    ) {
         self.defaults = defaults
         searchSettings = SearchSettings(defaults: defaults)
         self.discoverTargets = discoverTargets ?? { BrowserDiscoveryService().discoverTargets() }
@@ -84,6 +96,7 @@ final class AppModel: ObservableObject {
         manualTargetOrder = defaults.stringArray(forKey: "manualTargetOrder") ?? []
         let data = siteData ?? SiteDataService(defaults: defaults)
         self.siteData = data
+        self.windowGeometry = windowGeometry ?? WindowGeometryService(defaults: defaults)
         let blocker = AdBlockService(defaults: defaults)
         adBlockService = blocker
         previewSession = PreviewSession(adBlockService: blocker, siteData: data)
@@ -104,6 +117,7 @@ final class AppModel: ObservableObject {
             forKey: PreferenceKey.keepsPreviewAboveOtherWindows,
             defaultValue: false
         )
+        opensLinksInNewWindows = defaults.bool(forKey: PreferenceKey.opensLinksInNewWindows)
         hiddenTargetIDs = Set(defaults.stringArray(forKey: PreferenceKey.hiddenTargetIDs) ?? [])
         targetUsageCounts = (defaults.dictionary(forKey: PreferenceKey.targetUsageCounts) ?? [:])
             .reduce(into: [:]) { result, item in
@@ -206,6 +220,10 @@ final class AppModel: ObservableObject {
     }
 
     func showPreview(url: URL) {
+        if opensLinksInNewWindows, siteData.hasChosenMode, hasVisiblePreviewWindow {
+            showPreviewInNewWindow(url: url)
+            return
+        }
         searchWindowController.close()
         previewRequestID = UUID()
         let requestID = previewRequestID
@@ -215,11 +233,11 @@ final class AppModel: ObservableObject {
         if !siteData.hasChosenMode {
             isChoosingDataMode = true
             isPreparingPreview = false
-            previewWindowController.showDataChoice()
+            previewWindowController.showDataChoice(for: url)
         } else {
             isChoosingDataMode = false
             isPreparingPreview = true
-            previewWindowController.showDataChoice()
+            previewWindowController.showDataChoice(for: url)
             Task { @MainActor in
                 await siteData.prepareForPreview()
                 guard requestID == previewRequestID else { return }
@@ -267,21 +285,25 @@ final class AppModel: ObservableObject {
         isPreparingPreview = false
         previewSession.endSession()
         if siteData.isEnabled { Task { await siteData.refresh() } }
+        onPreviewClosed?()
+        updateDockVisibilitySoon()
+        if onPreviewClosed == nil { focusRemainingPreviewWindowSoon() }
     }
 
     func previewApplicationDidHide() {
         if !keepsPreviewVisibleWhenInactive || NSApp.isHidden {
             previewWindowController.close()
+            childPreviewModels.forEach { $0.previewApplicationDidHide() }
         }
     }
 
     func setSavesSiteData(_ enabled: Bool) async {
-        previewWindowController.close()
+        closeAllPreviewWindows()
         await siteData.setEnabled(enabled)
     }
 
     func deleteSiteData(_ record: WKWebsiteDataRecord?) async {
-        previewWindowController.close()
+        closeAllPreviewWindows()
         await siteData.delete(record)
     }
 
@@ -333,14 +355,21 @@ final class AppModel: ObservableObject {
     func setAdBlockingEnabled(_ enabled: Bool) {
         isAdBlockingEnabled = enabled
         adBlockService.setEnabled(enabled)
-        if !previewSession.isWelcome, let url = previewSession.currentURL {
-            previewSession.load(url, preservingOriginalURL: true)
+        for preview in allPreviewModels {
+            if !preview.previewSession.isWelcome, let url = preview.previewSession.currentURL {
+                preview.previewSession.load(url, preservingOriginalURL: true)
+            }
         }
     }
 
     func setShowsFullURL(_ enabled: Bool) {
         showsFullURL = enabled
         defaults.set(enabled, forKey: PreferenceKey.showsFullURL)
+    }
+
+    func setOpensLinksInNewWindows(_ enabled: Bool) {
+        opensLinksInNewWindows = enabled
+        defaults.set(enabled, forKey: PreferenceKey.opensLinksInNewWindows)
     }
 
     func setSortTargetsByUsage(_ enabled: Bool) {
@@ -388,7 +417,7 @@ final class AppModel: ObservableObject {
     }
 
     func showWelcome() {
-        previewDidEnd()
+        closeAllPreviewWindows()
         resumeAfterSettingsURL = nil
         refreshTargets()
         previewSession.onOpenSettings = { [weak self] in self?.showSettings() }
@@ -398,16 +427,16 @@ final class AppModel: ObservableObject {
 
     func refreshDefaultBrowserStatus() {
         isDefaultBrowser = defaultBrowserService.isLinkletDefault()
-        previewSession.updateWelcomeStatus(isDefault: isDefaultBrowser)
+        allPreviewModels.forEach { $0.previewSession.updateWelcomeStatus(isDefault: isDefaultBrowser) }
     }
 
     func setLanguage(_ selection: String) {
         AppLanguage.shared.set(selection)
         statusMessage = nil
-        previewSession.errorMessage = nil
+        allPreviewModels.forEach { $0.previewSession.errorMessage = nil }
         settingsWindowController.window?.title = settingsPage.title
-        if previewSession.isWelcome {
-            previewSession.showWelcome(isDefault: isDefaultBrowser)
+        for preview in allPreviewModels where preview.previewSession.isWelcome {
+            preview.previewSession.showWelcome(isDefault: isDefaultBrowser)
         }
         objectWillChange.send()
     }
@@ -415,9 +444,11 @@ final class AppModel: ObservableObject {
     func showSettings(page: SettingsPage? = nil) {
         searchWindowController.close()
         if let page { settingsPage = page }
+        makeAppVisibleInDock()
         settingsWindowController.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindowController.window?.makeKeyAndOrderFront(nil)
+        updateDockVisibilitySoon()
     }
 
     func openDeveloperLink(_ address: String) {
@@ -429,9 +460,93 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func savedWindowFrame(for url: URL) -> NSRect? {
+        windowGeometry.frame(for: url)
+    }
+
+    func saveWindowFrame(_ frame: NSRect) {
+        guard let url = previewSession.currentURL else { return }
+        windowGeometry.save(frame, for: url)
+    }
+
+    func closeAllWindows() {
+        // Do not resume the privacy setup flow after its Settings window closes.
+        resumeAfterSettingsURL = nil
+        closeAllPreviewWindows()
+        settingsWindowController.close()
+        updateDockVisibilitySoon()
+    }
+
+    var hasOpenWindows: Bool {
+        hasVisiblePreviewWindow || settingsWindowController.window?.isVisible == true
+    }
+
     private func recordUsage(of target: BrowserTarget) {
         targetUsageCounts[target.id, default: 0] += 1
         defaults.set(targetUsageCounts, forKey: PreferenceKey.targetUsageCounts)
+    }
+
+    private var allPreviewModels: [AppModel] { [self] + childPreviewModels }
+
+    private var hasVisiblePreviewWindow: Bool {
+        allPreviewModels.contains { $0.previewWindowController.isVisible }
+    }
+
+    private func showPreviewInNewWindow(url: URL) {
+        let referenceFrame = allPreviewModels.reversed().compactMap { preview -> NSRect? in
+            guard let window = preview.previewWindowController.window, window.isVisible else { return nil }
+            return window.frame
+        }.first
+        let child = AppModel(
+            defaults: defaults,
+            siteData: siteData,
+            windowGeometry: windowGeometry,
+            discoverTargets: discoverTargets
+        )
+        child.refreshTargets()
+        if let referenceFrame {
+            child.previewWindowController.positionInitially(after: referenceFrame)
+        }
+        child.dockVisibilityHandler = { [weak self] in self?.updateDockVisibilitySoon() }
+        child.onPreviewClosed = { [weak self, weak child] in
+            guard let self, let child else { return }
+            self.childPreviewModels.removeAll { $0 === child }
+            self.updateDockVisibilitySoon()
+            self.focusRemainingPreviewWindowSoon()
+        }
+        childPreviewModels.append(child)
+        child.showPreview(url: url)
+    }
+
+    private func closeAllPreviewWindows() {
+        allPreviewModels.forEach { $0.previewWindowController.close() }
+    }
+
+    func updateDockVisibilitySoon() {
+        if let dockVisibilityHandler {
+            dockVisibilityHandler()
+            return
+        }
+        DispatchQueue.main.async { [weak self] in self?.updateDockVisibility() }
+    }
+
+    func makeAppVisibleInDock() {
+        NSApp.setActivationPolicy(.regular)
+    }
+
+    private func focusRemainingPreviewWindowSoon() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, NSApp.isActive else { return }
+            guard let window = self.allPreviewModels.reversed().compactMap({ preview -> NSWindow? in
+                guard let window = preview.previewWindowController.window, window.isVisible else { return nil }
+                return window
+            }).first else { return }
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func updateDockVisibility() {
+        NSApp.setActivationPolicy(hasOpenWindows ? .regular : .accessory)
     }
 
     private static func bool(

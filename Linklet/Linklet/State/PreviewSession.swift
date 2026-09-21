@@ -23,7 +23,12 @@ final class PreviewSession: ObservableObject {
 
     weak var webView: WKWebView?
     let siteData: SiteDataService
-    var websiteDataStore: WKWebsiteDataStore { siteData.dataStore }
+    // A private store belongs to one preview window. Closing one private preview
+    // must never clear website data used by another open preview.
+    private var temporaryStore = WKWebsiteDataStore.nonPersistent()
+    var websiteDataStore: WKWebsiteDataStore {
+        siteData.isEnabled ? siteData.dataStore : temporaryStore
+    }
     @Published private(set) var isActive = false
     private var pendingURL: URL?
     private var requestedURL: URL?
@@ -59,7 +64,11 @@ final class PreviewSession: ObservableObject {
         isPreparingNewPage = false
         errorMessage = nil
         navigationID = UUID()
-        if resetTemporaryData && !siteData.isEnabled { siteData.rotateTemporaryStore() }
+        if resetTemporaryData && !siteData.isEnabled {
+            let oldStore = temporaryStore
+            temporaryStore = WKWebsiteDataStore.nonPersistent()
+            oldStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+        }
     }
 
     func attach(_ webView: WKWebView) {

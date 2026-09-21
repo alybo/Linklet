@@ -32,7 +32,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         model.$settingsPage.sink { [weak window] page in window?.title = page.title }.store(in: &subscriptions)
     }
 
-    func windowWillClose(_ notification: Notification) { model?.settingsDidClose() }
+    func windowWillClose(_ notification: Notification) {
+        model?.settingsDidClose()
+        model?.updateDockVisibilitySoon()
+    }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

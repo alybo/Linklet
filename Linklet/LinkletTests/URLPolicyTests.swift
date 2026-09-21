@@ -27,6 +27,26 @@ final class URLPolicyTests: XCTestCase {
 
 @MainActor
 final class AppModelPreferencesTests: XCTestCase {
+    func testWindowGeometryPersistsPerHostAndStaysWithinVisibleFrame() throws {
+        let suiteName = "app.peekroute.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let service = WindowGeometryService(defaults: defaults)
+        let frame = NSRect(x: 120, y: 160, width: 980, height: 710)
+
+        service.save(frame, for: try XCTUnwrap(URL(string: "https://example.com/a")))
+
+        XCTAssertEqual(service.frame(for: try XCTUnwrap(URL(string: "https://example.com/b"))), frame)
+        XCTAssertNil(service.frame(for: try XCTUnwrap(URL(string: "https://other.example.com"))))
+        XCTAssertEqual(
+            WindowGeometryService.clamped(
+                NSRect(x: -100, y: 900, width: 1_200, height: 900),
+                to: NSRect(x: 0, y: 0, width: 800, height: 600)
+            ),
+            NSRect(x: 0, y: 0, width: 800, height: 600)
+        )
+    }
+
     func testWindowBehaviorRestoresLegacySettingsAndUpdatesTheOpenPanel() throws {
         let suiteName = "app.peekroute.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -43,7 +63,7 @@ final class AppModelPreferencesTests: XCTestCase {
 
         let model = AppModel(defaults: defaults)
         let controller = PreviewWindowController(model: model)
-        let panel = try XCTUnwrap(controller.window as? NSPanel)
+        let panel = try XCTUnwrap(controller.window)
         defer { panel.close() }
 
         for behavior in [PreviewWindowBehavior.hide, .stayOnTop, .keepOpen, .hide] {
@@ -98,6 +118,7 @@ final class AppModelPreferencesTests: XCTestCase {
         XCTAssertFalse(model.keepsPreviewVisibleWhenInactive)
         XCTAssertEqual(model.previewWindowBehavior, .hide)
         XCTAssertFalse(model.keepsPreviewAboveOtherWindows)
+        XCTAssertFalse(model.opensLinksInNewWindows)
 
         let target = BrowserTarget.browser(
             name: "Test Browser",
@@ -109,6 +130,7 @@ final class AppModelPreferencesTests: XCTestCase {
         model.setSortTargetsByUsage(false)
         model.setKeepsPreviewVisibleWhenInactive(false)
         model.setKeepsPreviewAboveOtherWindows(true)
+        model.setOpensLinksInNewWindows(true)
         model.setTargetVisible(target, isVisible: false)
 
         let restoredModel = AppModel(defaults: defaults)
@@ -116,6 +138,7 @@ final class AppModelPreferencesTests: XCTestCase {
         XCTAssertFalse(restoredModel.sortsTargetsByUsage)
         XCTAssertFalse(restoredModel.keepsPreviewVisibleWhenInactive)
         XCTAssertTrue(restoredModel.keepsPreviewAboveOtherWindows)
+        XCTAssertTrue(restoredModel.opensLinksInNewWindows)
         XCTAssertFalse(restoredModel.isTargetVisible(target))
     }
 }
@@ -283,9 +306,19 @@ final class LocalizationTests: XCTestCase {
         AppLanguage.shared.set("ru")
         XCTAssertEqual(L("Open in %@", "Safari"), "Открыть в Safari")
         XCTAssertEqual(PreviewWindowBehavior.stayOnTop.title, "Поверх всех окон")
+        XCTAssertEqual(L("Favorite websites"), "Избранные сайты")
+        XCTAssertEqual(L("Show favorites in Quick Search"), "Показывать избранное в быстром поиске")
+        XCTAssertEqual(L("Add favorite website"), "Добавить избранный сайт")
+        XCTAssertEqual(L("Load favicon"), "Загрузить favicon")
+        XCTAssertEqual(L("Enter a valid HTTP or HTTPS address."), "Введите корректный адрес HTTP или HTTPS.")
+        XCTAssertEqual(L("Open links in new windows"), "Открывать ссылки в новых окнах")
+        XCTAssertEqual(L("Close All Windows"), "Закрыть все окна")
         AppLanguage.shared.set("en")
         XCTAssertEqual(L("Open in %@", "Safari"), "Open in Safari")
         XCTAssertEqual(PreviewWindowBehavior.stayOnTop.title, "Keep on top")
+        XCTAssertEqual(L("Favorite websites"), "Favorite websites")
+        XCTAssertEqual(L("Open links in new windows"), "Open links in new windows")
+        XCTAssertEqual(L("Close All Windows"), "Close All Windows")
         XCTAssertEqual(UserDefaults.standard.string(forKey: "interfaceLanguage"), "en")
     }
 

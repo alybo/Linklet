@@ -6,7 +6,8 @@
 
 Linklet для macOS открывает ссылки из других приложений в компактном окне поверх
 текущей задачи. Быстро посмотрите страницу, закройте её или откройте в нужном
-браузере — без лишних вкладок и переключений.
+браузере — без лишних вкладок и переключений. По умолчанию Linklet использует одно
+окно; при необходимости пользователь включает отдельные окна для новых ссылок.
 
 ## Promise
 
@@ -20,11 +21,25 @@ send it to the browser and identity that belong to the task.
 3. The bottom target shelf shows browsers and profiles.
 4. The user dismisses the preview or opens its original incoming URL in a target.
 
+## Windows and presence
+
+- The default mode replaces the current preview with the next incoming link.
+- An optional setting opens every incoming link in its own native macOS window.
+  New windows cascade from the preceding one; the first opens centred.
+- Linklet remembers a preview's frame separately for each exact website host. On a
+  future visit it restores that frame, or clamps it into a currently visible display.
+- Linklet is visible in the Dock whenever a preview or Settings window exists. With
+  no windows it continues as a menu-bar app. The Dock menu retains macOS's normal
+  window list and includes **Close All Windows**, which never quits the app.
+
 ## MVP boundary
 
 The preview is an independent browser session. A live tab cannot be transferred
 between WebKit and another browser. Forms, playback position, scroll state, and
 preview cookies are not transferred; the selected browser reloads the URL.
+Website-data privacy and window geometry are independent: a stored frame is only
+local UI metadata, not website content or session data, so clearing website data
+does not remove it.
 
 ## Product principles
 

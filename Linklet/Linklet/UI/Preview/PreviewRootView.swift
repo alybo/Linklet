@@ -8,6 +8,7 @@ enum PreviewLayout {
     static let contentInset: CGFloat = 6
     static let contentCornerRadius: CGFloat = 12
     static let windowControlSymbolSize: CGFloat = 14
+    static let windowControlHitSize: CGFloat = 24
 }
 
 struct PreviewRootView: View {
@@ -174,6 +175,7 @@ private struct PreviewWindowControls: View {
                 .keyboardShortcut("]", modifiers: .command)
             }
         }
+        .offset(x: -4)
     }
 }
 
@@ -183,8 +185,6 @@ private struct WindowControlButton: View {
     let help: String
     let action: () -> Void
 
-    @State private var isHovered = false
-
     var body: some View {
         Button(action: action) {
             Image(imageName)
@@ -192,13 +192,11 @@ private struct WindowControlButton: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: PreviewLayout.windowControlSymbolSize, height: PreviewLayout.windowControlSymbolSize)
-                .frame(width: PreviewLayout.controlHeight, height: PreviewLayout.controlHeight)
-                .background(Color.primary.opacity(isHovered ? 0.08 : 0), in: Circle())
-                .contentShape(Circle())
+                .frame(width: PreviewLayout.windowControlHitSize, height: PreviewLayout.windowControlHitSize)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(help)
-        .onHover { isHovered = $0 }
         .help(help)
     }
 }

@@ -99,6 +99,15 @@ struct SettingsView: View {
                 }
             }
             Section {
+                Toggle(isOn: Binding(
+                    get: { model.opensLinksInNewWindows }, set: model.setOpensLinksInNewWindows
+                )) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("Open links in new windows"))
+                        Text(L("Keep each incoming link in its own preview window."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Toggle(isOn: Binding(get: { model.isAdBlockingEnabled }, set: model.setAdBlockingEnabled)) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(L("Block ads"))

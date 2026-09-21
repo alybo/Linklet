@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-private final class PreviewPanel: NSPanel {
+private final class PreviewWindow: NSWindow {
     var onEscape: (() -> Void)?
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .keyDown,
@@ -35,11 +35,14 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     private unowned let model: AppModel
     private var cancellables = Set<AnyCancellable>()
     private var hasAppliedInitialSize = false
+    private var initialPositionReferenceFrame: NSRect?
+
+    var isVisible: Bool { window?.isVisible == true }
 
     init(model: AppModel) {
         self.model = model
 
-        let panel = PreviewPanel(
+        let panel = PreviewWindow(
             contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -70,6 +73,16 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
 
         super.init(window: panel)
         panel.delegate = self
+        Publishers.CombineLatest(model.previewSession.$pageTitle, model.previewSession.$currentURL)
+            .map { pageTitle, url in
+                let title = pageTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !title.isEmpty { return title }
+                if let host = url?.host, !host.isEmpty { return host }
+                return L("Preview")
+            }
+            .removeDuplicates()
+            .sink { [weak panel] title in panel?.title = title }
+            .store(in: &cancellables)
         panel.onEscape = { [weak model, weak panel] in
             if model?.isChoosingDataMode == true { model?.completeDataChoice(save: false) }
             else { panel?.performClose(nil) }
@@ -109,22 +122,33 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    func show(url: URL) {
-        present { model.previewSession.load(url) }
+    func positionInitially(after frame: NSRect) {
+        initialPositionReferenceFrame = frame
     }
 
-    func showDataChoice() { present {} }
+    func show(url: URL) {
+        present(initialURL: url) { model.previewSession.load(url) }
+    }
+
+    func showDataChoice(for url: URL) { present(initialURL: url) {} }
 
     func showWelcome() {
         present { model.previewSession.showWelcome(isDefault: model.isDefaultBrowser) }
     }
 
-    private func present(load: () -> Void) {
+    private func present(initialURL: URL? = nil, load: () -> Void) {
         guard let window else { return }
         prepare()
+        // Become a regular app before activation so macOS records this open as
+        // the latest Command-Tab activity rather than appending us to the end.
+        model.makeAppVisibleInDock()
         let animatesAppearance = !window.isVisible
         if animatesAppearance {
-            window.center()
+            if let initialURL, let savedFrame = model.savedWindowFrame(for: initialURL) {
+                restore(savedFrame, in: window)
+            } else {
+                placeInitially(window)
+            }
             window.alphaValue = 0
         }
 
@@ -134,6 +158,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(window.contentView)
+        model.updateDockVisibilitySoon()
 
         if animatesAppearance {
             DispatchQueue.main.async { [weak window] in
@@ -143,6 +168,45 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
                 }
             }
         }
+    }
+
+    private func placeInitially(_ window: NSWindow) {
+        guard let referenceFrame = initialPositionReferenceFrame else {
+            window.center()
+            return
+        }
+        initialPositionReferenceFrame = nil
+        let screen = NSScreen.screens.first { $0.visibleFrame.intersects(referenceFrame) }
+            ?? NSScreen.main
+        guard let screen else {
+            window.center()
+            return
+        }
+        let visibleFrame = screen.visibleFrame
+        let size = window.frame.size
+        let proposed = NSPoint(x: referenceFrame.origin.x + 24, y: referenceFrame.origin.y - 24)
+        let origin = NSPoint(
+            x: min(max(proposed.x, visibleFrame.minX), visibleFrame.maxX - size.width),
+            y: min(max(proposed.y, visibleFrame.minY), visibleFrame.maxY - size.height)
+        )
+        window.setFrameOrigin(origin)
+    }
+
+    private func restore(_ frame: NSRect, in window: NSWindow) {
+        let screen = NSScreen.screens.first { $0.visibleFrame.intersects(frame) } ?? NSScreen.main
+        guard let screen else {
+            window.center()
+            return
+        }
+        window.setFrame(WindowGeometryService.clamped(frame, to: screen.visibleFrame), display: false)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        if let window { model.saveWindowFrame(window.frame) }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        if let window { model.saveWindowFrame(window.frame) }
     }
 
     func windowWillClose(_ notification: Notification) {

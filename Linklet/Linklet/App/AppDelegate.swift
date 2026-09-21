@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.refreshTargets()
         model.showWelcomeIfNeeded()
         model.appUpdates.start()
+        model.updateDockVisibilitySoon()
     }
 
     func applicationDidResignActive(_ notification: Notification) {
@@ -38,4 +39,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) -> Bool {
         true
     }
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let closeAll = NSMenuItem(
+            title: L("Close All Windows"), action: #selector(closeAllWindowsFromDock(_:)), keyEquivalent: ""
+        )
+        closeAll.target = self
+        closeAll.isEnabled = model.hasOpenWindows
+        menu.addItem(closeAll)
+
+        return menu
+    }
+
+    @objc private func closeAllWindowsFromDock(_ sender: Any?) { model.closeAllWindows() }
+
 }

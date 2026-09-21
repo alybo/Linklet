@@ -7,7 +7,17 @@ continue in an installed browser or a specific Orion profile.
 ## Current MVP
 
 - Registers as a handler for `http` and `https` links.
-- Opens links in a floating preview window.
+- Opens links in a native, resizable macOS preview window.
+- Reuses the current preview window by default. An optional **Open links in new
+  windows** setting gives every incoming link its own preview; new windows cascade
+  from the previous one unless a saved position is available for the site.
+- Keeps a separate window frame for each exact website host and restores it on a
+  later visit. Saved frames are clamped to a visible display when monitors or their
+  arrangement change.
+- Appears in the Dock while any preview or Settings window is open, and otherwise
+  remains available only from the menu bar. The Dock menu uses macOS's native window
+  list and adds **Close All Windows**, which closes Linklet windows without quitting
+  the app.
 - Shows Back and Forward only when navigation in that direction is available,
   with trackpad gestures and Command-[ / Command-] shortcuts. Each new external
   link starts a fresh navigation history.
@@ -29,6 +39,8 @@ continue in an installed browser or a specific Orion profile.
   to the page for text entry, scrolling, and media controls.
 - Reserves protected viewport areas above and below the page so site controls,
   dialogs, and fixed elements never sit underneath Linklet's chrome.
+- Provides Quick Search with configurable global shortcut, selectable search engine,
+  and locally stored favorite sites.
 
 ## Requirements
 
@@ -85,6 +97,23 @@ without a top-level visit ages from first discovery. The preview does not read c
 passwords, history, or extensions from Safari, Orion, Chrome, or Firefox.
 Opening a target browser sends only the original incoming URL, so the page reloads in that
 browser with its own profile and session.
+
+Window position and size are stored separately as local interface preferences,
+keyed by the exact host currently shown in the preview. They contain no website
+content, cookies, sign-ins, or browsing history, and are retained when website data
+is cleared or temporary preview data is rotated.
+
+## Window management
+
+The default single-window mode replaces the current preview when another external
+link arrives. Enable **Open links in new windows** in Settings → General to keep
+each incoming link in a separate preview. This setting is off by default.
+
+With multiple windows, closing one keeps the remaining Linklet windows active. If
+any preview or the Settings window is present, Linklet is a regular Dock app; when
+the last window closes, it returns to menu-bar-only operation. **Close All Windows**
+in the Dock menu closes previews and Settings without terminating the process, so
+the global search shortcut and menu-bar controls remain available.
 
 ## Next milestones
 
@@ -159,14 +188,37 @@ must comply with their licenses, including corresponding-source obligations.
 ## Quick Search
 
 Press Control–Option–Space (configurable in Settings → Search) or choose
-**Quick Search** from the menu bar. The compact native glass panel accepts
-search queries and web addresses. Google is the initial search engine; Settings
-also offers Yandex, DuckDuckGo, and Bing. The split button in the panel uses monochrome engine marks and a popover,
-matching the preview’s browser selector. Its primary action submits the query;
-the chevron changes the engine only for the current query. Enter opens the destination through the ordinary Linklet
-preview flow. Escape, switching focus, or pressing the shortcut again dismisses
-and clears the panel. Every opening starts empty with the configured default
-engine; queries are not saved.
+**Quick Search** from the menu bar. The native glass panel accepts search queries
+and web addresses. Google is the initial search engine; Settings also offers
+Yandex, DuckDuckGo, and Bing. The split button in the panel uses monochrome engine
+marks and a popover, matching the preview’s browser selector. Its primary action
+submits the query; the chevron changes the engine only for the current query.
+Enter opens the destination through the ordinary Linklet preview flow. Escape,
+switching focus, or pressing the shortcut again dismisses and clears the panel.
+Every opening starts empty with the configured default engine; queries are not saved.
+
+### Favorite sites
+
+Settings → Search can store a locally ordered list of favorite HTTP(S) sites.
+Each entry has a name, address, optional cached favicon, and a tile in Quick Search.
+Users can add, edit, delete, or drag entries to reorder them. The **Show favorites
+in Quick Search** toggle hides the tile row without deleting the list. The search
+panel uses a fixed compact or expanded layout depending on whether this enabled
+list has entries; extra tiles scroll horizontally.
+
+Clicking a tile opens its address through the same ordinary preview flow as a typed
+web address. Keyboard navigation is local to Quick Search: Down Arrow selects the
+first tile, Left/Right move the selection, Up Arrow returns to the text field, and
+Enter opens the selected site. Command-1 through Command-9 open the first nine
+favorites directly. Moving the selection automatically reveals its tile;
+vertical mouse-wheel and trackpad scrolling move the tile row horizontally.
+
+Favicon loading is explicit: the user presses **Load favicon** for an individual
+entry in Settings. Linklet makes one ephemeral, cookie-free request to that site's
+`/favicon.ico` endpoint, validates the image, and stores it locally with the
+favorite. It neither performs favicon requests automatically nor sends this request
+through the preview's persistent website-data store. If loading fails, the tile
+uses the generic globe icon.
 
 The global shortcut opens the empty search panel synchronously on key-down.
 The panel is prepared at startup. There is no selection inspection, clipboard

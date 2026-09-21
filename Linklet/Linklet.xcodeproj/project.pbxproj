@@ -41,6 +41,8 @@
         E10000000000000000000004 = {isa = PBXBuildFile; fileRef = E20000000000000000000004; };
         E10000000000000000000005 = {isa = PBXBuildFile; fileRef = E20000000000000000000005; };
         E10000000000000000000006 = {isa = PBXBuildFile; fileRef = E20000000000000000000006; };
+        F10000000000000000000001 = {isa = PBXBuildFile; fileRef = F20000000000000000000001; };
+        F10000000000000000000002 = {isa = PBXBuildFile; fileRef = F20000000000000000000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -89,6 +91,8 @@
         E20000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Settings/SearchSettingsView.swift; sourceTree = "<group>"; };
         E20000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchTests.swift; sourceTree = "<group>"; };
         E20000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Search/SearchEngineControl.swift; sourceTree = "<group>"; };
+        F20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/FavoriteSiteIconService.swift; sourceTree = "<group>"; };
+        F20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowGeometryService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -127,6 +131,7 @@
 			path = Linklet;
 			sourceTree = "<group>";
 			children = (
+				F20000000000000000000001,
 				E20000000000000000000001,
                 E20000000000000000000002,
                 E20000000000000000000003,
@@ -165,6 +170,7 @@
 			path = Services;
 			sourceTree = "<group>";
 			children = (
+				F20000000000000000000002,
 				A20000000000000000000004 /* URLPolicy.swift */,
  D20000000000000000000001,
                 B20000000000000000000001,
@@ -360,6 +366,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F10000000000000000000001,
+				F10000000000000000000002,
 				E10000000000000000000001,
                 E10000000000000000000002,
                 E10000000000000000000003,

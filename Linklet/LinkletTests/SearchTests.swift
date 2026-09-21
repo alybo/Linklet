@@ -96,6 +96,35 @@ final class SearchSettingsTests: XCTestCase {
         XCTAssertNil(SearchSettings(defaults: defaults).shortcut)
     }
 
+    func testFavoriteSitesValidatePersistAndKeepTheirOrder() throws {
+        let suite = "LinkletFavoriteSitesTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+
+        let swift = try settings.addFavoriteSite(name: "Swift", address: "swift.org")
+        let example = try settings.addFavoriteSite(name: "", address: "https://example.com/docs")
+        XCTAssertEqual(swift.address, "https://swift.org")
+        XCTAssertEqual(example.name, "example.com")
+        XCTAssertEqual(settings.favoriteSites.map(\.name), ["Swift", "example.com"])
+        XCTAssertThrowsError(try settings.addFavoriteSite(name: "Again", address: "https://swift.org")) {
+            XCTAssertEqual($0 as? FavoriteSiteError, .duplicateURL)
+        }
+        XCTAssertThrowsError(try settings.addFavoriteSite(name: "Local", address: "file:///tmp/site")) {
+            XCTAssertEqual($0 as? FavoriteSiteError, .invalidURL)
+        }
+
+        settings.moveFavoriteSite(example.id, before: swift.id)
+        try settings.updateFavoriteSite(swift, name: "Swift language", address: "https://swift.org/documentation")
+        let reloaded = SearchSettings(defaults: defaults)
+        XCTAssertEqual(reloaded.favoriteSites.map(\.name), ["example.com", "Swift language"])
+        XCTAssertEqual(reloaded.favoriteSites.last?.address, "https://swift.org/documentation")
+        reloaded.removeFavoriteSite(reloaded.favoriteSites[0])
+        XCTAssertEqual(SearchSettings(defaults: defaults).favoriteSites.map(\.name), ["Swift language"])
+        reloaded.setShowsFavoriteSites(false)
+        XCTAssertFalse(SearchSettings(defaults: defaults).showsFavoriteSites)
+    }
+
     func testPanelResetsQueryAndTemporaryEngineAndSubmitsOrdinaryURL() throws {
         let suite = "LinkletSearchPanelTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -106,6 +135,7 @@ final class SearchSettingsTests: XCTestCase {
         let controller = SearchWindowController(settings: settings) { opened = $0 }
         controller.present()
         defer { controller.close() }
+        XCTAssertEqual(controller.window!.frame.height, 140)
         XCTAssertEqual(controller.selection.engine, .yandex)
         XCTAssertNotNil(controller.input.currentEditor(), "Typing must go straight into the query")
         controller.input.stringValue = "test query"
@@ -125,6 +155,54 @@ final class SearchSettingsTests: XCTestCase {
         controller.close()
         controller.present()
         XCTAssertEqual(controller.input.stringValue, "")
+    }
+
+    func testPanelShowsFavoritesAndOpensThemThroughItsURLHandler() throws {
+        let suite = "LinkletFavoritePanelTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        let site = try settings.addFavoriteSite(name: "Example", address: "example.com")
+        var opened: URL?
+        let controller = SearchWindowController(settings: settings) { opened = $0 }
+        controller.present()
+        XCTAssertEqual(controller.window!.frame.height, 220)
+        XCTAssertFalse(controller.window!.hasShadow)
+        controller.close()
+        settings.setShowsFavoriteSites(false)
+        controller.present()
+        XCTAssertEqual(controller.window!.frame.height, 140, "Saved favorites can be hidden without deleting them")
+        controller.openFavorite(site)
+        XCTAssertEqual(opened?.absoluteString, "https://example.com")
+        XCTAssertFalse(controller.window!.isVisible)
+    }
+
+    func testFavoriteKeyboardNavigationAndCommandShortcutsOpenTheSelectedSite() throws {
+        let suite = "LinkletFavoriteKeyboardTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        _ = try settings.addFavoriteSite(name: "First", address: "first.example")
+        let second = try settings.addFavoriteSite(name: "Second", address: "second.example")
+        var opened: URL?
+        let controller = SearchWindowController(settings: settings) { opened = $0 }
+        controller.present()
+
+        XCTAssertTrue(controller.handlePanelKeyEvent(keyEvent(keyCode: 19, characters: "2", modifiers: .command)))
+        XCTAssertEqual(opened?.host, "second.example")
+
+        opened = nil
+        controller.present()
+        XCTAssertTrue(controller.control(controller.input, textView: NSTextView(), doCommandBy: #selector(NSResponder.moveDown(_:))))
+        XCTAssertTrue(controller.handlePanelKeyEvent(keyEvent(keyCode: 124, characters: "", modifiers: [])))
+        XCTAssertTrue(controller.handlePanelKeyEvent(keyEvent(keyCode: 36, characters: "\r", modifiers: [])))
+        XCTAssertEqual(opened?.absoluteString, second.address)
+    }
+
+    private func keyEvent(keyCode: UInt16, characters: String, modifiers: NSEvent.ModifierFlags) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                         windowNumber: 0, context: nil, characters: characters,
+                         charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode)!
     }
 }
 
