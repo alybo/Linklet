@@ -15,6 +15,7 @@ xcuserdata/
 *.dSYM.zip
 *.ipa
 *.zip
+__pycache__/
 Linklet/Linklet 20*/
 
 # Credentials and machine-specific configuration
