@@ -177,6 +177,22 @@ final class SearchSettingsTests: XCTestCase {
         XCTAssertFalse(controller.window!.isVisible)
     }
 
+    func testOpeningSearchDoesNotShowAnAutofillWindow() async throws {
+        let suite = "LinkletSearchPanelAutofillTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = SearchWindowController(settings: SearchSettings(defaults: defaults)) { _ in }
+
+        controller.present()
+        defer { controller.close() }
+        XCTAssertNotNil(controller.input.currentEditor())
+        for _ in 0..<40 {
+            XCTAssertFalse(NSApp.windows.contains { $0.parent === controller.window },
+                           "Focusing the search field must not open an autofill window")
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     func testFavoriteKeyboardNavigationAndCommandShortcutsOpenTheSelectedSite() throws {
         let suite = "LinkletFavoriteKeyboardTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!

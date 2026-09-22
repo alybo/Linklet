@@ -24,6 +24,7 @@ private final class SearchPanel: NSPanel {
 @MainActor
 private final class FavoriteSelection: ObservableObject {
     @Published var siteID: UUID?
+    @Published var scrollResetID = UUID()
 }
 
 /// A shadow carrier behind Glass. The window itself stays transparent, so the
@@ -129,6 +130,7 @@ final class SearchWindowController: NSWindowController, NSWindowDelegate, NSText
         input.focusRingType = .none
         input.font = .systemFont(ofSize: 24, weight: .regular)
         input.textColor = .labelColor
+        input.contentType = .URL
         input.cell?.usesSingleLineMode = true
         input.cell?.isScrollable = true
         input.delegate = self
@@ -224,6 +226,7 @@ final class SearchWindowController: NSWindowController, NSWindowDelegate, NSText
         input.stringValue = ""
         selection.engine = settings.engine
         favoriteSelection.siteID = nil
+        favoriteSelection.scrollResetID = UUID()
     }
 
     private func replacePanelIfNeeded() {
@@ -349,6 +352,7 @@ private struct FavoriteSitesStrip: View {
                             }
                         }
                     }
+                    .id(selection.scrollResetID)
                     .onChange(of: selection.siteID) { selectedID in
                         guard let selectedID else { return }
                         withAnimation(.easeOut(duration: 0.16)) {
