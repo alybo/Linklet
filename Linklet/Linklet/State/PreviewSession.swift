@@ -45,6 +45,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func endSession(resetTemporaryData: Bool = true) {
+        let wasActive = isActive
         webView?.stopLoading()
         webView?.navigationDelegate = nil
         webView?.uiDelegate = nil
@@ -69,6 +70,7 @@ final class PreviewSession: ObservableObject {
             temporaryStore = WKWebsiteDataStore.nonPersistent()
             oldStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
         }
+        if wasActive { siteData.previewSessionDidEnd() }
     }
 
     func attach(_ webView: WKWebView) {
@@ -96,6 +98,7 @@ final class PreviewSession: ObservableObject {
             errorMessage = L("Only HTTP and HTTPS links can be previewed.")
             return
         }
+        if !isActive { siteData.previewSessionDidStart() }
         isActive = true
         isWelcome = false
         errorMessage = nil
@@ -116,6 +119,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func showWelcome(isDefault: Bool) {
+        if !isActive { siteData.previewSessionDidStart() }
         isActive = true
         webView?.stopLoading()
         webView = nil

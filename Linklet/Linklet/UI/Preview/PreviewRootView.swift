@@ -89,8 +89,6 @@ struct PreviewRootView: View {
             if model.isChoosingDataMode {
                 SiteDataChoiceView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.isPreparingPreview {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if session.isPreparingNewPage {

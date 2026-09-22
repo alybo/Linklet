@@ -78,17 +78,36 @@ final class SiteDataTests: XCTestCase {
         data.recordVisit(URL(string: "https://recent.example")!, now: now.addingTimeInterval(-2 * 86400))
         // Merely reading the stored records must not refresh last visits.
         await data.refresh()
-        await data.prepareForPreview(now: now)
+        await data.performIdleMaintenance(now: now)
         var domains = Set(await store.httpCookieStore.allCookies().map(\.domain))
         XCTAssertFalse(domains.contains("old.example"))
         XCTAssertTrue(domains.contains("recent.example"))
         XCTAssertTrue(domains.contains("embedded.example"))
-        await data.prepareForPreview(now: now.addingTimeInterval(31 * 86400))
+        await data.performIdleMaintenance(now: now.addingTimeInterval(31 * 86400))
         domains = Set(await store.httpCookieStore.allCookies().map(\.domain))
         XCTAssertTrue(domains.isEmpty)
         XCTAssertTrue(SiteDataService.host("accounts.example.co.uk", belongsTo: "example.co.uk"))
         XCTAssertFalse(SiteDataService.host("notexample.co.uk", belongsTo: "example.co.uk"))
         XCTAssertFalse(SiteDataService.host("example.co.uk.evil.org", belongsTo: "example.co.uk"))
+    }
+
+    func testIdleMaintenanceDefersExpiryWhileAPreviewIsActive() async throws {
+        let now = Date()
+        await data.setEnabled(true)
+        data.setInactiveDays(7)
+        await store.httpCookieStore.setCookie(cookie("old.example"))
+        data.recordVisit(URL(string: "https://old.example")!, now: now.addingTimeInterval(-8 * 86400))
+
+        let session = PreviewSession(adBlockService: AdBlockService(defaults: defaults), siteData: data)
+        session.load(URL(string: "https://new.example")!)
+        await data.performIdleMaintenance(now: now)
+        var cookies = await store.httpCookieStore.allCookies()
+        XCTAssertTrue(cookies.contains { $0.domain == "old.example" })
+
+        session.endSession()
+        await data.performIdleMaintenance(now: now)
+        cookies = await store.httpCookieStore.allCookies()
+        XCTAssertFalse(cookies.contains { $0.domain == "old.example" })
     }
 
     func testDeletingOneWebsitePreservesOtherCookies() async throws {
@@ -152,10 +171,6 @@ final class SiteDataTests: XCTestCase {
         model.openDataSettingsFromChoice()
         await model.setSavesSiteData(true)
         model.settingsDidClose()
-        for _ in 0..<100 {
-            if !model.isPreparingPreview { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
         XCTAssertTrue(data.isEnabled)
         XCTAssertTrue(data.hasChosenMode)
         XCTAssertFalse(model.isChoosingDataMode)
@@ -163,16 +178,18 @@ final class SiteDataTests: XCTestCase {
         model.previewDidEnd()
     }
 
-    func testClosingDuringPreparationDoesNotReopenPreview() async throws {
+    func testChoosingPrivateModeStartsPreviewImmediately() async throws {
         let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
-        model.showPreview(url: URL(string: "http://127.0.0.1:9/original")!)
+        let url = URL(string: "http://127.0.0.1:9/original")!
+        model.showPreview(url: url)
         model.completeDataChoice(save: false)
+        XCTAssertTrue(model.previewSession.isActive)
+        XCTAssertEqual(model.previewSession.originalURL, url)
         model.previewDidEnd()
         await data.refresh()
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertFalse(model.previewSession.isActive)
         XCTAssertNil(model.previewSession.originalURL)
-        XCTAssertFalse(model.isPreparingPreview)
         XCTAssertTrue(data.hasChosenMode)
     }
 
@@ -180,10 +197,6 @@ final class SiteDataTests: XCTestCase {
         let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
         model.showPreview(url: URL(string: "http://127.0.0.1:9/original")!)
         model.completeDataChoice(save: false)
-        for _ in 0..<100 {
-            if !model.isPreparingPreview { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
         let oldStore = model.previewSession.websiteDataStore
         await oldStore.httpCookieStore.setCookie(cookie("example.org"))
         model.previewApplicationDidHide()

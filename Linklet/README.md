@@ -90,8 +90,8 @@ Orion release used for distribution.
 
 The preview defaults to `WKWebsiteDataStore.nonPersistent()`, rotated at every
 close/hide boundary. Opting in uses Linklet's persistent WebKit store. Turning
-saving off requires confirmation and deletes all stored website data. Cleanup
-runs before the next preview; an active page is never cleared by a background timer.
+Saving off requires confirmation and deletes all stored website data. Inactive-data
+cleanup runs while Linklet is idle; an active page is never cleared by a background task.
 Visit timestamps are stored only with saving enabled. Data for embedded domains
 without a top-level visit ages from first discovery. The preview does not read cookies,
 passwords, history, or extensions from Safari, Orion, Chrome, or Firefox.

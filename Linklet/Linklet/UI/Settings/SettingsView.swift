@@ -303,7 +303,7 @@ private struct SiteDataSettingsView: View {
                 }
                 .disabled(!data.isEnabled || data.isBusy)
             } footer: {
-                Text(L("Inactive website data is removed before the next preview. Background requests do not count as visits."))
+                Text(L("Inactive website data is removed while Linklet is idle. Background requests do not count as visits."))
             }
             Section(L("Stored websites")) {
                 if data.records.count > 5 || !search.isEmpty {

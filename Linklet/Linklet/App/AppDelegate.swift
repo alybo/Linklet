@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.refreshTargets()
         model.showWelcomeIfNeeded()
         model.appUpdates.start()
+        model.startSiteDataMaintenance()
         model.updateDockVisibilitySoon()
     }
 

@@ -42,7 +42,6 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(settingsPage.rawValue, forKey: "settingsPage") }
     }
     @Published var isChoosingDataMode = false
-    @Published private(set) var isPreparingPreview = false
     private var pendingPreviewURL: URL?
     private var resumeAfterSettingsURL: URL?
     private var previewRequestID = UUID()
@@ -226,41 +225,25 @@ final class AppModel: ObservableObject {
         }
         searchWindowController.close()
         previewRequestID = UUID()
-        let requestID = previewRequestID
         pendingPreviewURL = url
         resumeAfterSettingsURL = nil
         previewSession.endSession(resetTemporaryData: false)
         if !siteData.hasChosenMode {
             isChoosingDataMode = true
-            isPreparingPreview = false
             previewWindowController.showDataChoice(for: url)
         } else {
             isChoosingDataMode = false
-            isPreparingPreview = true
-            previewWindowController.showDataChoice(for: url)
-            Task { @MainActor in
-                await siteData.prepareForPreview()
-                guard requestID == previewRequestID else { return }
-                isPreparingPreview = false
-                pendingPreviewURL = nil
-                previewWindowController.show(url: url)
-            }
+            pendingPreviewURL = nil
+            previewWindowController.show(url: url)
         }
     }
 
     func completeDataChoice(save: Bool) {
         guard let url = pendingPreviewURL else { return }
-        let requestID = previewRequestID
         isChoosingDataMode = false
-        isPreparingPreview = true
-        Task { @MainActor in
-            await siteData.setEnabled(save)
-            await siteData.prepareForPreview()
-            guard previewRequestID == requestID else { return }
-            isPreparingPreview = false
-            pendingPreviewURL = nil
-            previewWindowController.show(url: url)
-        }
+        siteData.selectModeForPreview(save)
+        pendingPreviewURL = nil
+        previewWindowController.show(url: url)
     }
 
     func openDataSettingsFromChoice() {
@@ -282,12 +265,15 @@ final class AppModel: ObservableObject {
         previewRequestID = UUID()
         pendingPreviewURL = nil
         isChoosingDataMode = false
-        isPreparingPreview = false
         previewSession.endSession()
         if siteData.isEnabled { Task { await siteData.refresh() } }
         onPreviewClosed?()
         updateDockVisibilitySoon()
         if onPreviewClosed == nil { focusRemainingPreviewWindowSoon() }
+    }
+
+    func startSiteDataMaintenance() {
+        siteData.startBackgroundMaintenance()
     }
 
     func previewApplicationDidHide() {

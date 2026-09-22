@@ -155,7 +155,7 @@ final class AppLanguage: ObservableObject {
         "Delete data for websites not visited for": "Удалять данные сайтов без посещений",
         "Never": "Никогда",
         "%d days": "%d дней",
-        "Inactive website data is removed before the next preview. Background requests do not count as visits.": "Данные неиспользуемых сайтов удаляются перед следующим просмотром. Фоновые запросы не считаются посещениями.",
+        "Inactive website data is removed while Linklet is idle. Background requests do not count as visits.": "Данные неиспользуемых сайтов удаляются, когда Linklet не показывает страницы. Фоновые запросы не считаются посещениями.",
         "Stored websites": "Сохранённые данные",
         "Search websites": "Поиск сайтов",
         "Updating website data…": "Обновление данных сайтов…",
