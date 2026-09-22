@@ -173,7 +173,6 @@ final class AppLanguage: ObservableObject {
         "Local storage": "Локальное хранилище",
         "Version %@": "Версия %@",
         "Build %@": "Сборка %@",
-        "Author — @alybo": "Автор — @alybo",
         "Support development": "Благодарность",
         "Contact the author": "Написать автору",
         "Updates are downloaded and installed only after your confirmation.": "Скачивание и установка обновлений — только после вашего подтверждения.",

@@ -382,7 +382,6 @@ private struct AboutSettingsView: View {
                 Text(L("Version %@", Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"))
                     .foregroundStyle(.secondary)
                     .help(L("Build %@", Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"))
-                Text(L("Author — @alybo")).padding(.top, 4)
                 Button(L("Support development")) { showingThanks = true }
                     .padding(.vertical, 8)
                 HStack(spacing: 10) {

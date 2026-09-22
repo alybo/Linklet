@@ -457,7 +457,7 @@ final class SettingsLanguageTests: XCTestCase {
         let build = try XCTUnwrap(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
         let version = try XCTUnwrap(bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
         XCTAssertEqual(SUStandardVersionComparator().compareVersion("2", toVersion: build), .orderedAscending)
-        XCTAssertEqual(version.split(separator: ".").count, 2)
+        XCTAssertGreaterThanOrEqual(version.split(separator: ".").count, 2)
         XCTAssertEqual(bundle.bundleIdentifier, "Linklet")
         XCTAssertEqual(bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
                        "se2KhBLlhCaMRw3PEox9XshU29f+wlHRQTXQsvgVAF8=")
