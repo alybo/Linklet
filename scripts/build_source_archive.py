@@ -105,6 +105,10 @@ def normalized_tar_info(info: tarfile.TarInfo, epoch: int) -> tarfile.TarInfo:
     info.uname = "root"
     info.gname = "root"
     info.mtime = epoch
+    if info.isfile():
+        # SwiftPM checkouts may be read-only, but use-local-packages.py must
+        # rewrite their manifests in the extracted corresponding source.
+        info.mode |= 0o200
     return info
 
 

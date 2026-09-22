@@ -164,6 +164,7 @@ class SourceArchiveTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(checkout), "config", "user.email", "test@example.invalid"], check=True)
             subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
             subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "dependency"], check=True)
+            (checkout / "Package.swift").chmod(0o444)
             revision = subprocess.check_output(
                 ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
             ).strip()
@@ -214,6 +215,8 @@ class SourceArchiveTests(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             with tarfile.open(first, "r:gz") as archive:
                 names = set(archive.getnames())
+                manifest = archive.getmember("Linklet-2.0-source/vendor/Sparkle/Package.swift")
+                self.assertTrue(manifest.mode & 0o200)
             self.assertIn("Linklet-2.0-source/vendor/Sparkle/LICENSE", names)
             self.assertIn(
                 "Linklet-2.0-source/vendor/SparkleArtifacts/Sparkle.xcframework/Info.plist",
