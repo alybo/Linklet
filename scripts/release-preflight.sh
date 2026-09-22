@@ -86,7 +86,7 @@ git -C "$repo_root" fetch --quiet origin \
     echo "origin/main must equal tagged release commit before preflight" >&2
     exit 1
 }
-remote_tag="$(git -C "$repo_root" ls-remote --tags origin "refs/tags/$tag" | /usr/bin/awk '{print $1}')"
+remote_tag="$(git -C "$repo_root" ls-remote --tags origin "refs/tags/${tag}^{}" | /usr/bin/awk '{print $1}')"
 [[ "$remote_tag" == "$commit" ]] || {
     echo "Remote $tag is missing or does not point to $commit" >&2
     exit 1

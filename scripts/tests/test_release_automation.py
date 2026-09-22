@@ -141,6 +141,9 @@ class PublishScriptTests(unittest.TestCase):
     def test_preflight_tag_refspec_is_safe_for_zsh(self):
         self.assertIn('"refs/tags/${tag}:refs/tags/${tag}"', PREFLIGHT.read_text(encoding="utf-8"))
 
+    def test_preflight_compares_the_peeled_annotated_tag(self):
+        self.assertIn('"refs/tags/${tag}^{}"', PREFLIGHT.read_text(encoding="utf-8"))
+
 
 class SourceArchiveTests(unittest.TestCase):
     def test_archive_contains_exact_dependency_and_is_reproducible(self):
