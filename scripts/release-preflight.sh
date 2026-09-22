@@ -81,7 +81,7 @@ release_step "Verify immutable release input"
 }
 git -C "$repo_root" fetch --quiet origin \
     "+refs/heads/main:refs/remotes/origin/main" \
-    "refs/tags/$tag:refs/tags/$tag"
+    "refs/tags/${tag}:refs/tags/${tag}"
 [[ "$(git -C "$repo_root" rev-parse origin/main)" == "$commit" ]] || {
     echo "origin/main must equal tagged release commit before preflight" >&2
     exit 1
