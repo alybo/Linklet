@@ -3,6 +3,7 @@ import WebKit
 import SwiftUI
 import Network
 import Carbon
+import ImageIO
 @testable import Linklet
 
 @MainActor
@@ -61,6 +62,138 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertTrue(LinkLibrary(defaults: defaults).folders.isEmpty)
     }
 
+    func testMixedBookmarkOrderMigratesAndSurvivesMovesAndRelaunch() throws {
+        let suite = "MixedBookmarks.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        let a = try settings.addFavoriteSite(name: "A", address: "https://a.example")
+        let b = try settings.addFavoriteSite(name: "B", address: "https://b.example")
+        let c = try settings.addFavoriteSite(name: "C", address: "https://c.example")
+        let library = LinkLibrary(defaults: defaults)
+        let work = try XCTUnwrap(library.addFolder(name: "Work"))
+        library.moveBookmark(b, to: work.id)
+        defaults.removeObject(forKey: "bookmarkRootOrder") // Version 1.5 build 10 had no mixed order.
+        let migrated = LinkLibrary(defaults: defaults)
+        migrated.bind(to: settings)
+        XCTAssertEqual(migrated.rootOrder, [a.id, c.id, work.id])
+        migrated.moveItem(work.id, before: a.id)
+        XCTAssertEqual(settings.favoriteSites.map(\.id), [b.id, a.id, c.id])
+        migrated.moveItem(c.id, before: b.id, into: work.id)
+        XCTAssertEqual(settings.favoriteSites.map(\.id), [c.id, b.id, a.id])
+        XCTAssertEqual(migrated.folderID(for: c), work.id)
+        migrated.moveItem(c.id, offset: 1)
+        XCTAssertEqual(settings.favoriteSites.map(\.id), [b.id, c.id, a.id])
+        // Reordering from Favorites settings uses the same folder assignment and insertion rules.
+        settings.moveFavoriteSite(a.id, before: c.id)
+        XCTAssertEqual(migrated.folderID(for: a), work.id)
+        XCTAssertEqual(settings.favoriteSites.map(\.id), [b.id, a.id, c.id])
+        migrated.moveItem(c.id, before: work.id)
+        XCTAssertNil(migrated.folderID(for: c))
+        XCTAssertEqual(migrated.rootOrder, [c.id, work.id])
+        let restoredSettings = SearchSettings(defaults: defaults)
+        let restored = LinkLibrary(defaults: defaults)
+        restored.bind(to: restoredSettings)
+        XCTAssertEqual(restored.rootOrder, [c.id, work.id])
+        XCTAssertEqual(restoredSettings.favoriteSites.map(\.id), [c.id, b.id, a.id])
+        restored.removeFolder(work)
+        XCTAssertEqual(restored.rootOrder, [c.id, b.id, a.id])
+        XCTAssertEqual(restoredSettings.favoriteSites.map(\.id), [c.id, b.id, a.id])
+        XCTAssertTrue(restored.folderAssignments.isEmpty)
+        restoredSettings.removeFavoriteSite(b)
+        XCTAssertEqual(restored.rootOrder, [c.id, a.id])
+        restored.moveItem(UUID(), before: a.id)
+        XCTAssertEqual(restored.rootOrder, [c.id, a.id])
+    }
+
+    func testSharedIconsDeduplicateOriginsAndPersistOnlyBookmarks() async throws {
+        let suite = "SharedIcons.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let data = Data([1, 2, 3])
+        var requested: [URL] = []
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { url in
+            requested.append(url)
+            try await Task.sleep(for: .milliseconds(20))
+            return data
+        })
+        let a = try settings.addFavoriteSite(name: "A", address: "https://example.com/a")
+        _ = try settings.addFavoriteSite(name: "B", address: "https://example.com/b")
+        let historyURL = URL(string: "https://user:password@example.com/history?secret=123#private")!
+        async let first: Void = settings.ensureIcon(for: a.url)
+        async let second: Void = settings.ensureIcon(for: historyURL)
+        _ = await (first, second)
+        XCTAssertEqual(requested, [URL(string: "https://example.com")!])
+        XCTAssertEqual(settings.iconData(for: historyURL), data)
+        XCTAssertTrue(settings.favoriteSites.allSatisfy { $0.faviconData == data })
+        XCTAssertTrue(settings.loadingFavoriteIconIDs.isEmpty)
+        XCTAssertEqual(SearchSettings(defaults: defaults).iconData(for: historyURL), data)
+        let historyOnly = URL(string: "https://history.example/private?token=secret")!
+        await settings.ensureIcon(for: historyOnly)
+        XCTAssertEqual(settings.iconData(for: historyOnly), data)
+        XCTAssertNil(SearchSettings(defaults: defaults).iconData(for: historyOnly))
+        let saved = try settings.addFavoriteSite(name: "From history", address: historyOnly.absoluteString)
+        XCTAssertEqual(saved.faviconData, data)
+        XCTAssertEqual(SearchSettings(defaults: defaults).iconData(for: saved.url), data)
+        XCTAssertNil(defaults.data(forKey: "recentLinks"))
+    }
+
+    func testIconServiceFollowsDeclaredIconsAndDownsamplesWithoutSendingPageURL() async throws {
+        let largeIcon = NSImage(size: NSSize(width: 256, height: 256))
+        largeIcon.lockFocus()
+        NSColor.systemOrange.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: 256, height: 256)).fill()
+        largeIcon.unlockFocus()
+        let png = try XCTUnwrap(NSBitmapImageRep(data: largeIcon.tiffRepresentation!)?.representation(using: .png, properties: [:]))
+        let server = try PopupHTTPFixture(iconData: png)
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = URL(string: "http://127.0.0.1:\(port)/private/document?token=secret#fragment")!
+        let icon = try await FavoriteSiteIconService.fetch(for: page)
+        let image = try XCTUnwrap(CGImageSourceCreateWithData(icon as CFData, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any])
+        XCTAssertEqual(properties[kCGImagePropertyPixelWidth] as? Int, 64)
+        XCTAssertEqual(properties[kCGImagePropertyPixelHeight] as? Int, 64)
+        XCTAssertEqual(server.iconRequests, ["GET /favicon.ico HTTP/1.1", "GET / HTTP/1.1", "GET /custom-icon.png HTTP/1.1"])
+    }
+
+    func testDeclaredIconParsingSupportsAttributeOrderRelativePathsAndRejectsUnsafeURLs() {
+        let html = #"<link href='/icons/site.png?v=1&amp;x=2' rel='shortcut icon'><LINK REL=apple-touch-icon HREF=touch.png><link rel='stylesheet' href='style.css'><link rel='icon' href='file:///private/key'><link rel='icon' href='https://user:password@example.com/icon.png'>"#
+        XCTAssertEqual(FavoriteSiteIconService.declaredIcons(in: html, baseURL: URL(string: "https://example.com/")!).map(\.absoluteString),
+                       ["https://example.com/icons/site.png?v=1&x=2", "https://example.com/touch.png"])
+    }
+
+    func testFailedIconsDoNotRetryOnEveryRowButCanBeRefreshed() async {
+        let suite = "FailedIcons.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var attempts = 0
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in
+            attempts += 1
+            throw FavoriteSiteIconError.unavailable
+        })
+        let url = URL(string: "https://example.com")!
+        await settings.ensureIcon(for: url)
+        await settings.ensureIcon(for: url)
+        XCTAssertEqual(attempts, 1)
+        await settings.ensureIcon(for: url, refresh: true)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertTrue(settings.loadingFavoriteIconIDs.isEmpty)
+    }
+
+    func testSidebarMarginsUseScreenWidthIncludingNegativeOrigins() {
+        let screen = NSRect(x: -1440, y: -900, width: 1440, height: 900)
+        let visible = NSRect(x: -1440, y: -875, width: 1440, height: 875)
+        let frame = SidebarWindowController.panelFrame(screenFrame: screen, visibleFrame: visible)
+        XCTAssertEqual(frame.minX, screen.minX)
+        XCTAssertEqual(frame.minY - screen.minY, 144)
+        XCTAssertEqual(screen.maxY - frame.maxY, 144)
+        XCTAssertEqual(frame.size, NSSize(width: 300, height: 612))
+        XCTAssertTrue(visible.contains(frame))
+        let small = NSRect(x: 0, y: 0, width: 3000, height: 500)
+        XCTAssertEqual(SidebarWindowController.panelFrame(screenFrame: small, visibleFrame: small).height, 300)
+    }
+
     func testEdgeTriggerUsesEachScreensPhysicalLeftEdgeAndExcludesMenuBar() {
         let screen = NSRect(x: -1440, y: 0, width: 1440, height: 900)
         let visible = NSRect(x: -1440, y: 0, width: 1440, height: 875)
@@ -73,7 +206,17 @@ final class LinkLibraryTests: XCTestCase {
         let suite = "SidebarWindowTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in
+            // A deterministic favicon fixture keeps this screenshot independent of internet access.
+            let image = NSImage(size: NSSize(width: 32, height: 32))
+            image.lockFocus()
+            NSColor.systemOrange.setFill()
+            NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 32, height: 32), xRadius: 6, yRadius: 6).fill()
+            ("S" as NSString).draw(at: NSPoint(x: 8, y: 4), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 23), .foregroundColor: NSColor.black])
+            image.unlockFocus()
+            return NSBitmapImageRep(data: image.tiffRepresentation!)!.representation(using: .png, properties: [:])!
+        })
+        let model = AppModel(defaults: defaults, searchSettings: settings, discoverTargets: { [] })
         model.linkLibrary.setEnabled(true)
         let reference = try model.searchSettings.addFavoriteSite(name: "Swift Documentation", address: "swift.org/documentation")
         _ = try model.searchSettings.addFavoriteSite(name: "Apple Developer", address: "developer.apple.com")
@@ -88,11 +231,28 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertFalse(model.previewSession.isActive)
         XCTAssertEqual(window.level, .floating)
         try await Task.sleep(for: .milliseconds(300))
+        let screen = try XCTUnwrap(window.screen)
+        let expected = SidebarWindowController.panelFrame(screenFrame: screen.frame, visibleFrame: screen.visibleFrame)
+        XCTAssertEqual(window.frame.width, expected.width, accuracy: 1)
+        XCTAssertEqual(window.frame.height, expected.height, accuracy: 1) // AppKit aligns the animated frame to pixels.
         let view = try XCTUnwrap(window.contentView)
         view.layoutSubtreeIfNeeded()
         if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: bitmap)
-            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.5-sidebar.png"))
+            XCTAssertEqual(bitmap.colorAt(x: bitmap.pixelsWide / 2, y: 2)?.alphaComponent ?? 1, 0, accuracy: 0.01)
+            let interior = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide - 12, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.deviceRGB))
+            XCTAssertEqual(interior.redComponent, 0, accuracy: 0.01)
+            XCTAssertEqual(interior.greenComponent, 0, accuracy: 0.01)
+            XCTAssertEqual(interior.blueComponent, 0, accuracy: 0.01)
+            let canvas = NSImage(size: NSSize(width: view.bounds.width + 80, height: view.bounds.height + 80))
+            canvas.lockFocus()
+            NSColor.darkGray.setFill()
+            NSBezierPath(rect: NSRect(origin: .zero, size: canvas.size)).fill()
+            let snapshot = NSImage(size: view.bounds.size)
+            snapshot.addRepresentation(bitmap)
+            snapshot.draw(in: NSRect(x: 40, y: 40, width: view.bounds.width, height: view.bounds.height))
+            canvas.unlockFocus()
+            try NSBitmapImageRep(data: canvas.tiffRepresentation!)?.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.5-sidebar.png"))
         }
         controller.toggle()
         XCTAssertFalse(window.isVisible)
@@ -303,10 +463,16 @@ private final class PopupHTTPFixture: @unchecked Sendable {
     private let lock = NSLock()
     private var receivedPosts = 0
     private var receivedBody = ""
+    private let iconData: Data?
+    private var receivedIconRequests: [String] = []
+    var iconRequests: [String] { lock.lock(); defer { lock.unlock() }; return receivedIconRequests }
     var postCount: Int { lock.lock(); defer { lock.unlock() }; return receivedPosts }
     var postBody: String { lock.lock(); defer { lock.unlock() }; return receivedBody }
 
-    init() throws { listener = try NWListener(using: .tcp, on: .any) }
+    init(iconData: Data? = nil) throws {
+        self.iconData = iconData
+        listener = try NWListener(using: .tcp, on: .any)
+    }
 
     func start() async throws -> UInt16 {
         try await withCheckedThrowingContinuation { continuation in
@@ -356,6 +522,17 @@ private final class PopupHTTPFixture: @unchecked Sendable {
     private func respond(_ connection: NWConnection, headers: String, body: String) {
         let port = listener.port!.rawValue
         let firstLine = headers.components(separatedBy: "\r\n")[0]
+        if let iconData {
+            lock.lock(); receivedIconRequests.append(firstLine); lock.unlock()
+            let isIcon = firstLine.hasPrefix("GET /custom-icon.png ")
+            let payload = isIcon ? iconData : Data("<link href='/custom-icon.png' rel='icon'>".utf8)
+            let status = firstLine.hasPrefix("GET /favicon.ico ") ? "404 Not Found" : "200 OK"
+            let contentType = isIcon ? "image/png" : "text/html"
+            var response = Data("HTTP/1.1 \(status)\r\nContent-Type: \(contentType)\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n".utf8)
+            response.append(payload)
+            connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+            return
+        }
         let status: String
         var extraHeaders = ""
         let html: String

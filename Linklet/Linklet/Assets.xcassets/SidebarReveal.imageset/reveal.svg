@@ -1,0 +1,10 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="60" height="205" viewBox="0 0 60 205" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Arrow">
+<g id="Frame 2">
+<path id="Exclude" d="M60 20H40C51.0457 20 60 11.0457 60 0V20Z" fill="black"/>
+<path id="Rectangle 3" d="M0 58.4C0 44.9587 0 38.2381 2.61584 33.1042C4.9168 28.5883 8.58834 24.9168 13.1042 22.6158C18.2381 20 24.9587 20 38.4 20H60V185H38.4C24.9587 185 18.2381 185 13.1042 182.384C8.58834 180.083 4.9168 176.412 2.61584 171.896C0 166.762 0 160.041 0 146.6V58.4Z" fill="black"/>
+<path id="Exclude_2" d="M60 205C60 193.954 51.0457 185 40 185H60V205Z" fill="black"/>
+</g>
+<path id="Polygon 1" d="M21 106.464C18.3333 104.924 18.3333 101.075 21 99.5359L36 90.8756C38.6667 89.336 42 91.2605 42 94.3397L42 111.66C42 114.739 38.6667 116.664 36 115.124L21 106.464Z" fill="white"/>
+</g>
+</svg>

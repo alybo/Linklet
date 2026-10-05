@@ -144,7 +144,7 @@ struct SearchSettingsView: View {
 
     private func favoriteRow(_ site: FavoriteSite) -> some View {
         HStack(spacing: 10) {
-            FavoriteSiteSettingsIcon(site: site)
+            SiteIcon(settings: settings, url: site.url, size: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(site.name)
                 Text(site.address).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -191,21 +191,6 @@ struct SearchSettingsView: View {
         .accessibilityAction(named: Text(L("Edit"))) { editingFavorite = site; showingFavoriteEditor = true }
         .accessibilityAction(named: Text(L("Move up"))) { settings.moveFavoriteSite(site.id, offset: -1) }
         .accessibilityAction(named: Text(L("Move down"))) { settings.moveFavoriteSite(site.id, offset: 1) }
-    }
-}
-
-private struct FavoriteSiteSettingsIcon: View {
-    let site: FavoriteSite
-
-    var body: some View {
-        Group {
-            if let data = site.faviconData, let image = NSImage(data: data) {
-                Image(nsImage: image).resizable().scaledToFit().padding(2)
-            } else {
-                Image(systemName: "globe").foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 24, height: 24)
     }
 }
 

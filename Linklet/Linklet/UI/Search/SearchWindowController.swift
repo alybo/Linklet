@@ -323,7 +323,7 @@ private struct FavoriteSitesStrip: View {
                             ForEach(settings.favoriteSites) { site in
                                 Button { open(site) } label: {
                                     HStack(spacing: 4) {
-                                        FavoriteSiteIcon(site: site)
+                                        SiteIcon(settings: settings, url: site.url, size: 16)
                                         Text(site.name)
                                             .font(.system(size: 12, weight: .medium))
                                             .lineLimit(1)
@@ -374,21 +374,5 @@ private struct FavoriteSitesStrip: View {
 
     private var selectedGlow: Color {
         colorScheme == .dark ? Color.white.opacity(0.14) : Color.accentColor.opacity(0.18)
-    }
-}
-
-private struct FavoriteSiteIcon: View {
-    let site: FavoriteSite
-
-    var body: some View {
-        Group {
-            if let data = site.faviconData, let image = NSImage(data: data) {
-                Image(nsImage: image).resizable().scaledToFit()
-            } else {
-                Image(systemName: "globe").font(.system(size: 14, weight: .medium))
-            }
-        }
-        .frame(width: 16, height: 16)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 }

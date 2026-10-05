@@ -25,6 +25,8 @@ final class LinkLibrary: ObservableObject {
     @Published var expandedFolderIDs: Set<UUID>
     @Published var showsRecentLinks = true
     @Published var shortcutError: String?
+    @Published private(set) var rootOrder: [UUID]
+    private weak var settings: SearchSettings?
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults) {
@@ -33,6 +35,7 @@ final class LinkLibrary: ObservableObject {
         let saves = defaults.bool(forKey: "sidebarSavesHistory")
         savesHistory = saves
         let savedFolders = Self.read([BookmarkFolder].self, key: "bookmarkFolders", defaults: defaults) ?? []
+        rootOrder = Self.read([UUID].self, key: "bookmarkRootOrder", defaults: defaults) ?? []
         folders = savedFolders
         folderAssignments = Self.read([String: UUID].self, key: "bookmarkFolderAssignments", defaults: defaults) ?? [:]
         expandedFolderIDs = Set(savedFolders.map(\.id))
@@ -84,6 +87,7 @@ final class LinkLibrary: ObservableObject {
         guard !name.isEmpty else { return nil }
         let folder = BookmarkFolder(id: UUID(), name: name)
         folders.append(folder)
+        rootOrder.append(folder.id)
         expandedFolderIDs.insert(folder.id)
         persistFolders()
         return folder
@@ -97,6 +101,10 @@ final class LinkLibrary: ObservableObject {
     }
 
     func removeFolder(_ folder: BookmarkFolder) {
+        let children = settings?.favoriteSites.filter { folderID(for: $0) == folder.id }.map(\.id) ?? []
+        if let index = rootOrder.firstIndex(of: folder.id) {
+            rootOrder.replaceSubrange(index...index, with: children)
+        }
         folders.removeAll { $0.id == folder.id }
         folderAssignments = folderAssignments.filter { $0.value != folder.id }
         expandedFolderIDs.remove(folder.id)
@@ -110,11 +118,83 @@ final class LinkLibrary: ObservableObject {
 
     func moveBookmark(_ site: FavoriteSite, to folderID: UUID?) {
         guard folderID == nil || folders.contains(where: { $0.id == folderID }) else { return }
+        guard self.folderID(for: site) != folderID else { return }
         folderAssignments[site.id.uuidString] = folderID
+        if let folderID { expandedFolderIDs.insert(folderID) }
+        rootOrder.removeAll { $0 == site.id }
+        if folderID == nil { rootOrder.append(site.id) }
         persistFolders()
     }
 
+    /// The root mixes folder and bookmark IDs. Quick Search uses its depth-first, folder-free order.
+    func bind(to settings: SearchSettings) {
+        guard self.settings !== settings else { return }
+        self.settings = settings
+        settings.bookmarksChanged = { [weak self] in self?.reconcileBookmarks() }
+        settings.moveOrganizedBookmark = { [weak self, weak settings] id, destination in
+            let folder = destination.flatMap { target in settings?.favoriteSites.first(where: { $0.id == target }) }.flatMap { self?.folderID(for: $0) }
+            self?.moveItem(id, before: destination, into: folder)
+        }
+        reconcileBookmarks()
+    }
+
+    private func reconcileBookmarks() {
+        guard let settings else { return }
+        let sites = settings.favoriteSites
+        let validSites = Set(sites.map { $0.id.uuidString })
+        folderAssignments = folderAssignments.filter { entry in validSites.contains(entry.key) && folders.contains(where: { $0.id == entry.value }) }
+        let roots = sites.filter { folderID(for: $0) == nil }.map(\.id)
+        let validRoots = Set(roots + folders.map(\.id))
+        var seen = Set<UUID>()
+        rootOrder = rootOrder.filter { validRoots.contains($0) && seen.insert($0).inserted }
+        rootOrder.append(contentsOf: roots.filter { !rootOrder.contains($0) })
+        rootOrder.append(contentsOf: folders.map(\.id).filter { !rootOrder.contains($0) })
+        persistFolders()
+    }
+
+    func moveItem(_ id: UUID, before destination: UUID?, into folder: UUID? = nil) {
+        guard id != destination, let settings,
+              folder == nil || folders.contains(where: { $0.id == folder }) else { return }
+        if let site = settings.favoriteSites.first(where: { $0.id == id }) {
+            folderAssignments[site.id.uuidString] = folder
+            if let folder { expandedFolderIDs.insert(folder) }
+            rootOrder.removeAll { $0 == id }
+            if folder == nil {
+                let index = destination.flatMap { rootOrder.firstIndex(of: $0) } ?? rootOrder.endIndex
+                rootOrder.insert(id, at: index)
+            } else {
+                settings.reorderBookmark(id, before: destination)
+            }
+        } else if folders.contains(where: { $0.id == id }), folder == nil {
+            rootOrder.removeAll { $0 == id }
+            let index = destination.flatMap { rootOrder.firstIndex(of: $0) } ?? rootOrder.endIndex
+            rootOrder.insert(id, at: index)
+        } else { return }
+        persistFolders()
+    }
+
+    func moveItem(_ id: UUID, offset: Int) {
+        if let index = rootOrder.firstIndex(of: id), rootOrder.indices.contains(index + offset) {
+            rootOrder.swapAt(index, index + offset)
+            persistFolders()
+        } else if let settings, let site = settings.favoriteSites.first(where: { $0.id == id }), let folder = folderID(for: site) {
+            let children = settings.favoriteSites.filter { folderID(for: $0) == folder }.map(\.id)
+            guard let index = children.firstIndex(of: id), children.indices.contains(index + offset) else { return }
+            let target = offset < 0 ? children[index + offset] : (children.indices.contains(index + 2) ? children[index + 2] : nil)
+            moveItem(id, before: target, into: folder)
+        }
+    }
+
     private func persistFolders() {
+        defaults.set(try? JSONEncoder().encode(rootOrder), forKey: "bookmarkRootOrder")
+        if let settings {
+            let sites = settings.favoriteSites
+            let ordered = rootOrder.flatMap { id -> [UUID] in
+                if folders.contains(where: { $0.id == id }) { return sites.filter { folderID(for: $0) == id }.map(\.id) }
+                return [id]
+            }
+            settings.setBookmarkOrder(ordered)
+        }
         defaults.set(try? JSONEncoder().encode(folders), forKey: "bookmarkFolders")
         defaults.set(try? JSONEncoder().encode(folderAssignments), forKey: "bookmarkFolderAssignments")
     }

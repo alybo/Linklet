@@ -139,11 +139,18 @@ final class SearchSettings: ObservableObject {
     @Published private(set) var showsFavoriteSites: Bool
     @Published private(set) var loadingFavoriteIconIDs = Set<UUID>()
     @Published var shortcutError: String?
+    @Published private(set) var siteIcons: [String: Data] = [:]
+    var bookmarksChanged: (() -> Void)?
+    var moveOrganizedBookmark: ((UUID, UUID?) -> Void)?
+    private var iconRequests: [String: Task<Void, Never>] = [:]
+    private var attemptedIcons = Set<String>()
+    private let fetchIcon: (URL) async throws -> Data
     private let defaults: UserDefaults
     private let hotKey = SearchHotKey()
     private var isStarted = false
 
-    init(defaults: UserDefaults) {
+    init(defaults: UserDefaults, fetchIcon: @escaping (URL) async throws -> Data = FavoriteSiteIconService.fetch) {
+        self.fetchIcon = fetchIcon
         self.defaults = defaults
         engine = SearchEngine(rawValue: defaults.string(forKey: "searchEngine") ?? "") ?? .google
         if defaults.bool(forKey: "searchShortcutDisabled") {
@@ -155,6 +162,9 @@ final class SearchSettings: ObservableObject {
             .flatMap { try? JSONDecoder().decode([FavoriteSite].self, from: $0) } ?? [])
             .compactMap { FavoriteSite.make(id: $0.id, name: $0.name, address: $0.address, faviconData: $0.faviconData) }
         showsFavoriteSites = defaults.object(forKey: PreferenceKey.showsFavoriteSites) as? Bool ?? true
+        for site in favoriteSites {
+            if let data = site.faviconData, let origin = Self.iconOrigin(site.url) { siteIcons[origin] = data }
+        }
     }
 
     func start(action: @escaping () -> Void) {
@@ -186,21 +196,66 @@ final class SearchSettings: ObservableObject {
     func updateFavoriteSite(_ site: FavoriteSite, name: String, address: String) throws {
         let replacement = try validatedFavoriteSite(id: site.id, name: name, address: address, excluding: site.id)
         guard let index = favoriteSites.firstIndex(where: { $0.id == site.id }) else { return }
-        favoriteSites[index] = replacement
+        favoriteSites[index] = FavoriteSite(id: replacement.id, name: replacement.name, address: replacement.address, faviconData: iconData(for: replacement.url))
         persistFavoriteSites()
     }
 
-    func loadFavoriteIcon(for site: FavoriteSite) {
-        guard !loadingFavoriteIconIDs.contains(site.id) else { return }
-        loadingFavoriteIconIDs.insert(site.id)
-        Task { [weak self] in
-            defer { self?.loadingFavoriteIconIDs.remove(site.id) }
-            guard let data = try? await FavoriteSiteIconService.fetch(for: site.url),
-                  let self,
-                  let index = self.favoriteSites.firstIndex(where: { $0.id == site.id && $0.address == site.address }) else { return }
-            self.favoriteSites[index] = FavoriteSite(id: site.id, name: site.name, address: site.address, faviconData: data)
+    static func iconOrigin(_ url: URL) -> String? {
+        guard URLPolicy.canPreview(url), var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        parts.path = ""; parts.query = nil; parts.fragment = nil; parts.user = nil; parts.password = nil
+        return parts.url?.absoluteString
+    }
+
+    func iconData(for url: URL) -> Data? {
+        guard let origin = Self.iconOrigin(url) else { return nil }
+        return siteIcons[origin] ?? favoriteSites.first(where: { Self.iconOrigin($0.url) == origin && $0.faviconData != nil })?.faviconData
+    }
+
+    func ensureIcon(for url: URL, refresh: Bool = false) async {
+        guard let origin = Self.iconOrigin(url), let originURL = URL(string: origin) else { return }
+        if let request = iconRequests[origin] { await request.value; return }
+        guard refresh || (iconData(for: url) == nil && !attemptedIcons.contains(origin)) else { return }
+        attemptedIcons.insert(origin)
+        // History-only icons live in this bounded memory cache. Only saved bookmark icons go to disk.
+        if attemptedIcons.count > 512 { attemptedIcons = [origin] }
+        let ids = favoriteSites.filter { Self.iconOrigin($0.url) == origin }.map(\.id)
+        loadingFavoriteIconIDs.formUnion(ids)
+        let request = Task { [weak self, fetchIcon] in
+            guard let data = try? await fetchIcon(originURL), let self else { return }
+            if self.siteIcons.count >= 256, let key = self.siteIcons.keys.first {
+                self.siteIcons.removeValue(forKey: key)
+                self.attemptedIcons.remove(key)
+            }
+            self.siteIcons[origin] = data
+            self.favoriteSites = self.favoriteSites.map { site in
+                guard Self.iconOrigin(site.url) == origin else { return site }
+                return FavoriteSite(id: site.id, name: site.name, address: site.address, faviconData: data)
+            }
             self.persistFavoriteSites()
         }
+        iconRequests[origin] = request
+        await request.value
+        iconRequests.removeValue(forKey: origin)
+        loadingFavoriteIconIDs.subtract(ids)
+    }
+
+    func loadFavoriteIcon(for site: FavoriteSite) {
+        Task { await ensureIcon(for: site.url, refresh: true) }
+    }
+
+    func setBookmarkOrder(_ ids: [UUID]) {
+        let byID = Dictionary(uniqueKeysWithValues: favoriteSites.map { ($0.id, $0) })
+        let ordered = ids.compactMap { byID[$0] }
+        guard ordered.count == favoriteSites.count, Set(ids).count == ids.count, ordered != favoriteSites else { return }
+        favoriteSites = ordered
+        defaults.set(try? JSONEncoder().encode(favoriteSites), forKey: PreferenceKey.favoriteSites)
+    }
+
+    func reorderBookmark(_ id: UUID, before destination: UUID?) {
+        guard let index = favoriteSites.firstIndex(where: { $0.id == id }) else { return }
+        let site = favoriteSites.remove(at: index)
+        let position = destination.flatMap { target in favoriteSites.firstIndex(where: { $0.id == target }) } ?? favoriteSites.endIndex
+        favoriteSites.insert(site, at: position)
     }
 
     func removeFavoriteSite(_ site: FavoriteSite) {
@@ -209,6 +264,7 @@ final class SearchSettings: ObservableObject {
     }
 
     func moveFavoriteSite(_ id: UUID, before destination: UUID?) {
+        if let moveOrganizedBookmark { moveOrganizedBookmark(id, destination); return }
         guard id != destination, let source = favoriteSites.firstIndex(where: { $0.id == id }) else { return }
         let site = favoriteSites.remove(at: source)
         let position = destination.flatMap { target in favoriteSites.firstIndex(where: { $0.id == target }) } ?? favoriteSites.endIndex
@@ -219,6 +275,12 @@ final class SearchSettings: ObservableObject {
     func moveFavoriteSite(_ id: UUID, offset: Int) {
         guard let index = favoriteSites.firstIndex(where: { $0.id == id }),
               favoriteSites.indices.contains(index + offset) else { return }
+        if let moveOrganizedBookmark {
+            let targetIndex = offset < 0 ? index + offset : index + offset + 1
+            let destination = favoriteSites.indices.contains(targetIndex) ? favoriteSites[targetIndex].id : nil
+            moveOrganizedBookmark(id, destination)
+            return
+        }
         favoriteSites.swapAt(index, index + offset)
         persistFavoriteSites()
     }
@@ -228,10 +290,11 @@ final class SearchSettings: ObservableObject {
         guard !favoriteSites.contains(where: { $0.id != excludedID && $0.address == site.address }) else {
             throw FavoriteSiteError.duplicateURL
         }
-        return site
+        return FavoriteSite(id: site.id, name: site.name, address: site.address, faviconData: iconData(for: site.url))
     }
 
     private func persistFavoriteSites() {
+        bookmarksChanged?()
         defaults.set(try? JSONEncoder().encode(favoriteSites), forKey: PreferenceKey.favoriteSites)
     }
 

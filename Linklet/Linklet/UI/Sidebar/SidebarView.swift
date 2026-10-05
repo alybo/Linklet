@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @ObservedObject private var language = AppLanguage.shared
@@ -38,7 +39,7 @@ struct SidebarView: View {
                 .textFieldStyle(.roundedBorder).padding(.horizontal, 14).padding(.bottom, 12)
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text(L("Bookmarks")).font(.headline)
                         Spacer()
@@ -49,29 +50,14 @@ struct SidebarView: View {
                         .menuStyle(.borderlessButton).fixedSize()
                         .help(L("Add bookmark or folder"))
                     }
-                    ForEach(settings.favoriteSites.filter { library.folderID(for: $0) == nil && matches($0.name, address: $0.address) }) { site in
-                        bookmarkRow(site)
-                    }
-                    ForEach(library.folders) { folder in
-                        let sites = settings.favoriteSites.filter { library.folderID(for: $0) == folder.id }
-                        if query.isEmpty || matches(folder.name) || sites.contains(where: { matches($0.name, address: $0.address) }) {
-                            DisclosureGroup(isExpanded: Binding(
-                                get: { !query.isEmpty || library.expandedFolderIDs.contains(folder.id) },
-                                set: { if $0 { library.expandedFolderIDs.insert(folder.id) } else { library.expandedFolderIDs.remove(folder.id) } }
-                            )) {
-                                ForEach(sites.filter { query.isEmpty || matches(folder.name) || matches($0.name, address: $0.address) }) { site in
-                                    bookmarkRow(site)
-                                }
-                                if sites.isEmpty { Text(L("Empty folder")).font(.caption).foregroundStyle(.secondary) }
-                            } label: {
-                                Label(folder.name, systemImage: "folder").lineLimit(1)
-                                    .contextMenu {
-                                        Button(L("Rename folder")) { editingFolder = folder; folderName = folder.name; showsFolderEditor = true }
-                                        Button(L("Remove folder; keep bookmarks"), role: .destructive) { library.removeFolder(folder) }
-                                    }
-                            }
+                    ForEach(library.rootOrder, id: \.self) { id in
+                        if let folder = library.folders.first(where: { $0.id == id }) {
+                            folderRow(folder)
+                        } else if let site = settings.favoriteSites.first(where: { $0.id == id }), matches(site.name, address: site.address) {
+                            bookmarkRow(site)
                         }
                     }
+                    dropSlot(before: nil, folder: nil)
                     if settings.favoriteSites.isEmpty && library.folders.isEmpty {
                         Text(L("Save links here or add the current page with the bookmark button."))
                             .font(.caption).foregroundStyle(.secondary)
@@ -80,7 +66,7 @@ struct SidebarView: View {
                     DisclosureGroup(isExpanded: $library.showsRecentLinks) {
                         ForEach(library.recentLinks.filter { matches($0.title, address: $0.address) }) { link in
                             Button { if let url = link.url { open(url) } } label: {
-                                linkLabel(title: link.title, address: link.address, symbol: "clock")
+                                linkLabel(title: link.title, address: link.address)
                             }.buttonStyle(.plain)
                             .contextMenu {
                                 Button(L("Add bookmark")) {
@@ -113,9 +99,9 @@ struct SidebarView: View {
                     .help(L("Quick Search"))
             }.buttonStyle(.plain).padding(16)
         }
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.12)) }
+        .padding(.vertical, 24)
+        .background(Color.black, in: SidebarContour())
+        .preferredColorScheme(.dark)
         .onExitCommand(perform: dismiss)
         .sheet(isPresented: $showsEditor, onDismiss: { recentDraft = nil }) {
             BookmarkEditor(settings: settings, library: library, site: editingSite,
@@ -143,8 +129,66 @@ struct SidebarView: View {
 
     private func open(_ url: URL) { dismiss(); model.showPreview(url: url) }
 
+    @State private var targetedDrop: UUID?
+
+    private func folderRow(_ folder: BookmarkFolder) -> some View {
+        let sites = settings.favoriteSites.filter { library.folderID(for: $0) == folder.id }
+        let expanded = !query.isEmpty || library.expandedFolderIDs.contains(folder.id)
+        return VStack(alignment: .leading, spacing: 0) {
+            if query.isEmpty || matches(folder.name) || sites.contains(where: { matches($0.name, address: $0.address) }) {
+                dropSlot(before: folder.id, folder: nil)
+                Button {
+                    if expanded { library.expandedFolderIDs.remove(folder.id) }
+                    else { library.expandedFolderIDs.insert(folder.id) }
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: expanded ? "folder.fill" : "folder").font(.system(size: 22))
+                            .frame(width: 24)
+                        Text(folder.name).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    }.padding(.vertical, 8).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                .background(targetedDrop == folder.id ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .onDrag { NSItemProvider(object: folder.id.uuidString as NSString) }
+                .onDrop(of: [UTType.text], isTargeted: Binding(get: { targetedDrop == folder.id }, set: { targetedDrop = $0 ? folder.id : nil })) {
+                    acceptDrop($0, before: nil, folder: folder.id)
+                }
+                .contextMenu {
+                    Button(L("Rename folder")) { editingFolder = folder; folderName = folder.name; showsFolderEditor = true }
+                    Button(L("Move up")) { library.moveItem(folder.id, offset: -1) }
+                    Button(L("Move down")) { library.moveItem(folder.id, offset: 1) }
+                    Button(L("Remove folder; keep bookmarks"), role: .destructive) { library.removeFolder(folder) }
+                }
+                if expanded {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(sites.filter { query.isEmpty || matches(folder.name) || matches($0.name, address: $0.address) }) { bookmarkRow($0) }
+                        dropSlot(before: nil, folder: folder.id)
+                        if sites.isEmpty { Text(L("Empty folder")).font(.caption).foregroundStyle(.secondary).padding(.vertical, 6) }
+                    }.padding(.leading, 30)
+                }
+            }
+        }
+    }
+
+    private func dropSlot(before id: UUID?, folder: UUID?) -> some View {
+        SidebarDropSlot { providers in acceptDrop(providers, before: id, folder: folder) }
+    }
+
+    private func acceptDrop(_ providers: [NSItemProvider], before id: UUID?, folder: UUID?) -> Bool {
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
+        _ = provider.loadObject(ofClass: NSString.self) { value, _ in
+            guard let text = value as? String, let source = UUID(uuidString: text) else { return }
+            Task { @MainActor in library.moveItem(source, before: id, into: folder) }
+        }
+        return true
+    }
+
     private func bookmarkRow(_ site: FavoriteSite) -> some View {
-        Button { open(site.url) } label: { linkLabel(title: site.name, address: site.address, symbol: "bookmark") }
+        VStack(spacing: 0) {
+            dropSlot(before: site.id, folder: library.folderID(for: site))
+            Button { open(site.url) } label: { linkLabel(title: site.name, address: site.address) }
             .buttonStyle(.plain)
             .contextMenu {
                 Button(L("Edit")) { editingSite = site; showsEditor = true }
@@ -154,21 +198,20 @@ struct SidebarView: View {
                         Button(folder.name) { library.moveBookmark(site, to: folder.id) }
                     }
                 }
-                Button(L("Move up")) { settings.moveFavoriteSite(site.id, offset: -1) }
-                Button(L("Move down")) { settings.moveFavoriteSite(site.id, offset: 1) }
-                Button(L("Remove"), role: .destructive) { settings.removeFavoriteSite(site); library.moveBookmark(site, to: nil) }
+                Button(L("Move up")) { library.moveItem(site.id, offset: -1) }
+                Button(L("Move down")) { library.moveItem(site.id, offset: 1) }
+                Button(L("Remove"), role: .destructive) { settings.removeFavoriteSite(site) }
             }
+            .onDrag { NSItemProvider(object: site.id.uuidString as NSString) }
+        }
     }
 
-    private func linkLabel(title: String, address: String, symbol: String) -> some View {
+    private func linkLabel(title: String, address: String) -> some View {
         HStack(spacing: 9) {
-            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                Text(URL(string: address)?.host ?? address).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
+            if let url = URL(string: address) { SiteIcon(settings: settings, url: url, size: 22) }
+            Text(title).font(.system(size: 15, weight: .medium)).lineLimit(1)
             Spacer(minLength: 0)
-        }.padding(.vertical, 5).contentShape(Rectangle()).help(address)
+        }.padding(.vertical, 7).contentShape(Rectangle()).help(address)
     }
 }
 
@@ -247,5 +290,34 @@ struct SidebarSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).toggleStyle(.switch)
+    }
+}
+
+/// Wide insertion targets between rows; dropping on a folder body moves a bookmark inside.
+private struct SidebarDropSlot: View {
+    let accept: ([NSItemProvider]) -> Bool
+    @State private var targeted = false
+    var body: some View {
+        Rectangle().fill(targeted ? Color.white.opacity(0.8) : Color.clear)
+            .frame(height: 6).contentShape(Rectangle())
+            .onDrop(of: [UTType.text], isTargeted: $targeted, perform: accept)
+    }
+}
+
+/// Mirrored Slide Over contour: concave shoulders against the left edge and round outer corners.
+struct SidebarContour: Shape {
+    func path(in r: CGRect) -> Path {
+        let radius = min(24, r.width / 2, r.height / 4)
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.addQuadCurve(to: CGPoint(x: r.minX + radius, y: r.minY + radius), control: CGPoint(x: r.minX, y: r.minY + radius))
+        p.addLine(to: CGPoint(x: r.maxX - radius, y: r.minY + radius))
+        p.addQuadCurve(to: CGPoint(x: r.maxX, y: r.minY + radius * 2), control: CGPoint(x: r.maxX, y: r.minY + radius))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - radius * 2))
+        p.addQuadCurve(to: CGPoint(x: r.maxX - radius, y: r.maxY - radius), control: CGPoint(x: r.maxX, y: r.maxY - radius))
+        p.addLine(to: CGPoint(x: r.minX + radius, y: r.maxY - radius))
+        p.addQuadCurve(to: CGPoint(x: r.minX, y: r.maxY), control: CGPoint(x: r.minX, y: r.maxY - radius))
+        p.closeSubpath()
+        return p
     }
 }

@@ -130,6 +130,7 @@ final class AppModel: ObservableObject {
                     result[item.key] = count.intValue
                 }
             }
+        self.linkLibrary.bind(to: self.searchSettings)
         previewSession.onContinueInBrowser = { [weak self] in
             guard let self, let target = self.preferredTarget else { return }
             self.openOriginalURL(in: target)
