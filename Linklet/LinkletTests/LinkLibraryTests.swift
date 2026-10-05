@@ -211,6 +211,71 @@ final class WebPopupTests: XCTestCase {
         XCTAssertFalse(webView.canGoBack)
     }
 
+    func testLongOAuthURLKeepsViewportAndBrowserButtonInsideWindow() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let session = PreviewSession()
+        session.load(URL(string: "http://127.0.0.1:\(port)/site")!)
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600),
+                                configuration: WebPreview.configuration(websiteDataStore: session.websiteDataStore))
+        let coordinator = WebPreview.Coordinator(session: session)
+        webView.uiDelegate = coordinator
+        webView.navigationDelegate = coordinator
+        coordinator.startObserving(webView)
+        session.attach(webView)
+        defer { coordinator.closePopupWindows(); session.endSession() }
+        try await waitUntil { (try? await webView.evaluateJavaScript("window.result")) as? String == "pending" }
+        let longURL = "http://localhost:\(port)/long-login?state=" + String(repeating: "fixture", count: 400)
+        _ = try await webView.evaluateJavaScript("window.open('\(longURL)','long-login','width=600,height=700');true")
+        try await waitUntil { coordinator.popupWindows.count == 1 }
+        let popup = try XCTUnwrap(coordinator.popupWindows.values.first)
+        try await waitUntil { popup.session.pageTitle == "Original site" }
+        let window = try XCTUnwrap(popup.window)
+        let content = try XCTUnwrap(window.contentView)
+        content.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(window.frame.width, 1000)
+        XCTAssertGreaterThan(popup.webView.visibleRect.width, 300, "Viewport frame: \(popup.webView.frame), content: \(content.frame)")
+        XCTAssertGreaterThan(popup.webView.visibleRect.height, 300, "Viewport frame: \(popup.webView.frame), content: \(content.frame)")
+        let toolbar = try XCTUnwrap(content.subviews.first(where: { $0 is NSStackView }))
+        let browserButton = try XCTUnwrap(toolbar.subviews.first(where: { $0 is NSButton }))
+        XCTAssertTrue(toolbar.bounds.contains(browserButton.frame), "Browser action frame: \(browserButton.frame), toolbar: \(toolbar.bounds)")
+        let viewport = try await popup.webView.evaluateJavaScript("[innerWidth, innerHeight]") as? [Int]
+        XCTAssertGreaterThan(viewport?.first ?? 0, 300)
+        XCTAssertGreaterThan(viewport?.last ?? 0, 300)
+        if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-popup-layout.png"))
+        }
+        window.setContentSize(NSSize(width: 360, height: 500))
+        content.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(window.frame.width, 360)
+        XCTAssertTrue(toolbar.bounds.contains(browserButton.frame))
+        XCTAssertGreaterThan(popup.webView.visibleRect.height, 300)
+    }
+
+    func testWebKitReportsNativePasskeyAvailabilityWithoutCreatingCredentials() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let session = PreviewSession()
+        session.load(URL(string: "http://localhost:\(port)/site")!)
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600),
+                                configuration: WebPreview.configuration(websiteDataStore: session.websiteDataStore))
+        let coordinator = WebPreview.Coordinator(session: session)
+        webView.uiDelegate = coordinator
+        webView.navigationDelegate = coordinator
+        session.attach(webView)
+        defer { session.endSession() }
+        try await waitUntil { (try? await webView.evaluateJavaScript("window.result")) as? String == "pending" }
+        _ = try await webView.evaluateJavaScript("window.passkeyAvailable=null;PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(value=>window.passkeyAvailable=value);true")
+        try await waitUntil { (try? await webView.evaluateJavaScript("typeof window.passkeyAvailable")) as? String == "boolean" }
+        let available = try await webView.evaluateJavaScript("window.passkeyAvailable") as? Bool
+        // The required test build is unsigned and has neither a managed browser
+        // entitlement nor associated domains. Safari UA tokens cannot grant access.
+        XCTAssertEqual(available, false)
+    }
+
     func testPopupPolicyAcceptsOnlyWebOrInitialBlankAndRejectsInternalCommands() {
         for value in ["https://example.com/login", "http://example.org/sso", "about:blank"] {
             XCTAssertTrue(WebPreview.Coordinator.canCreatePopup(for: URL(string: value)!))

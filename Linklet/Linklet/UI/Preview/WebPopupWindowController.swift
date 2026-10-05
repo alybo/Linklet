@@ -39,13 +39,21 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
 
         let address = NSTextField(labelWithString: "")
         address.lineBreakMode = .byTruncatingMiddle
+        address.maximumNumberOfLines = 1
+        address.cell?.usesSingleLineMode = true
+        // OAuth URLs can contain kilobytes of state. The address must compress
+        // before AppKit grows the window to the field's intrinsic text width.
+        address.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        address.setContentHuggingPriority(.defaultLow, for: .horizontal)
         address.isSelectable = true
         address.font = .systemFont(ofSize: 12)
         let browserButton = NSButton(title: L("Continue in browser"), target: self, action: #selector(continueInBrowser))
         browserButton.toolTip = L("Open the original site link in your chosen browser. Sign-in starts again there.")
+        browserButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         browserButton.isEnabled = session.onContinueInBrowser != nil
         let toolbar = NSStackView(views: [address, browserButton])
         toolbar.orientation = .horizontal
+        toolbar.distribution = .fill
         toolbar.spacing = 10
         let content = NSView()
         panel.contentView = content
