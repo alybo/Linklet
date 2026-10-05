@@ -47,6 +47,7 @@ final class AppModel: ObservableObject {
     private var previewRequestID = UUID()
     @Published private var manualTargetOrder: [String]
     let searchSettings: SearchSettings
+    let linkLibrary: LinkLibrary
     let siteData: SiteDataService
     let windowGeometry: WindowGeometryService
 
@@ -76,20 +77,25 @@ final class AppModel: ObservableObject {
     private lazy var searchWindowController = SearchWindowController(settings: searchSettings) { [weak self] url in
         self?.showPreview(url: url)
     }
+    private lazy var sidebarWindowController = SidebarWindowController(model: self)
     private lazy var settingsWindowController = SettingsWindowController(model: self)
     private var childPreviewModels: [AppModel] = []
     private var onPreviewClosed: (() -> Void)?
     // Child preview models report Dock state to the coordinator that owns all windows.
     private var dockVisibilityHandler: (() -> Void)?
+    private var sidebarActionHandler: (() -> Void)?
 
     init(
         defaults: UserDefaults = .standard,
         siteData: SiteDataService? = nil,
         windowGeometry: WindowGeometryService? = nil,
+        searchSettings: SearchSettings? = nil,
+        linkLibrary: LinkLibrary? = nil,
         discoverTargets: (() -> [BrowserTarget])? = nil
     ) {
         self.defaults = defaults
-        searchSettings = SearchSettings(defaults: defaults)
+        self.searchSettings = searchSettings ?? SearchSettings(defaults: defaults)
+        self.linkLibrary = linkLibrary ?? LinkLibrary(defaults: defaults)
         self.discoverTargets = discoverTargets ?? { BrowserDiscoveryService().discoverTargets() }
         settingsPage = SettingsPage(rawValue: defaults.string(forKey: "settingsPage") ?? "") ?? .general
         manualTargetOrder = defaults.stringArray(forKey: "manualTargetOrder") ?? []
@@ -124,6 +130,11 @@ final class AppModel: ObservableObject {
                     result[item.key] = count.intValue
                 }
             }
+        previewSession.onContinueInBrowser = { [weak self] in
+            guard let self, let target = self.preferredTarget else { return }
+            self.openOriginalURL(in: target)
+        }
+        previewSession.onPageFinished = { [weak self] url, title in self?.linkLibrary.updateTitle(title, for: url) }
     }
 
     var manuallyOrderedTargets: [BrowserTarget] {
@@ -201,6 +212,12 @@ final class AppModel: ObservableObject {
         // Prepare the panel once; the hotkey path performs no asynchronous work.
         _ = searchWindowController
         searchSettings.start { [weak self] in self?.toggleSearch() }
+    }
+
+    func startSidebar() { _ = sidebarWindowController }
+    func toggleSidebar() {
+        if let sidebarActionHandler { sidebarActionHandler() }
+        else { sidebarWindowController.toggle() }
     }
 
     func toggleSearch() { searchWindowController.toggle() }
@@ -460,6 +477,7 @@ final class AppModel: ObservableObject {
         resumeAfterSettingsURL = nil
         closeAllPreviewWindows()
         settingsWindowController.close()
+        if sidebarActionHandler == nil { sidebarWindowController.hide() }
         updateDockVisibilitySoon()
     }
 
@@ -487,12 +505,15 @@ final class AppModel: ObservableObject {
             defaults: defaults,
             siteData: siteData,
             windowGeometry: windowGeometry,
+            searchSettings: searchSettings,
+            linkLibrary: linkLibrary,
             discoverTargets: discoverTargets
         )
         child.refreshTargets()
         if let referenceFrame {
             child.previewWindowController.positionInitially(after: referenceFrame)
         }
+        child.sidebarActionHandler = { [weak self] in self?.toggleSidebar() }
         child.dockVisibilityHandler = { [weak self] in self?.updateDockVisibilitySoon() }
         child.onPreviewClosed = { [weak self, weak child] in
             guard let self, let child else { return }

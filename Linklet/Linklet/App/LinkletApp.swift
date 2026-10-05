@@ -29,6 +29,7 @@ private struct MenuBarView: View {
 
     var body: some View {
         Button(L("Quick Search")) { model.toggleSearch() }
+        SidebarMenuItem(model: model, library: model.linkLibrary)
 
         Button(L("Welcome to Linklet")) {
             model.showWelcome()
@@ -59,6 +60,15 @@ private struct MenuBarView: View {
             NSApp.terminate(nil)
         }
         .keyboardShortcut("q")
+    }
+}
+
+private struct SidebarMenuItem: View {
+    @ObservedObject private var language = AppLanguage.shared
+    @ObservedObject var model: AppModel
+    @ObservedObject var library: LinkLibrary
+    var body: some View {
+        if library.isEnabled { Button(L("Show sidebar"), action: model.toggleSidebar) }
     }
 }
 
@@ -95,6 +105,40 @@ final class AppLanguage: ObservableObject {
     }
     static let russian: [String: String] = 
 [
+        "Open the sidebar with ⌃⌥B or from the Linklet menu.": "Откройте панель сочетанием ⌃⌥B или из меню Linklet.",
+        "The sidebar shortcut ⌃⌥B is unavailable. Use the Linklet menu or the screen edge.": "Сочетание ⌃⌥B недоступно. Используйте меню Linklet или край экрана.",
+        "Open the original site link in your chosen browser. Sign-in starts again there.": "Открыть исходную ссылку сайта в выбранном браузере. Вход начнётся заново в нём.",
+        "This website refused access. If sign-in is blocked, continue in your chosen browser from the original site link.": "Сайт отказал в доступе. Если вход заблокирован, продолжите в выбранном браузере с исходной ссылки сайта.",
+        "Continue in browser": "Продолжить в браузере",
+        "Website window": "Окно сайта",
+        "Sidebar": "Боковая панель",
+        "Show sidebar": "Показать боковую панель",
+        "Close sidebar": "Закрыть боковую панель",
+        "Search links": "Поиск ссылок",
+        "Bookmarks": "Закладки",
+        "Add bookmark": "Добавить закладку",
+        "Edit bookmark": "Изменить закладку",
+        "New folder": "Новая папка",
+        "Add bookmark or folder": "Добавить закладку или папку",
+        "Empty folder": "Пустая папка",
+        "Rename folder": "Переименовать папку",
+        "Remove folder; keep bookmarks": "Удалить папку, сохранив закладки",
+        "Save links here or add the current page with the bookmark button.": "Сохраняйте ссылки здесь или добавляйте текущую страницу кнопкой закладки.",
+        "Recent links": "Недавние",
+        "No recent links.": "Недавних ссылок нет.",
+        "Clear history": "Очистить историю",
+        "History is saved on this Mac.": "История сохраняется на этом Mac.",
+        "History is kept until Linklet quits.": "История хранится до завершения Linklet.",
+        "Move to folder": "Переместить в папку",
+        "No folder": "Без папки",
+        "Folder": "Папка",
+        "Enable global sidebar": "Включить глобальную боковую панель",
+        "Hover at the left edge of any screen to show bookmarks and recent links. Clicking a link opens a normal Linklet preview.": "Наведите курсор на левый край любого экрана, чтобы увидеть закладки и недавние ссылки. Нажатие на ссылку открывает обычное окно Linklet.",
+        "You can also open the sidebar from the Linklet menu.": "Панель также можно открыть из меню Linklet.",
+        "Save history between launches": "Сохранять историю между запусками",
+        "Only links opened in Linklet are listed. Page redirects and sign-in windows are excluded. Up to 200 links are kept; turning saving off removes history from disk.": "В списке только ссылки, открытые в Linklet. Переадресации страниц и окна входа не записываются. Сохраняется до 200 ссылок; выключение сохранения удаляет историю с диска.",
+        "Bookmarks use the same saved links as Quick Search. Folders and bookmarks stay on this Mac and can be edited in the sidebar.": "Закладки используют те же ссылки, что и избранное быстрого поиска. Папки и закладки хранятся на этом Mac и редактируются в боковой панели.",
+        "If sign-in is blocked, continue in your browser using Open in.": "Если вход заблокирован, продолжите в своём браузере через «Открыть в».",
         "Search with %@": "Искать через %@",
         "Search": "Поиск",
         "Quick Search": "Быстрый поиск",

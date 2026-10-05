@@ -15,6 +15,7 @@ struct PreviewRootView: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var model: AppModel
     @ObservedObject private var session: PreviewSession
+    @State private var showsBookmarkEditor = false
 
     init(model: AppModel) {
         self.model = model
@@ -40,6 +41,10 @@ struct PreviewRootView: View {
         }
         .background { PreviewWindowMaterial() }
         .ignoresSafeArea(.container, edges: .all)
+        .sheet(isPresented: $showsBookmarkEditor) {
+            BookmarkEditor(settings: model.searchSettings, library: model.linkLibrary,
+                           initialURL: session.currentURL, initialTitle: session.pageTitle)
+        }
         .alert(
             L("Couldn't open the page"),
             isPresented: Binding(
@@ -47,6 +52,9 @@ struct PreviewRootView: View {
                 set: { if !$0 { session.errorMessage = nil } }
             )
         ) {
+            if let target = model.preferredTarget {
+                Button(L("Continue in browser")) { model.openOriginalURL(in: target) }
+            }
             Button(L("OK"), role: .cancel) { session.errorMessage = nil }
         } message: {
             Text(session.errorMessage ?? L("Unknown error"))
@@ -67,6 +75,10 @@ struct PreviewRootView: View {
             Spacer(minLength: 12)
 
             if !session.isWelcome && session.isActive {
+                Button { showsBookmarkEditor = true } label: {
+                    Image(systemName: "bookmark").frame(width: 28, height: 28)
+                }.buttonStyle(.plain).help(L("Add bookmark"))
+                    .disabled(session.currentURL.map(URLPolicy.canPreview) != true)
                 PreviewCopyToolbarView(session: session)
                 PreviewOpenInToolbarView(model: model)
             }

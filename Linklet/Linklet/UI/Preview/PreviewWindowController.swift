@@ -127,7 +127,10 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show(url: URL) {
-        present(initialURL: url) { model.previewSession.load(url) }
+        present(initialURL: url) {
+            model.previewSession.load(url)
+            model.linkLibrary.recordOpening(url)
+        }
     }
 
     func showDataChoice(for url: URL) { present(initialURL: url) {} }

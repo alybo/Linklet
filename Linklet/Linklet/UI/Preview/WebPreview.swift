@@ -8,6 +8,8 @@ struct WebPreview: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = websiteDataStore
         configuration.preferences.isElementFullscreenEnabled = true
+        // OAuth SDKs often open a blank child and navigate it after async work.
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         // Preserve WebKit's native Macintosh/engine tokens and add Safari's
         // browser identity. Generic WKWebView UA lacks these tokens, so sites
@@ -41,15 +43,24 @@ struct WebPreview: NSViewRepresentable {
         // render callback would create a SwiftUI update loop.
     }
 
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.closePopupWindows()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+    }
+
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private weak var session: PreviewSession?
         private var observations: [NSKeyValueObservation] = []
+        private(set) var popupWindows: [UUID: WebPopupWindowController] = [:]
+        var onWebViewClose: (() -> Void)?
 
         init(session: PreviewSession) {
             self.session = session
         }
 
         func startObserving(_ webView: WKWebView) {
+            session?.onCloseAuxiliaryWindows = { [weak self] in self?.closePopupWindows() }
             observations = [
                 webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
                     self?.synchronize(webView)
@@ -86,7 +97,7 @@ struct WebPreview: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
             synchronize(webView)
-            session?.welcomeDidFinish()
+            session?.pageDidFinish(in: webView)
             if let session, session.webView === webView, !session.isWelcome, session.siteData.isEnabled {
                 Task { @MainActor in await session.siteData.refresh() }
             }
@@ -114,12 +125,58 @@ struct WebPreview: NSViewRepresentable {
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            guard session?.webView === webView else { return nil }
-            if navigationAction.targetFrame == nil,
-               URLPolicy.canPreview(navigationAction.request.url ?? URL(fileURLWithPath: "/")) {
-                webView.load(navigationAction.request)
-            }
-            return nil
+            guard let session, session.webView === webView, !session.isWelcome,
+                  navigationAction.targetFrame == nil,
+                  Self.canCreatePopup(for: navigationAction.request.url),
+                  popupWindows.count < 8 else { return nil }
+            return createPopup(configuration: configuration, parent: session, features: windowFeatures).webView
+        }
+
+        static func canCreatePopup(for url: URL?) -> Bool {
+            guard let url else { return true } // window.open() starts with about:blank.
+            return URLPolicy.canPreview(url) || url.absoluteString == "about:blank"
+        }
+
+        @discardableResult
+        private func createPopup(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures) -> WebPopupWindowController {
+            let id = UUID()
+            let popup = WebPopupWindowController(configuration: configuration, parent: parent, features: features)
+            popup.onClose = { [weak self] in self?.popupWindows.removeValue(forKey: id) }
+            popupWindows[id] = popup
+            popup.present()
+            return popup
+        }
+
+        func closePopupWindows() {
+            let windows = Array(popupWindows.values)
+            popupWindows.removeAll()
+            windows.forEach { $0.close() }
+        }
+
+        func webViewDidClose(_ webView: WKWebView) {
+            guard session?.webView === webView else { return }
+            onWebViewClose?()
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+            presentDialog(webView, message: message, frame: frame, confirm: false) { _ in completionHandler() }
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+            presentDialog(webView, message: message, frame: frame, confirm: true, completion: completionHandler)
+        }
+
+        private func presentDialog(_ webView: WKWebView, message: String, frame: WKFrameInfo,
+                                   confirm: Bool, completion: @escaping (Bool) -> Void) {
+            guard session?.webView === webView, let window = webView.window else { completion(false); return }
+            let alert = NSAlert()
+            alert.messageText = frame.securityOrigin.host
+            alert.informativeText = message
+            alert.addButton(withTitle: L("OK"))
+            if confirm { alert.addButton(withTitle: L("Cancel")) }
+            alert.beginSheetModal(for: window) { completion($0 == .alertFirstButtonReturn) }
         }
 
         func webView(
@@ -157,6 +214,16 @@ struct WebPreview: NSViewRepresentable {
                 decisionHandler(.cancel)
                 NSWorkspace.shared.open(url)
             }
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            guard session?.webView === webView else { decisionHandler(.cancel); return }
+            if navigationResponse.isForMainFrame,
+               let response = navigationResponse.response as? HTTPURLResponse, response.statusCode == 403 {
+                session?.errorMessage = L("This website refused access. If sign-in is blocked, continue in your chosen browser from the original site link.")
+            }
+            decisionHandler(.allow)
         }
 
         func synchronize(_ webView: WKWebView) {

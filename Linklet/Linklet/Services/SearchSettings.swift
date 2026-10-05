@@ -67,6 +67,9 @@ final class SearchHotKey {
     private var handler: EventHandlerRef?
     var action: (() -> Void)?
     private var isPressed = false
+    private let identifier: UInt32
+
+    init(identifier: UInt32 = 1) { self.identifier = identifier }
 
     func register(_ shortcut: SearchShortcut?) -> Bool {
         unregister()
@@ -89,16 +92,17 @@ final class SearchHotKey {
                 var identifier = EventHotKeyID()
                 guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                                         nil, MemoryLayout<EventHotKeyID>.size, nil, &identifier) == noErr,
-                      identifier.signature == 0x4C4E4B53, identifier.id == 1 else { return OSStatus(eventNotHandledErr) }
-                MainActor.assumeIsolated {
+                      identifier.signature == 0x4C4E4B53 else { return OSStatus(eventNotHandledErr) }
+                return MainActor.assumeIsolated {
                     let hotKey = Unmanaged<SearchHotKey>.fromOpaque(context).takeUnretainedValue()
+                    guard identifier.id == hotKey.identifier else { return OSStatus(eventNotHandledErr) }
                     hotKey.handle(pressed: GetEventKind(event) == UInt32(kEventHotKeyPressed))
+                    return noErr
                 }
-                return noErr
             }, 2, &events, Unmanaged.passUnretained(self).toOpaque(), &handler)
             guard status == noErr else { return false }
         }
-        let identifier = EventHotKeyID(signature: 0x4C4E4B53, id: 1)
+        let identifier = EventHotKeyID(signature: 0x4C4E4B53, id: self.identifier)
         return RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, identifier,
                                    GetApplicationEventTarget(), 0, &reference) == noErr
     }

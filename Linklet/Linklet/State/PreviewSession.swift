@@ -19,6 +19,9 @@ final class PreviewSession: ObservableObject {
 
     @Published private(set) var isWelcome = false
     var onOpenSettings: (() -> Void)?
+    var onContinueInBrowser: (() -> Void)?
+    var onCloseAuxiliaryWindows: (() -> Void)?
+    var onPageFinished: ((URL, String) -> Void)?
     private var welcomeIsDefault = false
 
     weak var webView: WKWebView?
@@ -32,6 +35,7 @@ final class PreviewSession: ObservableObject {
     @Published private(set) var isActive = false
     private var pendingURL: URL?
     private var requestedURL: URL?
+    private var shouldRecordInitialTitle = false
 
     let adBlockService: AdBlockService
 
@@ -45,6 +49,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func endSession(resetTemporaryData: Bool = true) {
+        onCloseAuxiliaryWindows?()
         let wasActive = isActive
         webView?.stopLoading()
         webView?.navigationDelegate = nil
@@ -93,11 +98,20 @@ final class PreviewSession: ObservableObject {
         }
     }
 
+    func adoptPopup(_ view: WKWebView, originalURL: URL?) {
+        siteData.previewSessionDidStart()
+        isActive = true
+        self.originalURL = originalURL
+        webView = view
+        synchronize(from: view)
+    }
+
     func load(_ url: URL, preservingOriginalURL: Bool = false) {
         guard URLPolicy.canPreview(url) else {
             errorMessage = L("Only HTTP and HTTPS links can be previewed.")
             return
         }
+        onCloseAuxiliaryWindows?()
         if !isActive { siteData.previewSessionDidStart() }
         isActive = true
         isWelcome = false
@@ -105,6 +119,7 @@ final class PreviewSession: ObservableObject {
         webView?.stopLoading()
         webView = nil
         requestedURL = url
+        shouldRecordInitialTitle = true
         pendingURL = url
         isPreparingNewPage = true
         if !preservingOriginalURL { originalURL = url }
@@ -119,6 +134,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func showWelcome(isDefault: Bool) {
+        onCloseAuxiliaryWindows?()
         if !isActive { siteData.previewSessionDidStart() }
         isActive = true
         webView?.stopLoading()
@@ -176,6 +192,14 @@ final class PreviewSession: ObservableObject {
         pendingURL = nil
         requestedURL = nil
         isPreparingNewPage = false
+    }
+
+    func pageDidFinish(in view: WKWebView) {
+        guard webView === view else { return }
+        welcomeDidFinish()
+        guard !isWelcome, shouldRecordInitialTitle, let originalURL else { return }
+        shouldRecordInitialTitle = false
+        onPageFinished?(originalURL, view.title ?? "")
     }
 
     func navigationDidCommit(in webView: WKWebView) {
