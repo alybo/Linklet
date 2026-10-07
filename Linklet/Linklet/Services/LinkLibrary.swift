@@ -13,17 +13,30 @@ struct RecentLink: Codable, Equatable, Identifiable {
     var url: URL? { URL(string: address).flatMap { URLPolicy.canPreview($0) ? $0 : nil } }
 }
 
+enum SidebarSection: String, Codable, CaseIterable, Identifiable {
+    case bookmarks, recent
+    var id: String { rawValue }
+}
+
 /// Explicit bookmarks persist. Recent incoming links stay in memory unless saving is enabled.
 @MainActor
 final class LinkLibrary: ObservableObject {
     static let recentLimit = 200
     @Published private(set) var isEnabled: Bool
     @Published private(set) var savesHistory: Bool
+    @Published private(set) var showsRevealIndicator: Bool
+    @Published private(set) var sidebarWidth: Double
+    @Published private(set) var edgeOpenDelay: TimeInterval
+    @Published private(set) var isHistoryClearPending = false
     @Published private(set) var folders: [BookmarkFolder]
     @Published private(set) var folderAssignments: [String: UUID]
     @Published private(set) var recentLinks: [RecentLink]
     @Published var expandedFolderIDs: Set<UUID>
-    @Published var showsRecentLinks = true
+    @Published private(set) var sectionOrder: [SidebarSection]
+    @Published private(set) var expandedSections: Set<SidebarSection>
+    @Published private(set) var recentDisplayLimit = 10
+    var visibleRecentLinks: [RecentLink] { Array(recentLinks.prefix(recentDisplayLimit)) }
+    var hasMoreRecentLinks: Bool { recentLinks.count > recentDisplayLimit }
     @Published var shortcutError: String?
     @Published private(set) var rootOrder: [UUID]
     private weak var settings: SearchSettings?
@@ -31,7 +44,16 @@ final class LinkLibrary: ObservableObject {
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
+        let savedOrder = Self.read([SidebarSection].self, key: "sidebarSectionOrder", defaults: defaults) ?? SidebarSection.allCases
+        var seen = Set<SidebarSection>()
+        sectionOrder = (savedOrder + SidebarSection.allCases).filter { seen.insert($0).inserted }
+        expandedSections = Set(SidebarSection.allCases.filter { defaults.object(forKey: "sidebarExpanded.\($0.rawValue)") as? Bool ?? true })
+        let savedWidth = defaults.object(forKey: "sidebarWidth") as? Double ?? 300
+        sidebarWidth = savedWidth.isFinite && savedWidth > 0 ? savedWidth : 300
         isEnabled = defaults.bool(forKey: "sidebarEnabled")
+        showsRevealIndicator = defaults.object(forKey: "sidebarShowsRevealIndicator") as? Bool ?? false
+        let delay = defaults.object(forKey: "sidebarEdgeOpenDelay") as? Double ?? 0.4
+        edgeOpenDelay = Self.clampedEdgeDelay(delay)
         let saves = defaults.bool(forKey: "sidebarSavesHistory")
         savesHistory = saves
         let savedFolders = Self.read([BookmarkFolder].self, key: "bookmarkFolders", defaults: defaults) ?? []
@@ -42,6 +64,58 @@ final class LinkLibrary: ObservableObject {
         recentLinks = saves ? Array((Self.read([RecentLink].self, key: "recentLinks", defaults: defaults) ?? [])
             .filter { $0.url != nil }.prefix(Self.recentLimit)) : []
         if !saves { defaults.removeObject(forKey: "recentLinks") }
+    }
+
+    func toggleSection(_ section: SidebarSection) {
+        if expandedSections.contains(section) { expandedSections.remove(section) }
+        else { expandedSections.insert(section) }
+        defaults.set(expandedSections.contains(section), forKey: "sidebarExpanded.\(section.rawValue)")
+    }
+
+    func moveSection(_ section: SidebarSection, before destination: SidebarSection?) {
+        guard section != destination else { return }
+        sectionOrder.removeAll { $0 == section }
+        let index = destination.flatMap { sectionOrder.firstIndex(of: $0) } ?? sectionOrder.endIndex
+        sectionOrder.insert(section, at: index)
+        defaults.set(try? JSONEncoder().encode(sectionOrder), forKey: "sidebarSectionOrder")
+    }
+
+    func showMoreRecentLinks() { recentDisplayLimit = min(Self.recentLimit, recentDisplayLimit + 10) }
+    func resetRecentDisplayLimit() { recentDisplayLimit = 10 }
+
+    static func clampedEdgeDelay(_ delay: TimeInterval) -> TimeInterval {
+        delay.isFinite ? min(2, max(0.1, delay)) : 0.4
+    }
+
+    func setSidebarWidth(_ width: Double) {
+        guard width.isFinite, width > 0 else { return }
+        sidebarWidth = width
+        defaults.set(width, forKey: "sidebarWidth")
+    }
+
+    func setShowsRevealIndicator(_ enabled: Bool) {
+        showsRevealIndicator = enabled
+        defaults.set(enabled, forKey: "sidebarShowsRevealIndicator")
+    }
+
+    func setEdgeOpenDelay(_ delay: TimeInterval) {
+        edgeOpenDelay = Self.clampedEdgeDelay(delay)
+        defaults.set(edgeOpenDelay, forKey: "sidebarEdgeOpenDelay")
+    }
+
+    func requestHistoryClear() { isHistoryClearPending = !recentLinks.isEmpty }
+    func cancelHistoryClear() { isHistoryClearPending = false }
+    func confirmHistoryClear() {
+        guard isHistoryClearPending else { return }
+        clearHistory()
+    }
+
+    func reorderSection(_ source: SidebarSection, onto destination: SidebarSection) {
+        guard source != destination,
+              let sourceIndex = sectionOrder.firstIndex(of: source),
+              let targetIndex = sectionOrder.firstIndex(of: destination) else { return }
+        sectionOrder.swapAt(sourceIndex, targetIndex)
+        defaults.set(try? JSONEncoder().encode(sectionOrder), forKey: "sidebarSectionOrder")
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -77,7 +151,9 @@ final class LinkLibrary: ObservableObject {
     }
 
     func clearHistory() {
+        isHistoryClearPending = false
         recentLinks = []
+        resetRecentDisplayLimit()
         defaults.removeObject(forKey: "recentLinks")
     }
 

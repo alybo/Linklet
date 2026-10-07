@@ -323,9 +323,9 @@ private struct FavoriteSitesStrip: View {
                             ForEach(settings.favoriteSites) { site in
                                 Button { open(site) } label: {
                                     HStack(spacing: 4) {
-                                        SiteIcon(settings: settings, url: site.url, size: 16)
+                                        SiteIcon(settings: settings, url: site.url, size: FavoriteSiteLayout.iconSize)
                                         Text(site.name)
-                                            .font(.system(size: 12, weight: .medium))
+                                            .font(FavoriteSiteLayout.labelFont)
                                             .lineLimit(1)
                                     }
                                     .padding(8)

@@ -1,1 +1,47 @@
-<!doctype html><html lang="ru"><meta charset="utf-8"><title>Linklet 1.5</title><body><h1>Linklet 1.5</h1><ul><li>Исправлено растягивание окна входа длинным адресом авторизации.</li><li>Дополнительные окна входа сохраняют связь и общую сессию с исходной страницей.</li><li>Опциональная глобальная боковая панель: закладки, папки, поиск и недавние ссылки. Наведение на левый край экрана, ⌃⌥B или меню Linklet.</li><li>Закладки общие с избранным быстрого поиска; текущую страницу можно сохранить из предпросмотра.</li><li>История хранится до завершения приложения; сохранение между запусками включается отдельно.</li></ul><p>Если провайдер запрещает вход во встроенном WebKit, продолжите в выбранном браузере с исходной ссылкой сайта.</p><h2>English</h2><ul><li>Long sign-in URLs no longer stretch popup windows beyond the screen.</li><li>Sign-in popups preserve their opener and shared session without replacing the original page.</li><li>Optional global sidebar with bookmarks, folders, search and recent links. Open it from the screen edge, with ⌃⌥B, or from the Linklet menu.</li><li>Bookmarks share Quick Search favorites. Save the current page from its preview.</li><li>Recent links stay in memory unless history saving is explicitly enabled.</li></ul><p>Providers that prohibit embedded WebKit sign-in require continuing in the chosen browser from the original site link.</p></body></html>
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Linklet 1.5</title></head>
+<body>
+<h1>Linklet 1.5</h1>
+<h2>Русский</h2>
+<h3>Что нового</h3>
+<ul>
+<li><strong>Глобальная боковая панель.</strong> Закладки, папки и недавние ссылки доступны у левого края любого экрана. Открывайте панель наведением на край, сочетанием ⌃⌥B или из меню Linklet. Задержка наведения настраивается; ярлык открытия можно включить отдельно.</li>
+<li><strong>Единая система закладок.</strong> Панель и быстрый поиск используют один список. Перемещайте ссылки и папки, переносите закладки между папками. В быстром поиске отображаются ссылки без папок. Текущую страницу можно сохранить кнопкой закладки в окне предпросмотра.</li>
+<li><strong>Организация разделов.</strong> «Закладки» и «Недавние» сворачиваются нажатием на заголовок и меняются местами перетаскиванием. Порядок и свёрнутое состояние сохраняются.</li>
+<li><strong>История с подтверждением очистки.</strong> Сначала видны 10 последних ссылок; «Показать ещё» добавляет следующие 10. Очистка требует подтверждения прямо в панели и допускает отмену. Сохранение истории между запусками включается отдельно; по умолчанию она остаётся только в памяти текущего запуска.</li>
+<li><strong>Более чёткие и актуальные иконки.</strong> Общие иконки используются в поиске, закладках и истории. Linklet выбирает крупные изображения до 128 пикселей и проверяет их обновление после каждой загрузки страницы.</li>
+<li><strong>Настраиваемая ширина.</strong> Перетаскивайте правый край панели; при наведении появляется курсор изменения ширины. Ширина сохраняется и ограничена четвертью экрана. Текст и значки учитывают системную настройку размера боковых панелей macOS.</li>
+<li><strong>Новое оформление и движение.</strong> Чёрный фон, закруглённые плечи у края экрана, белые подписи, компактные кнопки и тонкая серая пунктирная линия при переносе. Плавное раскрытие и закрытие поддерживают смену направления и системное «Уменьшение движения».</li>
+</ul>
+<h3>Исправления</h3>
+<ul>
+<li>Создание и редактирование папок и закладок происходит внутри панели: окно остаётся у края экрана, доступны сохранение и отмена.</li>
+<li>Обычные ссылки, которые сайт открывает в новой вкладке, переходят в стандартном окне Linklet с навигацией назад.</li>
+<li>Служебные окна авторизации сохраняют исходную страницу, связь с ней, обмен сообщениями и общую сессию. Обработка не привязана к отдельному провайдеру. Длинные адреса входа больше не растягивают окно за пределы экрана.</li>
+<li>Убрано дополнительное затухание панели в конце закрытия; область изменения ширины вынесена в отдельный нативный слой.</li>
+</ul>
+<p>Панель выключена по умолчанию и включается в настройках. Некоторые провайдеры, включая Google, ограничивают вход во встроенном WebKit; в таком случае доступно продолжение в выбранном браузере с исходной ссылкой сайта. Поддержка входа ключом доступа с телефона через QR-код в эту версию не включена.</p>
+<p><strong>Требования:</strong> macOS 14 или новее.</p>
+<h2>English</h2>
+<h3>What&#x27;s new</h3>
+<ul>
+<li><strong>Global sidebar.</strong> Bookmarks, folders and recent links are available at the left edge of any screen. Open it by hovering over the edge, pressing ⌃⌥B or using the Linklet menu. The hover delay is configurable; an optional reveal indicator is available in settings.</li>
+<li><strong>Unified bookmarks.</strong> The sidebar and Quick Search share one list. Reorder links and folders and move bookmarks between folders. Quick Search shows links without folders. Save the current page with the preview&#x27;s bookmark button.</li>
+<li><strong>Organize sections.</strong> Collapse Bookmarks and Recent by clicking their headers, or drag a header to change section order. Both order and collapsed state are saved.</li>
+<li><strong>History with confirmation before clearing.</strong> Start with the latest 10 links; Show more adds 10 at a time. Clearing requires an inline confirmation with Cancel. Saving history between launches is a separate opt-in; by default it stays in memory for the current launch.</li>
+<li><strong>Sharper, updated site icons.</strong> Quick Search, bookmarks and history share icons. Linklet selects larger images up to 128 pixels and checks for updates after every page load.</li>
+<li><strong>Adjustable width.</strong> Drag the sidebar&#x27;s right edge, where a horizontal resize cursor appears. Width is saved and capped at one quarter of the screen. Text and icons follow the macOS sidebar size preference.</li>
+<li><strong>Refined appearance and motion.</strong> A black background, rounded shoulders at the screen edge, white labels, compact controls and a thin gray dashed insertion line. Smooth opening and closing support interrupted transitions and macOS Reduce Motion.</li>
+</ul>
+<h3>Fixes</h3>
+<ul>
+<li>Creating and editing bookmarks and folders happens inside the sidebar, keeping the window anchored to the screen edge with Save and Cancel.</li>
+<li>Ordinary new-tab links navigate in the standard Linklet preview with back history.</li>
+<li>Sign-in popups preserve the original page, opener, messaging and shared session without relying on a list of providers. Long sign-in URLs no longer stretch popup windows offscreen.</li>
+<li>Removed the extra fade at the end of sidebar dismissal and moved the resize target into a separate native layer.</li>
+</ul>
+<p>The sidebar is off by default and can be enabled in settings. Some providers, including Google, restrict sign-in inside embedded WebKit; continue in your chosen browser using the original site link when needed. Phone passkey sign-in via QR code is not included in this version.</p>
+<p><strong>Requirements:</strong> macOS 14 or later.</p>
+</body>
+</html>

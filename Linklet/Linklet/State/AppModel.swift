@@ -135,6 +135,10 @@ final class AppModel: ObservableObject {
             guard let self, let target = self.preferredTarget else { return }
             self.openOriginalURL(in: target)
         }
+        previewSession.onSiteLoaded = { [weak self] url in
+            guard let settings = self?.searchSettings else { return }
+            Task { await settings.ensureIcon(for: url, refresh: true) }
+        }
         previewSession.onPageFinished = { [weak self] url, title in self?.linkLibrary.updateTitle(title, for: url) }
     }
 

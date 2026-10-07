@@ -22,6 +22,7 @@ final class PreviewSession: ObservableObject {
     var onContinueInBrowser: (() -> Void)?
     var onCloseAuxiliaryWindows: (() -> Void)?
     var onPageFinished: ((URL, String) -> Void)?
+    var onSiteLoaded: ((URL) -> Void)?
     private var welcomeIsDefault = false
 
     weak var webView: WKWebView?
@@ -197,6 +198,7 @@ final class PreviewSession: ObservableObject {
     func pageDidFinish(in view: WKWebView) {
         guard webView === view else { return }
         welcomeDidFinish()
+        if !isWelcome, let url = view.url, URLPolicy.canPreview(url) { onSiteLoaded?(url) }
         guard !isWelcome, shouldRecordInitialTitle, let originalURL else { return }
         shouldRecordInitialTitle = false
         onPageFinished?(originalURL, view.title ?? "")

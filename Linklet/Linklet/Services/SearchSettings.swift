@@ -6,14 +6,20 @@ struct FavoriteSite: Codable, Equatable, Identifiable {
     let name: String
     let address: String
     let faviconData: Data?
+    let faviconVersion: Int?
+
+    init(id: UUID, name: String, address: String, faviconData: Data?, faviconVersion: Int? = nil) {
+        self.id = id; self.name = name; self.address = address
+        self.faviconData = faviconData; self.faviconVersion = faviconVersion
+    }
 
     var url: URL { URL(string: address)! }
 
-    static func make(id: UUID = UUID(), name: String, address: String, faviconData: Data? = nil) -> FavoriteSite? {
+    static func make(id: UUID = UUID(), name: String, address: String, faviconData: Data? = nil, faviconVersion: Int? = nil) -> FavoriteSite? {
         guard let url = URLPolicy.normalizedURL(from: address),
               let host = url.host, !host.isEmpty else { return nil }
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return FavoriteSite(id: id, name: title.isEmpty ? host : title, address: url.absoluteString, faviconData: faviconData)
+        return FavoriteSite(id: id, name: title.isEmpty ? host : title, address: url.absoluteString, faviconData: faviconData, faviconVersion: faviconVersion)
     }
 }
 
@@ -142,6 +148,7 @@ final class SearchSettings: ObservableObject {
     @Published private(set) var siteIcons: [String: Data] = [:]
     var bookmarksChanged: (() -> Void)?
     var moveOrganizedBookmark: ((UUID, UUID?) -> Void)?
+    private var iconVersions: [String: Int] = [:]
     private var iconRequests: [String: Task<Void, Never>] = [:]
     private var attemptedIcons = Set<String>()
     private let fetchIcon: (URL) async throws -> Data
@@ -160,10 +167,13 @@ final class SearchSettings: ObservableObject {
         }
         favoriteSites = (defaults.data(forKey: PreferenceKey.favoriteSites)
             .flatMap { try? JSONDecoder().decode([FavoriteSite].self, from: $0) } ?? [])
-            .compactMap { FavoriteSite.make(id: $0.id, name: $0.name, address: $0.address, faviconData: $0.faviconData) }
+            .compactMap { FavoriteSite.make(id: $0.id, name: $0.name, address: $0.address, faviconData: $0.faviconData, faviconVersion: $0.faviconVersion) }
         showsFavoriteSites = defaults.object(forKey: PreferenceKey.showsFavoriteSites) as? Bool ?? true
         for site in favoriteSites {
-            if let data = site.faviconData, let origin = Self.iconOrigin(site.url) { siteIcons[origin] = data }
+            if let data = site.faviconData, let origin = Self.iconOrigin(site.url) {
+                siteIcons[origin] = data
+                iconVersions[origin] = site.faviconVersion ?? 0
+            }
         }
     }
 
@@ -196,7 +206,7 @@ final class SearchSettings: ObservableObject {
     func updateFavoriteSite(_ site: FavoriteSite, name: String, address: String) throws {
         let replacement = try validatedFavoriteSite(id: site.id, name: name, address: address, excluding: site.id)
         guard let index = favoriteSites.firstIndex(where: { $0.id == site.id }) else { return }
-        favoriteSites[index] = FavoriteSite(id: replacement.id, name: replacement.name, address: replacement.address, faviconData: iconData(for: replacement.url))
+        favoriteSites[index] = FavoriteSite(id: replacement.id, name: replacement.name, address: replacement.address, faviconData: iconData(for: replacement.url), faviconVersion: iconVersion(for: replacement.url))
         persistFavoriteSites()
     }
 
@@ -211,10 +221,16 @@ final class SearchSettings: ObservableObject {
         return siteIcons[origin] ?? favoriteSites.first(where: { Self.iconOrigin($0.url) == origin && $0.faviconData != nil })?.faviconData
     }
 
+    private func iconVersion(for url: URL) -> Int? {
+        guard let origin = Self.iconOrigin(url) else { return nil }
+        return iconVersions[origin] ?? favoriteSites.first(where: { Self.iconOrigin($0.url) == origin })?.faviconVersion
+    }
+
     func ensureIcon(for url: URL, refresh: Bool = false) async {
         guard let origin = Self.iconOrigin(url), let originURL = URL(string: origin) else { return }
         if let request = iconRequests[origin] { await request.value; return }
-        guard refresh || (iconData(for: url) == nil && !attemptedIcons.contains(origin)) else { return }
+        let needsUpgrade = iconData(for: url) == nil || (iconVersion(for: url) ?? 0) < FavoriteSiteIconService.pipelineVersion
+        guard refresh || (needsUpgrade && !attemptedIcons.contains(origin)) else { return }
         attemptedIcons.insert(origin)
         // History-only icons live in this bounded memory cache. Only saved bookmark icons go to disk.
         if attemptedIcons.count > 512 { attemptedIcons = [origin] }
@@ -224,14 +240,20 @@ final class SearchSettings: ObservableObject {
             guard let data = try? await fetchIcon(originURL), let self else { return }
             if self.siteIcons.count >= 256, let key = self.siteIcons.keys.first {
                 self.siteIcons.removeValue(forKey: key)
+                self.iconVersions.removeValue(forKey: key)
                 self.attemptedIcons.remove(key)
             }
-            self.siteIcons[origin] = data
-            self.favoriteSites = self.favoriteSites.map { site in
-                guard Self.iconOrigin(site.url) == origin else { return site }
-                return FavoriteSite(id: site.id, name: site.name, address: site.address, faviconData: data)
+            if self.siteIcons[origin] != data { self.siteIcons[origin] = data }
+            self.iconVersions[origin] = FavoriteSiteIconService.pipelineVersion
+            let updated = self.favoriteSites.map { site in
+                guard Self.iconOrigin(site.url) == origin,
+                      site.faviconData != data || site.faviconVersion != FavoriteSiteIconService.pipelineVersion else { return site }
+                return FavoriteSite(id: site.id, name: site.name, address: site.address, faviconData: data, faviconVersion: FavoriteSiteIconService.pipelineVersion)
             }
-            self.persistFavoriteSites()
+            if updated != self.favoriteSites {
+                self.favoriteSites = updated
+                self.persistFavoriteSites()
+            }
         }
         iconRequests[origin] = request
         await request.value
@@ -290,7 +312,7 @@ final class SearchSettings: ObservableObject {
         guard !favoriteSites.contains(where: { $0.id != excludedID && $0.address == site.address }) else {
             throw FavoriteSiteError.duplicateURL
         }
-        return FavoriteSite(id: site.id, name: site.name, address: site.address, faviconData: iconData(for: site.url))
+        return FavoriteSite(id: site.id, name: site.name, address: site.address, faviconData: iconData(for: site.url), faviconVersion: iconVersion(for: site.url))
     }
 
     private func persistFavoriteSites() {

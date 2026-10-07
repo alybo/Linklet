@@ -127,9 +127,24 @@ struct WebPreview: NSViewRepresentable {
         ) -> WKWebView? {
             guard let session, session.webView === webView, !session.isWelcome,
                   navigationAction.targetFrame == nil,
-                  Self.canCreatePopup(for: navigationAction.request.url),
-                  popupWindows.count < 8 else { return nil }
+                  Self.canCreatePopup(for: navigationAction.request.url) else { return nil }
+            // Normal target=_blank links belong to the existing preview, with its toolbar,
+            // back/forward history and original browser handoff. Script/POST windows keep
+            // their supplied WebKit configuration and opener for sign-in workflows.
+            if Self.opensInCurrentPreview(navigationType: navigationAction.navigationType,
+                                          request: navigationAction.request, features: windowFeatures) {
+                webView.load(navigationAction.request)
+                return nil
+            }
+            guard popupWindows.count < 8 else { return nil }
             return createPopup(configuration: configuration, parent: session, features: windowFeatures).webView
+        }
+
+        static func opensInCurrentPreview(navigationType: WKNavigationType, request: URLRequest,
+                                          features: WKWindowFeatures) -> Bool {
+            navigationType == .linkActivated && request.url.map(URLPolicy.canPreview) == true &&
+                (request.httpMethod ?? "GET").uppercased() == "GET" &&
+                features.width == nil && features.height == nil && features.x == nil && features.y == nil
         }
 
         static func canCreatePopup(for url: URL?) -> Bool {
