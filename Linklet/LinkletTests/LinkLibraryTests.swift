@@ -1216,6 +1216,17 @@ final class WebPopupTests: XCTestCase {
         let viewport = try await popup.webView.evaluateJavaScript("[innerWidth, innerHeight]") as? [Int]
         XCTAssertGreaterThan(viewport?.first ?? 0, 300)
         XCTAssertGreaterThan(viewport?.last ?? 0, 300)
+        let address = try addressControl(in: window)
+        let frameBeforeExpansion = window.frame
+        // performClick bypasses AppKit's normal activation on a user's click.
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        address.addressButton.performClick(nil)
+        try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
+        XCTAssertEqual(address.addressField.stringValue, longURL)
+        XCTAssertEqual(window.frame, frameBeforeExpansion, "Long OAuth URLs must not resize the window")
+        try sendAddressKey(to: window, code: 53, characters: "\u{1b}")
+        try await waitUntil { !address.isExpanded }
         if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
             content.cacheDisplay(in: content.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-popup-layout.png"))
@@ -1225,6 +1236,86 @@ final class WebPopupTests: XCTestCase {
         XCTAssertLessThanOrEqual(window.frame.width, 640)
         XCTAssertTrue(content.bounds.contains(popup.webView.convert(popup.webView.bounds, to: content)))
         XCTAssertGreaterThan(popup.webView.visibleRect.height, 300)
+    }
+
+    func testAddressDisclosurePreservesPageAndGeometryInMainAndSiteWindows() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "AddressDisclosureTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let target = BrowserTarget.browser(name: "Safari", applicationURL: URL(fileURLWithPath: "/Applications/Safari.app"))
+        let model = AppModel(defaults: defaults, discoverTargets: { [target] })
+        model.refreshTargets()
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let sourceURL = URL(string: "http://127.0.0.1:\(port)/site")!
+        model.showPreview(url: sourceURL)
+        try await waitUntil { model.previewSession.pageTitle == "Original site" }
+        let sourceWindow = try XCTUnwrap(NSApp.windows.first { window in
+            (window.contentViewController as? NSHostingController<PreviewRootView>)?.rootView.session === model.previewSession
+        })
+        let source = try XCTUnwrap(model.previewSession.webView)
+        _ = try await source.evaluateJavaScript("window.open('/destination','address-test');true")
+        try await waitUntil { model.windowRegistry.windows.count == 2 && model.windowRegistry.windows.last?.title == "Destination" }
+        let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        let siteWindow = try XCTUnwrap(popup.window)
+
+        for (window, session, screenshotName) in [(sourceWindow, model.previewSession, "main"), (siteWindow, popup.session, "site")] {
+            window.makeKeyAndOrderFront(nil)
+            window.setContentSize(NSSize(width: 640, height: 500))
+            window.contentView?.layoutSubtreeIfNeeded()
+            let address = try addressControl(in: window)
+            let page = try XCTUnwrap(session.webView)
+            let url = try XCTUnwrap(session.currentURL)
+            let navigationID = session.navigationID
+            let frame = window.frame
+            let pageFrame = page.frame
+            XCTAssertEqual(address.addressButton.title, "http://127.0.0.1:\(port)")
+            XCTAssertFalse(address.isExpanded)
+            XCTAssertLessThanOrEqual(address.frame.width, 180)
+            _ = try await page.evaluateJavaScript("window.addressSentinel='kept';true")
+            address.addressButton.performClick(nil)
+            try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
+            window.contentView?.layoutSubtreeIfNeeded()
+            let editor = try XCTUnwrap(address.addressField.currentEditor())
+            XCTAssertEqual(editor.string, url.absoluteString)
+            XCTAssertEqual(editor.selectedRange, NSRange(location: 0, length: url.absoluteString.utf16.count))
+            XCTAssertFalse(address.addressField.isEditable)
+            XCTAssertEqual(window.frame, frame)
+            XCTAssertEqual(page.frame, pageFrame)
+            XCTAssertEqual(session.navigationID, navigationID)
+            XCTAssertTrue(session.webView === page)
+            let kept = try await page.evaluateJavaScript("window.addressSentinel") as? String
+            XCTAssertEqual(kept, "kept")
+            try sendAddressKey(to: window, code: 53, characters: "\u{1b}")
+            try await waitUntil { !address.isExpanded }
+            XCTAssertTrue(window.isVisible, "Escape collapses the address instead of closing the page")
+            try sendAddressKey(to: window, code: 37, characters: "д", modifiers: .command)
+            try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
+            let other = window === sourceWindow ? siteWindow : sourceWindow
+            other.makeKeyAndOrderFront(nil)
+            try await waitUntil { !address.isExpanded }
+            window.contentView?.layoutSubtreeIfNeeded()
+            if let content = window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-address-\(screenshotName).png"))
+            }
+        }
+    }
+
+    func testAddressLabelRetainsAuthenticationHostPortAndHTTPSFormatting() throws {
+        for (input, expected) in [
+            ("https://www.example.com/path?q=one", "example.com"),
+            ("https://accounts.google.com/signin", "accounts.google.com"),
+            ("https://example.com:8443/path", "example.com:8443"),
+            ("http://localhost:8080/path", "http://localhost:8080"),
+            ("http://[::1]:8080/path", "http://[::1]:8080"),
+            ("about:blank", "about:blank")
+        ] {
+            XCTAssertEqual(PreviewAddressControlView.compactAddress(for: try XCTUnwrap(URL(string: input))), expected)
+        }
     }
 
     func testSharedChromeRegistersNestedWindowsAndActivatesWithoutReloading() async throws {
@@ -1417,6 +1508,25 @@ final class WebPopupTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTFail("WebKit fixture did not complete within 10 seconds")
+    }
+
+    private func addressControl(in window: NSWindow) throws -> PreviewAddressControlView {
+        func find(_ view: NSView) -> PreviewAddressControlView? {
+            if let address = view as? PreviewAddressControlView { return address }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        return try XCTUnwrap(window.contentView.flatMap(find))
+    }
+
+    private func sendAddressKey(to window: NSWindow, code: UInt16, characters: String,
+                                modifiers: NSEvent.ModifierFlags = []) throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+        NSApp.postEvent(event, atStart: true)
+        if let next = NSApp.nextEvent(matching: .keyDown, until: Date().addingTimeInterval(0.1), inMode: .default, dequeue: true) {
+            NSApp.sendEvent(next)
+        }
     }
 }
 

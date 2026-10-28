@@ -85,22 +85,7 @@ struct PreviewPageView: View {
         HStack(spacing: 8) {
             PreviewWindowControls(session: session)
 
-            VStack(alignment: .leading, spacing: 0) {
-                Text(siteTitle)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
-                // Keep a visible site identity in child/login windows, as their
-                // previous address strip did. Page titles are controlled by sites.
-                if existingWebView != nil, let url = session.currentURL, let host = url.host {
-                    Text(url.scheme == "http" ? "http://" + host : host)
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                }
-            }
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .help(session.currentURL?.absoluteString ?? siteTitle)
-
-            Spacer(minLength: 12)
+            PreviewLocationView(session: session, title: siteTitle)
 
             if !session.isWelcome && session.isActive {
                 if model != nil {

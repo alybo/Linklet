@@ -292,6 +292,8 @@ final class AppLanguage: ObservableObject {
         "Forward — ⌘]": "Вперёд — ⌘]",
         "Copied": "Скопировано",
         "Copy current URL": "Скопировать ссылку",
+        "Show full address": "Показать полный адрес",
+        "Full address": "Полный адрес",
         "Find browsers": "Найти браузеры",
         "Choose browsers": "Выбрать браузеры",
         "No other browsers": "Других браузеров нет",
