@@ -1200,9 +1200,13 @@ final class WebPopupTests: XCTestCase {
         XCTAssertLessThanOrEqual(window.frame.width, 1000)
         XCTAssertGreaterThan(popup.webView.visibleRect.width, 300, "Viewport frame: \(popup.webView.frame), content: \(content.frame)")
         XCTAssertGreaterThan(popup.webView.visibleRect.height, 300, "Viewport frame: \(popup.webView.frame), content: \(content.frame)")
-        let toolbar = try XCTUnwrap(content.subviews.first(where: { $0 is NSStackView }))
-        let browserButton = try XCTUnwrap(toolbar.subviews.first(where: { $0 is NSButton }))
-        XCTAssertTrue(toolbar.bounds.contains(browserButton.frame), "Browser action frame: \(browserButton.frame), toolbar: \(toolbar.bounds)")
+        XCTAssertTrue(window.contentViewController is NSHostingController<PreviewPageView>)
+        XCTAssertEqual(window.titleVisibility, .hidden)
+        XCTAssertTrue(window.titlebarAppearsTransparent)
+        let webRect = popup.webView.convert(popup.webView.bounds, to: content)
+        XCTAssertTrue(content.bounds.contains(webRect))
+        let topInset = content.isFlipped ? webRect.minY - content.bounds.minY : content.bounds.maxY - webRect.maxY
+        XCTAssertEqual(topInset, PreviewLayout.topBarHeight, accuracy: 2)
         let viewport = try await popup.webView.evaluateJavaScript("[innerWidth, innerHeight]") as? [Int]
         XCTAssertGreaterThan(viewport?.first ?? 0, 300)
         XCTAssertGreaterThan(viewport?.last ?? 0, 300)
@@ -1210,11 +1214,144 @@ final class WebPopupTests: XCTestCase {
             content.cacheDisplay(in: content.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-popup-layout.png"))
         }
-        window.setContentSize(NSSize(width: 360, height: 500))
+        window.setContentSize(NSSize(width: 640, height: 500))
         content.layoutSubtreeIfNeeded()
-        XCTAssertLessThanOrEqual(window.frame.width, 360)
-        XCTAssertTrue(toolbar.bounds.contains(browserButton.frame))
+        XCTAssertLessThanOrEqual(window.frame.width, 640)
+        XCTAssertTrue(content.bounds.contains(popup.webView.convert(popup.webView.bounds, to: content)))
         XCTAssertGreaterThan(popup.webView.visibleRect.height, 300)
+    }
+
+    func testSharedChromeRegistersNestedWindowsAndActivatesWithoutReloading() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "UnifiedWindowTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let target = BrowserTarget.browser(name: "Safari", applicationURL: URL(fileURLWithPath: "/Applications/Safari.app"))
+        let model = AppModel(defaults: defaults, discoverTargets: { [target] })
+        model.refreshTargets()
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let url = URL(string: "http://127.0.0.1:\(port)/site")!
+        model.showPreview(url: url)
+        let parentWindow = try XCTUnwrap(NSApp.windows.first { window in
+            (window.contentViewController as? NSHostingController<PreviewRootView>)?.rootView.session === model.previewSession
+        })
+        try await waitUntil { model.previewSession.pageTitle == "Original site" }
+        let parent = try XCTUnwrap(model.previewSession.webView)
+        XCTAssertEqual(model.previewSession.pageTitle, "Original site", "WebKit URL: \(String(describing: parent.url)), session URL: \(String(describing: model.previewSession.currentURL)), error: \(String(describing: model.previewSession.errorMessage))")
+        let registry = model.windowRegistry
+        XCTAssertEqual(registry.windows.map(\.id), [model.previewSession.windowID])
+        _ = try await parent.evaluateJavaScript("window.child=window.open('/destination','child','width=650,height=500');true")
+        try await waitUntil { registry.windows.count == 2 && registry.windows.last?.title == "Destination" }
+        let childID = try XCTUnwrap(registry.windows.last?.id)
+        XCTAssertEqual(registry.windows.last?.parentID, model.previewSession.windowID)
+        let childWindow = try XCTUnwrap(parentWindow.childWindows?.first)
+        let childHost = try XCTUnwrap(childWindow.contentViewController as? NSHostingController<PreviewRootView>)
+        let childSession = childHost.rootView.session
+        let child = try XCTUnwrap(childSession.webView)
+        XCTAssertTrue(childHost.rootView.model === model)
+        XCTAssertEqual(childWindow.titleVisibility, parentWindow.titleVisibility)
+        XCTAssertEqual(childWindow.minSize, parentWindow.minSize)
+        XCTAssertTrue(child.configuration.websiteDataStore === parent.configuration.websiteDataStore)
+        XCTAssertEqual(childSession.originalURL, url)
+        _ = try await child.evaluateJavaScript("window.sentinel='preserved';document.title='Child changed';window.open('about:blank','nested');true")
+        try await waitUntil { registry.windows.count == 3 && registry.windows.contains { $0.title == "Child changed" } }
+        let nested = try XCTUnwrap(registry.windows.last)
+        XCTAssertEqual(nested.parentID, childID)
+        registry.activate(model.previewSession.windowID)
+        registry.activate(childID)
+        let sentinel = try await child.evaluateJavaScript("window.sentinel") as? String
+        XCTAssertEqual(sentinel, "preserved")
+        XCTAssertTrue(childSession.webView === child)
+        XCTAssertEqual(registry.windows.map(\.id), [model.previewSession.windowID, childID, nested.id])
+
+        if let content = childWindow.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-unified-popup.png"))
+        }
+        registry.close(childID)
+        try await waitUntil { registry.windows.map(\.id) == [model.previewSession.windowID] }
+        XCTAssertTrue(parent.configuration.websiteDataStore === model.previewSession.websiteDataStore)
+        XCTAssertEqual(model.previewSession.pageTitle, "Original site")
+        parentWindow.close()
+        XCTAssertTrue(registry.windows.isEmpty)
+    }
+
+    func testRegistryDistinguishesDuplicateAddressesAndRestoresMinimizedWindow() async throws {
+        let registry = BrowserWindowRegistry()
+        let blocker = AdBlockService(automaticUpdates: false)
+        let first = PreviewSession(adBlockService: blocker, windowRegistry: registry)
+        let second = PreviewSession(adBlockService: blocker, windowRegistry: registry)
+        let url = URL(string: "https://example.com/same")!
+        first.load(url); second.load(url)
+        let one = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 440),
+                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        let two = NSWindow(contentRect: one.frame, styleMask: one.styleMask, backing: .buffered, defer: false)
+        one.isReleasedWhenClosed = false; two.isReleasedWhenClosed = false
+        defer { one.close(); two.close(); first.endSession(); second.endSession() }
+        one.makeKeyAndOrderFront(nil); two.makeKeyAndOrderFront(nil)
+        registry.register(one, session: first)
+        registry.register(two, session: second)
+        registry.register(one, session: first)
+        XCTAssertEqual(registry.windows.map(\.id), [first.windowID, second.windowID])
+        XCTAssertEqual(registry.windows.map(\.url), [url, url])
+        two.miniaturize(nil)
+        try await waitUntil { registry.windows.last?.isMiniaturized == true }
+        registry.activate(second.windowID)
+        try await waitUntil { !two.isMiniaturized && registry.windows.last?.isKey == true }
+        registry.close(first.windowID)
+        XCTAssertEqual(registry.windows.map(\.id), [second.windowID])
+        // Unknown and previously closed IDs are harmless.
+        registry.activate(first.windowID)
+        registry.close(UUID())
+    }
+
+    func testIncomingWindowsShareRegistryAndClosingOnePreservesTheOther() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "IncomingWindowRegistryTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        model.setOpensLinksInNewWindows(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let url = URL(string: "http://127.0.0.1:\(port)/site")!
+        model.showPreview(url: url)
+        try await waitUntil { model.windowRegistry.windows.first?.title == "Original site" }
+        let originalView = try XCTUnwrap(model.previewSession.webView)
+        model.showPreview(url: url)
+        try await waitUntil { model.windowRegistry.windows.count == 2 && model.windowRegistry.windows.last?.title == "Original site" }
+        XCTAssertEqual(model.windowRegistry.windows.map(\.url), [url, url])
+        XCTAssertNotEqual(model.windowRegistry.windows.first?.id, model.windowRegistry.windows.last?.id)
+        XCTAssertTrue(model.windowRegistry.windows.allSatisfy { $0.parentID == nil })
+        model.windowRegistry.close(try XCTUnwrap(model.windowRegistry.windows.last?.id))
+        XCTAssertEqual(model.windowRegistry.windows.map(\.id), [model.previewSession.windowID])
+        XCTAssertTrue(model.previewSession.webView === originalView)
+        XCTAssertEqual(model.previewSession.pageTitle, "Original site")
+        model.closeAllWindows()
+        XCTAssertTrue(model.windowRegistry.windows.isEmpty)
+    }
+
+    func testRegistryExcludesWelcomeAndDropsReleasedEntries() throws {
+        let registry = BrowserWindowRegistry()
+        let session = PreviewSession(adBlockService: AdBlockService(automaticUpdates: false), windowRegistry: registry)
+        session.showWelcome(isDefault: false)
+        var window: NSWindow? = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        window?.isReleasedWhenClosed = false
+        registry.register(try XCTUnwrap(window), session: session)
+        XCTAssertTrue(registry.windows.isEmpty)
+        session.load(URL(string: "https://example.com")!)
+        registry.refresh()
+        XCTAssertEqual(registry.windows.count, 1)
+        window?.close()
+        window = nil
+        registry.refresh()
+        XCTAssertTrue(registry.windows.isEmpty)
+        session.endSession()
     }
 
     func testWebKitReportsNativePasskeyAvailabilityWithoutCreatingCredentials() async throws {

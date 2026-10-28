@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 
 enum PreviewLayout {
     // Keep the native macOS control target, while drawing compact symbols inside it.
@@ -12,15 +13,31 @@ enum PreviewLayout {
 }
 
 struct PreviewRootView: View {
-    @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var model: AppModel
-    @ObservedObject private var session: PreviewSession
-    @State private var showsBookmarkEditor = false
+    let session: PreviewSession
+    let existingWebView: WKWebView?
 
-    init(model: AppModel) {
+    init(model: AppModel, session: PreviewSession? = nil, existingWebView: WKWebView? = nil) {
         self.model = model
-        self.session = model.previewSession
+        self.session = session ?? model.previewSession
+        self.existingWebView = existingWebView
     }
+
+    var body: some View {
+        PreviewPageView(session: session, model: model, existingWebView: existingWebView,
+                        isChoosingDataMode: existingWebView == nil && model.isChoosingDataMode)
+    }
+}
+
+/// Shared chrome for incoming links and WebKit-created child windows. An adopted
+/// web view keeps its original configuration, opener, POST and navigation stack.
+struct PreviewPageView: View {
+    @ObservedObject private var language = AppLanguage.shared
+    @ObservedObject var session: PreviewSession
+    var model: AppModel? = nil
+    var existingWebView: WKWebView? = nil
+    var isChoosingDataMode = false
+    @State private var showsBookmarkEditor = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,8 +59,10 @@ struct PreviewRootView: View {
         .background { PreviewWindowMaterial() }
         .ignoresSafeArea(.container, edges: .all)
         .sheet(isPresented: $showsBookmarkEditor) {
-            BookmarkEditor(settings: model.searchSettings, library: model.linkLibrary,
-                           initialURL: session.currentURL, initialTitle: session.pageTitle)
+            if let model {
+                BookmarkEditor(settings: model.searchSettings, library: model.linkLibrary,
+                               initialURL: session.currentURL, initialTitle: session.pageTitle)
+            }
         }
         .alert(
             L("Couldn't open the page"),
@@ -52,8 +71,9 @@ struct PreviewRootView: View {
                 set: { if !$0 { session.errorMessage = nil } }
             )
         ) {
-            if let target = model.preferredTarget {
-                Button(L("Continue in browser")) { model.openOriginalURL(in: target) }
+            if let continueInBrowser = session.onContinueInBrowser,
+               model == nil || model?.preferredTarget != nil {
+                Button(L("Continue in browser"), action: continueInBrowser)
             }
             Button(L("OK"), role: .cancel) { session.errorMessage = nil }
         } message: {
@@ -65,40 +85,61 @@ struct PreviewRootView: View {
         HStack(spacing: 8) {
             PreviewWindowControls(session: session)
 
-            Text(siteTitle)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(session.currentURL?.absoluteString ?? siteTitle)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(siteTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                // Keep a visible site identity in child/login windows, as their
+                // previous address strip did. Page titles are controlled by sites.
+                if existingWebView != nil, let url = session.currentURL, let host = url.host {
+                    Text(url.scheme == "http" ? "http://" + host : host)
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(session.currentURL?.absoluteString ?? siteTitle)
 
             Spacer(minLength: 12)
 
             if !session.isWelcome && session.isActive {
-                Button { showsBookmarkEditor = true } label: {
-                    Image(systemName: "bookmark").frame(width: 28, height: 28)
-                }.buttonStyle(.plain).help(L("Add bookmark"))
-                    .disabled(session.currentURL.map(URLPolicy.canPreview) != true)
+                if model != nil {
+                    Button { showsBookmarkEditor = true } label: {
+                        Image(systemName: "bookmark").frame(width: 28, height: 28)
+                    }.buttonStyle(.plain).help(L("Add bookmark"))
+                        .accessibilityLabel(L("Add bookmark"))
+                        .disabled(session.currentURL.map(URLPolicy.canPreview) != true)
+                }
                 PreviewCopyToolbarView(session: session)
-                PreviewOpenInToolbarView(model: model)
+                if let model {
+                    PreviewOpenInToolbarView(model: model)
+                } else if let continueInBrowser = session.onContinueInBrowser {
+                    Button(L("Continue in browser"), action: continueInBrowser)
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
             }
         }
         .padding(.leading, 10)
         .padding(.trailing, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("preview-toolbar")
     }
 
     private var webContent: some View {
         ZStack(alignment: .top) {
             if session.isActive {
-                WebPreview(session: session)
-                    .id(session.navigationID)
-                    .background(Color(nsColor: .textBackgroundColor))
+                Group {
+                    if let existingWebView {
+                        AdoptedWebPreview(webView: existingWebView)
+                    } else {
+                        WebPreview(session: session).id(session.navigationID)
+                    }
+                }.background(Color(nsColor: .textBackgroundColor))
             } else {
                 Color(nsColor: .windowBackgroundColor)
             }
 
-            if model.isChoosingDataMode {
+            if isChoosingDataMode, let model {
                 SiteDataChoiceView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -129,6 +170,14 @@ struct PreviewRootView: View {
         }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
+}
+
+/// Lifecycle and delegates belong to WebPopupWindowController. SwiftUI only
+/// embeds the supplied view; it must not attach/load it again or tear it down.
+private struct AdoptedWebPreview: NSViewRepresentable {
+    let webView: WKWebView
+    func makeNSView(context: Context) -> WKWebView { webView }
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
 private struct PreviewLoadingProgressStyle: ProgressViewStyle {
@@ -232,6 +281,7 @@ struct PreviewCopyToolbarView: View {
         .buttonStyle(.plain)
         .foregroundStyle(didCopyURL ? Color.green : Color.primary)
         .help(didCopyURL ? L("Copied") : L("Copy current URL"))
+        .accessibilityLabel(L("Copy current URL"))
         .disabled(session.currentURL == nil)
         .onHover { isHovered = $0 }
     }

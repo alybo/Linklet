@@ -4,6 +4,8 @@ import WebKit
 
 @MainActor
 final class PreviewSession: ObservableObject {
+    let windowID = UUID()
+    let windowRegistry: BrowserWindowRegistry
     @Published private(set) var navigationID = UUID()
     // Browser handoff keeps the incoming link even after redirects and navigation.
     @Published private(set) var originalURL: URL?
@@ -23,6 +25,7 @@ final class PreviewSession: ObservableObject {
     var onCloseAuxiliaryWindows: (() -> Void)?
     var onPageFinished: ((URL, String) -> Void)?
     var onSiteLoaded: ((URL) -> Void)?
+    var makePopup: ((WKWebViewConfiguration, PreviewSession, WKWindowFeatures) -> WebPopupWindowController)?
     private var welcomeIsDefault = false
 
     weak var webView: WKWebView?
@@ -44,9 +47,11 @@ final class PreviewSession: ObservableObject {
         self.init(adBlockService: AdBlockService())
     }
 
-    init(adBlockService: AdBlockService, siteData: SiteDataService? = nil) {
+    init(adBlockService: AdBlockService, siteData: SiteDataService? = nil,
+         windowRegistry: BrowserWindowRegistry? = nil) {
         self.adBlockService = adBlockService
         self.siteData = siteData ?? SiteDataService()
+        self.windowRegistry = windowRegistry ?? BrowserWindowRegistry()
     }
 
     func endSession(resetTemporaryData: Bool = true) {

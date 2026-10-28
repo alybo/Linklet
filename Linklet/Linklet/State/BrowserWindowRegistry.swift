@@ -1,0 +1,99 @@
+import AppKit
+import Combine
+
+struct BrowserWindowInfo: Identifiable, Equatable {
+    let id: UUID
+    let parentID: UUID?
+    let title: String
+    let url: URL?
+    let isLoading: Bool
+    let isKey: Bool
+    let isMiniaturized: Bool
+}
+
+/// An in-memory index of live pages. Controllers retain their windows; this index
+/// never reloads a URL to activate a page and never persists browsing information.
+@MainActor
+final class BrowserWindowRegistry: ObservableObject {
+    @Published private(set) var windows: [BrowserWindowInfo] = []
+
+    private final class Entry {
+        weak var window: NSWindow?
+        weak var session: PreviewSession?
+        let parentID: UUID?
+        var observations = Set<AnyCancellable>()
+
+        init(window: NSWindow, session: PreviewSession, parentID: UUID?) {
+            self.window = window
+            self.session = session
+            self.parentID = parentID
+        }
+    }
+
+    private var entries: [UUID: Entry] = [:]
+    private var order: [UUID] = []
+    private var refreshIsScheduled = false
+
+    func register(_ window: NSWindow, session: PreviewSession, parentID: UUID? = nil) {
+        let id = session.windowID
+        if entries[id]?.window === window { refresh(); return }
+        if entries[id] == nil { order.append(id) }
+        let entry = Entry(window: window, session: session, parentID: parentID)
+        entries[id] = entry
+        // ObservableObject announces before its properties change. Read them on
+        // the next run-loop turn and coalesce WebKit's frequent progress events.
+        session.objectWillChange.sink { [weak self] _ in self?.refreshSoon() }
+            .store(in: &entry.observations)
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
+            NotificationCenter.default.publisher(for: name, object: window)
+                .sink { [weak self] _ in self?.refresh() }.store(in: &entry.observations)
+        }
+        NotificationCenter.default.publisher(for: NSWindow.willCloseNotification, object: window)
+            .sink { [weak self] _ in self?.unregister(id) }.store(in: &entry.observations)
+        refresh()
+    }
+
+    func unregister(_ id: UUID) {
+        entries.removeValue(forKey: id)
+        order.removeAll { $0 == id }
+        refresh()
+    }
+
+    func activate(_ id: UUID) {
+        guard let window = entries[id]?.window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        refresh()
+    }
+
+    func close(_ id: UUID) {
+        entries[id]?.window?.performClose(nil)
+    }
+
+    func refresh() {
+        let orphanIDs = order.filter { entries[$0]?.window == nil || entries[$0]?.session == nil }
+        for id in orphanIDs { entries.removeValue(forKey: id) }
+        order.removeAll { orphanIDs.contains($0) }
+        let next = order.compactMap { id -> BrowserWindowInfo? in
+            guard let entry = entries[id], let session = entry.session, let window = entry.window,
+                  session.isActive, !session.isWelcome else { return nil }
+            let title = session.pageTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            return BrowserWindowInfo(id: id, parentID: entry.parentID,
+                title: title.isEmpty ? (session.currentURL?.host ?? L("Website window")) : title,
+                url: session.currentURL, isLoading: session.isLoading,
+                isKey: window.isKeyWindow, isMiniaturized: window.isMiniaturized)
+        }
+        if next != windows { windows = next }
+    }
+
+    private func refreshSoon() {
+        guard !refreshIsScheduled else { return }
+        refreshIsScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshIsScheduled = false
+            self?.refresh()
+        }
+    }
+}

@@ -155,7 +155,8 @@ struct WebPreview: NSViewRepresentable {
         @discardableResult
         private func createPopup(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures) -> WebPopupWindowController {
             let id = UUID()
-            let popup = WebPopupWindowController(configuration: configuration, parent: parent, features: features)
+            let popup = parent.makePopup?(configuration, parent, features)
+                ?? WebPopupWindowController(configuration: configuration, parent: parent, features: features)
             popup.onClose = { [weak self] in self?.popupWindows.removeValue(forKey: id) }
             popupWindows[id] = popup
             popup.present()

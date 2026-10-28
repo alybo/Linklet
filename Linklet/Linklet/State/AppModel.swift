@@ -50,6 +50,7 @@ final class AppModel: ObservableObject {
     let linkLibrary: LinkLibrary
     let siteData: SiteDataService
     let windowGeometry: WindowGeometryService
+    let windowRegistry: BrowserWindowRegistry
 
     @Published private(set) var targets: [BrowserTarget] = []
     @Published private(set) var isDefaultBrowser = false
@@ -91,6 +92,7 @@ final class AppModel: ObservableObject {
         windowGeometry: WindowGeometryService? = nil,
         searchSettings: SearchSettings? = nil,
         linkLibrary: LinkLibrary? = nil,
+        windowRegistry: BrowserWindowRegistry? = nil,
         discoverTargets: (() -> [BrowserTarget])? = nil
     ) {
         self.defaults = defaults
@@ -102,9 +104,11 @@ final class AppModel: ObservableObject {
         let data = siteData ?? SiteDataService(defaults: defaults)
         self.siteData = data
         self.windowGeometry = windowGeometry ?? WindowGeometryService(defaults: defaults)
+        let registry = windowRegistry ?? BrowserWindowRegistry()
+        self.windowRegistry = registry
         let blocker = AdBlockService(defaults: defaults)
         adBlockService = blocker
-        previewSession = PreviewSession(adBlockService: blocker, siteData: data)
+        previewSession = PreviewSession(adBlockService: blocker, siteData: data, windowRegistry: registry)
         isAdBlockingEnabled = blocker.isEnabled
         showsFullURL = defaults.bool(forKey: PreferenceKey.showsFullURL)
         sortsTargetsByUsage = Self.bool(
@@ -140,6 +144,9 @@ final class AppModel: ObservableObject {
             Task { await settings.ensureIcon(for: url, refresh: true) }
         }
         previewSession.onPageFinished = { [weak self] url, title in self?.linkLibrary.updateTitle(title, for: url) }
+        previewSession.makePopup = { [weak self] configuration, parent, features in
+            WebPopupWindowController(configuration: configuration, parent: parent, features: features, model: self)
+        }
     }
 
     var manuallyOrderedTargets: [BrowserTarget] {
@@ -512,6 +519,7 @@ final class AppModel: ObservableObject {
             windowGeometry: windowGeometry,
             searchSettings: searchSettings,
             linkLibrary: linkLibrary,
+            windowRegistry: windowRegistry,
             discoverTargets: discoverTargets
         )
         child.refreshTargets()

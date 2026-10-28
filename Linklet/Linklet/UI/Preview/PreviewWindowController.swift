@@ -2,6 +2,32 @@ import AppKit
 import Combine
 import SwiftUI
 
+@MainActor
+enum PreviewWindowAppearance {
+    static let initialContentSize = NSSize(width: 900, height: 650)
+    static let minimumSize = NSSize(width: 640, height: 440)
+
+    static func apply(to window: NSWindow) {
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.tabbingMode = .disallowed
+        window.animationBehavior = .none
+        window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+        window.minSize = minimumSize
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(button)?.isHidden = true
+        }
+    }
+}
+
 private final class PreviewWindow: NSWindow {
     var onEscape: (() -> Void)?
     override func sendEvent(_ event: NSEvent) {
@@ -31,7 +57,7 @@ private final class PreviewWindow: NSWindow {
 
 @MainActor
 final class PreviewWindowController: NSWindowController, NSWindowDelegate {
-    private static let initialContentSize = NSSize(width: 900, height: 650)
+    private static let initialContentSize = PreviewWindowAppearance.initialContentSize
     private unowned let model: AppModel
     private var cancellables = Set<AnyCancellable>()
     private var hasAppliedInitialSize = false
@@ -49,28 +75,11 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
         panel.title = "Linklet"
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.titlebarSeparatorStyle = .none
-        panel.isMovableByWindowBackground = true
-        panel.isReleasedWhenClosed = false
-        panel.isRestorable = false
-        panel.tabbingMode = .disallowed
-        panel.animationBehavior = .none
-        panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
-        panel.minSize = NSSize(width: 640, height: 440)
+        PreviewWindowAppearance.apply(to: panel)
         panel.level = model.keepsPreviewVisibleWhenInactive && model.keepsPreviewAboveOtherWindows
             ? .floating
             : .normal
         panel.hidesOnDeactivate = !model.keepsPreviewVisibleWhenInactive
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-
         super.init(window: panel)
         panel.delegate = self
         Publishers.CombineLatest(model.previewSession.$pageTitle, model.previewSession.$currentURL)
@@ -91,6 +100,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         // AppKit owns the window size; the initially empty WebView must not shrink it.
         hostingController.sizingOptions = []
         panel.contentViewController = hostingController
+        hostingController.view.setAccessibilityIdentifier("Linklet.PreviewChrome")
 
         Publishers.CombineLatest(
             model.$keepsPreviewVisibleWhenInactive,
@@ -161,6 +171,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(window.contentView)
+        model.windowRegistry.register(window, session: model.previewSession)
         model.updateDockVisibilitySoon()
 
         if animatesAppearance {
