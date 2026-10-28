@@ -54,6 +54,7 @@ final class PreviewSession: ObservableObject {
     @Published private(set) var isActive = false
     private var pendingURL: URL?
     private var requestedURL: URL?
+    private var requestGeneration = UUID()
     private var shouldRecordInitialTitle = false
 
     let adBlockService: AdBlockService
@@ -70,6 +71,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func endSession(resetTemporaryData: Bool = true) {
+        requestGeneration = UUID()
         let wasActive = isActive
         webView?.stopLoading()
         webView?.navigationDelegate = nil
@@ -105,17 +107,22 @@ final class PreviewSession: ObservableObject {
             webView.loadHTMLString(Self.welcomeHTML, baseURL: nil)
         } else if let pendingURL {
             self.pendingURL = nil
-            if !adBlockService.isEnabled {
-                webView.load(URLRequest(url: pendingURL))
-                return
-            }
-            Task { @MainActor [weak self, weak webView] in
-                guard let self, let webView else { return }
-                await adBlockService.prepareIfEnabled()
-                guard self.webView === webView, !isWelcome else { return }
-                adBlockService.attach(to: webView.configuration.userContentController)
-                webView.load(URLRequest(url: pendingURL))
-            }
+            navigate(to: pendingURL, in: webView)
+        }
+    }
+
+    private func navigate(to url: URL, in webView: WKWebView) {
+        if !adBlockService.isEnabled {
+            webView.load(URLRequest(url: url))
+            return
+        }
+        let generation = requestGeneration
+        Task { @MainActor [weak self, weak webView] in
+            guard let self, let webView else { return }
+            await adBlockService.prepareIfEnabled()
+            guard self.webView === webView, !isWelcome, requestGeneration == generation, requestedURL == url else { return }
+            adBlockService.attach(to: webView.configuration.userContentController)
+            webView.load(URLRequest(url: url))
         }
     }
 
@@ -132,6 +139,7 @@ final class PreviewSession: ObservableObject {
             errorMessage = L("Only HTTP and HTTPS links can be previewed.")
             return
         }
+        requestGeneration = UUID()
         startSessionIfNeeded()
         isWelcome = false
         errorMessage = nil
@@ -153,6 +161,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func showWelcome(isDefault: Bool) {
+        requestGeneration = UUID()
         startSessionIfNeeded()
         webView?.stopLoading()
         webView = nil
@@ -194,12 +203,24 @@ final class PreviewSession: ObservableObject {
         isWelcome && webView === view && isMainFrame && view.url?.absoluteString == "about:blank"
     }
 
-    func submitAddress() {
-        guard let url = URLPolicy.normalizedURL(from: addressText) else {
-            errorMessage = L("Enter a valid web address.")
-            return
-        }
-        load(url)
+    @discardableResult
+    func submitAddress(_ input: String, engine: SearchEngine) -> Bool {
+        guard isActive, !isWelcome, let webView,
+              let url = SearchInput.destination(for: input, engine: engine) else { return false }
+        requestGeneration = UUID()
+        errorMessage = nil
+        pendingURL = nil
+        requestedURL = url
+        currentURL = url
+        addressText = url.absoluteString
+        isPreparingNewPage = false
+        isLoading = true
+        estimatedProgress = 0
+        shouldRecordInitialTitle = false
+        // A URL-bar navigation belongs to this live page. Retain its WebKit
+        // configuration, cookies, history, opener and original incoming URL.
+        navigate(to: url, in: webView)
+        return true
     }
 
     func goBack() {
@@ -212,6 +233,7 @@ final class PreviewSession: ObservableObject {
     }
     func reload() { webView?.reload() }
     func stopLoading() {
+        requestGeneration = UUID()
         webView?.stopLoading()
         pendingURL = nil
         requestedURL = nil
@@ -256,7 +278,7 @@ final class PreviewSession: ObservableObject {
         let nextCanGoBack = webView.canGoBack
         let nextCanGoForward = webView.canGoForward
 
-        let canAdoptWebViewURL = !isPreparingNewPage || nextURL == requestedURL
+        let canAdoptWebViewURL = requestedURL == nil || nextURL == requestedURL
         if canAdoptWebViewURL, currentURL != nextURL { currentURL = nextURL }
         if pageTitle != nextTitle { pageTitle = nextTitle }
         if isLoading != nextIsLoading { isLoading = nextIsLoading }

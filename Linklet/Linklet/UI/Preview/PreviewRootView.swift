@@ -85,7 +85,9 @@ struct PreviewPageView: View {
         HStack(spacing: 8) {
             PreviewWindowControls(session: session)
 
-            PreviewLocationView(session: session, title: siteTitle)
+            PreviewLocationView(session: session, title: siteTitle) { input in
+                session.submitAddress(input, engine: model?.searchSettings.engine ?? .google)
+            }
 
             if !session.isWelcome && session.isActive {
                 if model != nil {

@@ -6,6 +6,7 @@ import SwiftUI
 struct PreviewLocationView: View {
     @ObservedObject var session: PreviewSession
     let title: String
+    let submitAddress: (String) -> Bool
     @State private var showsFullAddress = false
 
     var body: some View {
@@ -20,7 +21,7 @@ struct PreviewLocationView: View {
                 Spacer(minLength: 12)
             }
             if !session.isWelcome, let url = session.currentURL {
-                PreviewAddressDisclosure(url: url, isExpanded: $showsFullAddress) { [weak session] in
+                PreviewAddressDisclosure(url: url, isExpanded: $showsFullAddress, submitAddress: submitAddress) { [weak session] in
                     guard let view = session?.webView else { return }
                     view.window?.makeFirstResponder(view)
                 }
@@ -40,6 +41,7 @@ struct PreviewLocationView: View {
 private struct PreviewAddressDisclosure: NSViewRepresentable {
     let url: URL
     @Binding var isExpanded: Bool
+    let submitAddress: (String) -> Bool
     let returnFocusToPage: () -> Void
 
     func makeNSView(context: Context) -> PreviewAddressControlView {
@@ -51,6 +53,7 @@ private struct PreviewAddressDisclosure: NSViewRepresentable {
     func updateNSView(_ view: PreviewAddressControlView, context: Context) {
         view.onExpansionChanged = { isExpanded = $0 }
         view.returnFocusToPage = returnFocusToPage
+        view.onSubmit = submitAddress
         view.update(url: url, expanded: isExpanded)
     }
 
@@ -60,13 +63,14 @@ private struct PreviewAddressDisclosure: NSViewRepresentable {
 }
 
 @MainActor
-final class PreviewAddressControlView: NSView {
+final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     override var mouseDownCanMoveWindow: Bool { false }
     private(set) var isExpanded = false
     let addressButton = NSButton(title: "", target: nil, action: nil)
     let addressField = NSTextField(labelWithString: "")
     var onExpansionChanged: ((Bool) -> Void)?
     var returnFocusToPage: (() -> Void)?
+    var onSubmit: ((String) -> Bool)?
 
     private var fullAddress = ""
     private var eventMonitor: Any?
@@ -97,14 +101,18 @@ final class PreviewAddressControlView: NSView {
         addressButton.contentTintColor = .secondaryLabelColor
         addressButton.cell?.lineBreakMode = .byTruncatingMiddle
         addressButton.setAccessibilityIdentifier("preview-address-disclosure")
-        addressField.isEditable = false
+        addressField.isEditable = true
         addressField.isSelectable = true
+        addressField.delegate = self
+        addressField.contentType = .URL
+        addressField.isAutomaticTextCompletionEnabled = false
         addressField.font = .systemFont(ofSize: 12)
         addressField.textColor = .labelColor
         addressField.focusRingType = .none
         addressField.lineBreakMode = .byClipping
         addressField.maximumNumberOfLines = 1
         addressField.cell?.usesSingleLineMode = true
+        addressField.cell?.isScrollable = true
         addressField.setAccessibilityIdentifier("preview-full-address")
         addressField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addressField.isHidden = true
@@ -123,9 +131,10 @@ final class PreviewAddressControlView: NSView {
         addressButton.setAccessibilityLabel(L("Show full address"))
         addressButton.setAccessibilityValue(addressButton.title)
         addressField.setAccessibilityLabel(L("Full address"))
-        if addressChanged { addressField.stringValue = fullAddress }
+        // The field is a draft while expanded. Redirects, SPA changes and KVO
+        // progress updates must not replace text or selection under the user.
+        if addressChanged && !isExpanded { addressField.stringValue = fullAddress }
         setExpanded(expanded, notify: false)
-        if addressChanged && expanded { selectAddressSoon() }
     }
 
     override func layout() {
@@ -183,6 +192,7 @@ final class PreviewAddressControlView: NSView {
 
     private func setExpanded(_ expanded: Bool, notify: Bool) {
         guard isExpanded != expanded else { return }
+        if !isExpanded || !expanded { addressField.stringValue = fullAddress }
         isExpanded = expanded
         addressButton.isHidden = expanded
         addressField.isHidden = !expanded
@@ -205,6 +215,20 @@ final class PreviewAddressControlView: NSView {
         }
     }
 
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            let draft = textView.string
+            guard onSubmit?(draft) == true else { return true }
+            collapse(returningFocus: true)
+            return true
+        }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            collapse(returningFocus: true)
+            return true
+        }
+        return false
+    }
+
     private func handle(_ event: NSEvent) -> NSEvent? {
         if event.type == .keyDown {
             guard event.window === window else { return event }
@@ -213,7 +237,8 @@ final class PreviewAddressControlView: NSView {
                 expandAddress()
                 return nil
             }
-            if isExpanded, modifiers.isEmpty, [53, 36, 76].contains(event.keyCode) {
+            if isExpanded, modifiers.isEmpty, event.keyCode == 53 {
+                if let editor = addressField.currentEditor() as? NSTextView, editor.hasMarkedText() { return event }
                 collapse(returningFocus: true)
                 return nil
             }

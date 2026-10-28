@@ -1282,17 +1282,44 @@ final class WebPopupTests: XCTestCase {
             let editor = try XCTUnwrap(address.addressField.currentEditor())
             XCTAssertEqual(editor.string, url.absoluteString)
             XCTAssertEqual(editor.selectedRange, NSRange(location: 0, length: url.absoluteString.utf16.count))
-            XCTAssertFalse(address.addressField.isEditable)
+            XCTAssertTrue(address.addressField.isEditable)
             XCTAssertEqual(window.frame, frame)
             XCTAssertEqual(page.frame, pageFrame)
             XCTAssertEqual(session.navigationID, navigationID)
             XCTAssertTrue(session.webView === page)
             let kept = try await page.evaluateJavaScript("window.addressSentinel") as? String
             XCTAssertEqual(kept, "kept")
+            let editingView = try XCTUnwrap(editor as? NSTextView)
+            editingView.insertText("unfinished draft", replacementRange: editingView.selectedRange())
+            _ = try await page.evaluateJavaScript("history.replaceState(null,'','#address-test');true")
+            let changedURL = try XCTUnwrap(URL(string: url.absoluteString + "#address-test"))
+            try await waitUntil { session.currentURL == changedURL }
+            // Allow SwiftUI's URL update to reach the native field too.
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(editingView.string, "unfinished draft", "A live URL update must not overwrite the draft")
             try sendAddressKey(to: window, code: 53, characters: "\u{1b}")
             try await waitUntil { !address.isExpanded }
             XCTAssertTrue(window.isVisible, "Escape collapses the address instead of closing the page")
+            try await waitUntil { address.addressField.stringValue == changedURL.absoluteString }
             try sendAddressKey(to: window, code: 37, characters: "д", modifiers: .command)
+            try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
+            let targetPath = url.path == "/site" ? "/destination" : "/site"
+            let destination = URL(string: "http://127.0.0.1:\(port)" + targetPath)!
+            let cookie = HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "address-login", .value: "kept"])!
+            await page.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+            let input = try XCTUnwrap(address.addressField.currentEditor() as? NSTextView)
+            input.insertText(destination.absoluteString, replacementRange: input.selectedRange())
+            try sendAddressKey(to: window, code: 36, characters: "\r")
+            try await waitUntil { !address.isExpanded && session.currentURL == destination && !session.isLoading }
+            XCTAssertTrue(session.webView === page)
+            XCTAssertEqual(session.navigationID, navigationID)
+            XCTAssertEqual(session.originalURL, sourceURL)
+            XCTAssertTrue(session.canGoBack, "Address entry must retain back/forward history")
+            let cookies = await page.configuration.websiteDataStore.httpCookieStore.allCookies()
+            XCTAssertTrue(cookies.contains { $0.name == "address-login" && $0.value == "kept" })
+            session.goBack()
+            try await waitUntil { session.currentURL == changedURL && !session.isLoading }
+            try sendAddressKey(to: window, code: 37, characters: "l", modifiers: .command)
             try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
             let other = window === sourceWindow ? siteWindow : sourceWindow
             other.makeKeyAndOrderFront(nil)
@@ -1316,6 +1343,83 @@ final class WebPopupTests: XCTestCase {
         ] {
             XCTAssertEqual(PreviewAddressControlView.compactAddress(for: try XCTUnwrap(URL(string: input))), expected)
         }
+    }
+
+    func testAddressSearchUsesTheCurrentlySelectedEngineWithoutSendingATestRequest() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "AddressSearchTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let original = URL(string: "http://127.0.0.1:\(port)/site")!
+        model.showPreview(url: original)
+        try await waitUntil { model.previewSession.pageTitle == "Original site" }
+        let window = try XCTUnwrap(NSApp.windows.first { window in
+            (window.contentViewController as? NSHostingController<PreviewRootView>)?.rootView.session === model.previewSession
+        })
+        let page = try XCTUnwrap(model.previewSession.webView)
+        let capture = AddressNavigationCapture()
+        page.navigationDelegate = capture
+        let address = try addressControl(in: window)
+        address.addressButton.performClick(nil)
+        try await waitUntil { address.addressField.currentEditor() != nil }
+        let editor = try XCTUnwrap(address.addressField.currentEditor() as? NSTextView)
+        let query = "A+B & тест"
+        editor.insertText(query, replacementRange: editor.selectedRange())
+        // Select after the field has opened to verify this reads live settings.
+        model.searchSettings.setEngine(.bing)
+        try sendAddressKey(to: window, code: 36, characters: "\r")
+        try await waitUntil { capture.urls.count == 1 }
+        XCTAssertEqual(capture.urls, [SearchEngine.bing.searchURL(for: query)])
+        XCTAssertFalse(address.isExpanded)
+        XCTAssertTrue(model.previewSession.webView === page)
+        XCTAssertEqual(model.previewSession.originalURL, original)
+        XCTAssertFalse(model.previewSession.submitAddress("  \n  ", engine: .bing))
+    }
+
+    func testLatestAddressWinsWhileLocalAdBlockRulesArePreparing() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "AddressPreparationTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: AdBlockService.enabledKey)
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        let blocker = AdBlockService(defaults: defaults, cacheDirectory: cache, automaticUpdates: false)
+        let data = SiteDataService(defaults: defaults, persistentStore: .nonPersistent())
+        let session = PreviewSession(adBlockService: blocker, siteData: data)
+        defer {
+            session.endSession()
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: cache)
+        }
+        let original = URL(string: "http://127.0.0.1:\(port)/site")!
+        let destination = URL(string: "http://127.0.0.1:\(port)/destination")!
+        var recordedTitles = 0
+        session.onPageFinished = { _, _ in recordedTitles += 1 }
+        session.load(original)
+        let page = WKWebView(frame: .zero, configuration: WebPreview.configuration(websiteDataStore: session.websiteDataStore))
+        let coordinator = WebPreview.Coordinator(session: session)
+        page.uiDelegate = coordinator
+        page.navigationDelegate = coordinator
+        coordinator.startObserving(page)
+        session.attach(page)
+        let navigationID = session.navigationID
+        // Even a repeated URL must supersede earlier pending requests to it.
+        XCTAssertTrue(session.submitAddress(destination.absoluteString, engine: .google))
+        XCTAssertTrue(session.submitAddress(original.absoluteString, engine: .google))
+        XCTAssertTrue(session.submitAddress(destination.absoluteString, engine: .google))
+        try await waitUntil { session.pageTitle == "Destination" && !session.isLoading }
+        XCTAssertFalse(server.pageRequests.contains { $0.hasPrefix("GET /site ") })
+        XCTAssertEqual(server.pageRequests.filter { $0.hasPrefix("GET /destination ") }.count, 1)
+        XCTAssertTrue(session.webView === page)
+        XCTAssertEqual(session.navigationID, navigationID)
+        XCTAssertEqual(session.originalURL, original)
+        XCTAssertEqual(recordedTitles, 0, "The skipped incoming page must not be renamed after the new address")
     }
 
     func testSharedChromeRegistersNestedWindowsAndActivatesWithoutReloading() async throws {
@@ -1530,6 +1634,17 @@ final class WebPopupTests: XCTestCase {
     }
 }
 
+/// Cancel before WebKit contacts the search provider; only inspect the intended URL.
+@MainActor
+private final class AddressNavigationCapture: NSObject, WKNavigationDelegate {
+    var urls: [URL] = []
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url { urls.append(url) }
+        decisionHandler(.cancel)
+    }
+}
+
 /// Local HTTP fixture: different origins for the site (127.0.0.1) and provider (localhost).
 /// Socket parsing and response work stay on a utility queue.
 private final class PopupHTTPFixture: @unchecked Sendable {
@@ -1538,6 +1653,8 @@ private final class PopupHTTPFixture: @unchecked Sendable {
     private let lock = NSLock()
     private var receivedPosts = 0
     private var receivedBody = ""
+    private var receivedPageRequests: [String] = []
+    var pageRequests: [String] { lock.lock(); defer { lock.unlock() }; return receivedPageRequests }
     private var iconData: Data?
     private let conventionalIcon: Data?
     private var iconVersion = 1
@@ -1606,6 +1723,7 @@ private final class PopupHTTPFixture: @unchecked Sendable {
         let port = listener.port!.rawValue
         let firstLine = headers.components(separatedBy: "\r\n")[0]
         lock.lock()
+        receivedPageRequests.append(firstLine)
         let currentIcon = iconData
         let currentVersion = iconVersion
         lock.unlock()

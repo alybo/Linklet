@@ -61,6 +61,7 @@ final class AdBlockService {
     }
 
     func attach(to controller: WKUserContentController) {
+        guard !controllers.contains(controller) else { return }
         controllers.add(controller)
         if isEnabled, let ruleList { controller.add(ruleList) }
     }

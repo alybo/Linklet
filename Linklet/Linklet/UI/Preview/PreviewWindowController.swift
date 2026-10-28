@@ -46,6 +46,12 @@ private final class PreviewWindow: NSWindow {
         ])
 
         if event.keyCode == 53, commandModifiers.isEmpty {
+            // Local address handling consumes Escape outside IME composition.
+            // Let native text input handle a remaining marked-text cancellation.
+            if let editor = firstResponder as? NSTextView, editor.isFieldEditor {
+                super.sendEvent(event)
+                return
+            }
             if let onEscape { onEscape() } else { performClose(nil) }
             return
         }
