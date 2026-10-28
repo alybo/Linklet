@@ -1602,6 +1602,73 @@ final class WebPopupTests: XCTestCase {
         return nil
     }
 
+    func testWebWindowDeliversMouseMovesAfterTextEntryAndMapDragging() async throws {
+        let pointerPosition = CGEvent(source: nil)?.location
+        defer { if let pointerPosition { CGWarpMouseCursorPosition(pointerPosition) } }
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "WebCursorTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/cursor")!)
+        try await waitUntil { model.previewSession.pageTitle == "Cursor fixture" }
+        let source = try XCTUnwrap(model.previewSession.webView)
+        _ = try await source.evaluateJavaScript("window.open('/cursor','cursor-child');true")
+        try await waitUntil { model.windowRegistry.windows.count == 2 && model.windowRegistry.windows.last?.title == "Cursor fixture" }
+        let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        for page in [source, popup.webView] {
+            let window = try XCTUnwrap(page.window)
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(page)
+            window.contentView?.layoutSubtreeIfNeeded()
+            // Cursor updates are rejected by WebKit while an appearing window
+            // is still transparent and another window is under the pointer.
+            try await waitUntil { window.alphaValue == 1 && window.isKeyWindow }
+            guard window.isKeyWindow else { return }
+            XCTAssertTrue(window.acceptsMouseMovedEvents, "WebKit needs mouse moves to refresh hover and cursors")
+            func mouse(_ type: NSEvent.EventType, _ point: NSPoint) throws {
+                let location = page.convert(point, to: nil)
+                let screenPoint = window.convertPoint(toScreen: location)
+                CGWarpMouseCursorPosition(CGPoint(x: screenPoint.x,
+                    y: (NSScreen.screens.first?.frame.maxY ?? 0) - screenPoint.y))
+                let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location,
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: type == .leftMouseDown ? 1 : 0, pressure: type == .leftMouseDown ? 1 : 0))
+                // Let AppKit update tracking areas before dispatch, just as for a
+                // physical event. Direct sendEvent bypasses that queue processing.
+                NSApp.postEvent(event, atStart: true)
+                while let queued = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02),
+                                                   inMode: .default, dequeue: true) {
+                    NSApp.sendEvent(queued)
+                }
+            }
+            try mouse(.mouseMoved, NSPoint(x: 70, y: 50))
+            try mouse(.leftMouseDown, NSPoint(x: 70, y: 50))
+            try mouse(.leftMouseUp, NSPoint(x: 70, y: 50))
+            try sendAddressKey(to: window, code: 0, characters: "a")
+            try await waitUntil { (try? await page.evaluateJavaScript("document.getElementById('entry').value")) as? String == "a" }
+            try mouse(.mouseMoved, NSPoint(x: 70, y: 150))
+            try await waitUntil { (try? await page.evaluateJavaScript("window.lastMove")) as? String == "map" }
+            try await waitUntil { NSCursor.current == .openHand }
+            try mouse(.leftMouseDown, NSPoint(x: 70, y: 150))
+            try await waitUntil { NSCursor.current == .closedHand }
+            try mouse(.leftMouseDragged, NSPoint(x: 100, y: 170))
+            try mouse(.leftMouseUp, NSPoint(x: 100, y: 170))
+            try await waitUntil { NSCursor.current == .openHand }
+            try mouse(.mouseMoved, NSPoint(x: 70, y: 270))
+            try await waitUntil { (try? await page.evaluateJavaScript("window.lastMove")) as? String == "plain" }
+            try await waitUntil { NSCursor.current == .arrow }
+            let state = try await page.evaluateJavaScript("[document.getElementById('entry').value,window.released,document.getElementById('map').style.cursor]") as? [String]
+            XCTAssertEqual(state, ["a", "yes", "grab"])
+        }
+    }
+
     func testRegistryDistinguishesDuplicateAddressesAndRestoresMinimizedWindow() async throws {
         let registry = BrowserWindowRegistry()
         let blocker = AdBlockService(automaticUpdates: false)
@@ -1714,7 +1781,7 @@ final class WebPopupTests: XCTestCase {
             if await condition() { return }
             try await Task.sleep(for: .milliseconds(100))
         }
-        XCTFail("WebKit fixture did not complete within 10 seconds", file: file, line: line)
+        XCTFail("WebKit fixture did not complete within 10 seconds (app active: \(NSApp.isActive), activation policy: \(NSApp.activationPolicy().rawValue))", file: file, line: line)
     }
 
     private func addressControl(in window: NSWindow) throws -> PreviewAddressControlView {
@@ -1858,6 +1925,21 @@ private final class PopupHTTPFixture: @unchecked Sendable {
             status = "302 Found"
             extraHeaders = "Location: http://localhost:\(port)/callback\r\nSet-Cookie: login=fixture; Path=/; SameSite=Lax\r\n"
             html = ""
+        } else if firstLine.hasPrefix("GET /cursor ") {
+            status = "200 OK"
+            html = """
+            <title>Cursor fixture</title><style>
+            body{margin:0}#entry{position:absolute;left:30px;top:30px;width:220px;height:40px}
+            #map{position:absolute;left:30px;top:110px;width:300px;height:100px;cursor:grab;background:#ddd;user-select:none}
+            #plain{position:absolute;left:30px;top:240px;width:300px;height:100px;cursor:default;background:#eee}
+            </style><input id="entry"><div id="map">Drag map</div><div id="plain">Normal pointer</div><script>
+            window.lastMove='';window.released='no';
+            document.addEventListener('mousemove',e=>window.lastMove=e.target.id);
+            const map=document.getElementById('map');
+            map.addEventListener('mousedown',()=>map.style.cursor='grabbing');
+            document.addEventListener('mouseup',()=>{map.style.cursor='grab';window.released='yes'});
+            </script>
+            """
         } else if firstLine.hasPrefix("GET /destination ") {
             status = "200 OK"
             html = "<title>Destination</title><h1>Ordinary destination</h1>"

@@ -13,6 +13,9 @@ enum PreviewWindowAppearance {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
+        // WebKit refreshes hover and CSS cursors on mouse moves, including after
+        // editing and dragging. NSWindow does not deliver these by default.
+        window.acceptsMouseMovedEvents = true
         window.isReleasedWhenClosed = false
         window.isRestorable = false
         window.tabbingMode = .disallowed

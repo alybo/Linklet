@@ -43,6 +43,13 @@ struct SidebarMetrics {
     var footerIconSize: CGFloat { 11 + iconSize / 4 }
     var labelFont: Font { .system(size: labelSize, weight: .semibold) }
     var groupFont: Font { .system(size: max(10, labelSize - 1), weight: .semibold) }
+    var openAddressSize: CGFloat { max(9, labelSize - 3) }
+    var openAddressFont: Font { .system(size: openAddressSize, weight: .regular) }
+    var openIconSize: CGFloat {
+        let manager = NSLayoutManager()
+        return ceil(manager.defaultLineHeight(for: .systemFont(ofSize: labelSize, weight: .semibold))
+            + manager.defaultLineHeight(for: .systemFont(ofSize: openAddressSize)))
+    }
     var rowHeight: CGFloat { max(iconSize + 2, labelSize * 1.4) }
     var rowGap: CGFloat { 20 * labelSize / 13 }
     var iconGap: CGFloat { 8 }
@@ -235,17 +242,17 @@ struct SidebarView: View {
                             if window.isLoading {
                                 ProgressView().controlSize(.small)
                             } else if let url = window.url {
-                                SiteIcon(settings: settings, url: url, size: layout.iconSize)
+                                SiteIcon(settings: settings, url: url, size: layout.openIconSize)
                             } else {
                                 Image(systemName: "globe")
                             }
-                        }.frame(width: layout.iconSize, height: layout.iconSize)
-                        VStack(alignment: .leading, spacing: 3) {
+                        }.frame(width: layout.openIconSize, height: layout.openIconSize)
+                        VStack(alignment: .leading, spacing: 0) {
                             Text(window.title).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor)
                                 .lineLimit(1).truncationMode(.tail)
                             if let url = window.url {
                                 Text(PreviewAddressControlView.compactAddress(for: url))
-                                    .font(layout.groupFont).foregroundStyle(.secondary)
+                                    .font(layout.openAddressFont).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
