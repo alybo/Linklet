@@ -14,8 +14,15 @@ struct RecentLink: Codable, Equatable, Identifiable {
 }
 
 enum SidebarSection: String, Codable, CaseIterable, Identifiable {
-    case bookmarks, recent
+    case open, bookmarks, recent
     var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .open: return L("Open windows")
+        case .bookmarks: return L("Bookmarks")
+        case .recent: return L("Recent links")
+        }
+    }
 }
 
 /// Explicit bookmarks persist. Recent incoming links stay in memory unless saving is enabled.
@@ -44,7 +51,9 @@ final class LinkLibrary: ObservableObject {
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
-        let savedOrder = Self.read([SidebarSection].self, key: "sidebarSectionOrder", defaults: defaults) ?? SidebarSection.allCases
+        var savedOrder = Self.read([SidebarSection].self, key: "sidebarSectionOrder", defaults: defaults) ?? SidebarSection.allCases
+        // Add the live section above existing sections without resetting their order.
+        if !savedOrder.contains(.open) { savedOrder.insert(.open, at: 0) }
         var seen = Set<SidebarSection>()
         sectionOrder = (savedOrder + SidebarSection.allCases).filter { seen.insert($0).inserted }
         expandedSections = Set(SidebarSection.allCases.filter { defaults.object(forKey: "sidebarExpanded.\($0.rawValue)") as? Bool ?? true })

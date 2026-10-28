@@ -79,6 +79,7 @@ struct SidebarView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var library: LinkLibrary
     @ObservedObject private var settings: SearchSettings
+    @ObservedObject private var windows: BrowserWindowRegistry
     let dismiss: () -> Void
     @ObservedObject var editor: SidebarEditorState
 
@@ -86,6 +87,7 @@ struct SidebarView: View {
         self.model = model
         self.library = model.linkLibrary
         self.settings = model.searchSettings
+        self.windows = model.windowRegistry
         self.dismiss = dismiss
         self.editor = editor
     }
@@ -160,11 +162,16 @@ struct SidebarView: View {
                     HStack(spacing: layout.iconGap) {
                         Image(systemName: library.expandedSections.contains(section) ? "chevron.down" : "chevron.right")
                             .font(.system(size: 9, weight: .semibold)).frame(width: 10)
-                        Text(L(section == .bookmarks ? "Bookmarks" : "Recent links"))
+                        Text(section.title)
                             .font(layout.groupFont).foregroundStyle(SidebarLayout.groupColor)
+                        if section == .open, !windows.windows.isEmpty {
+                            Text("\(windows.windows.count)")
+                                .font(layout.groupFont).foregroundStyle(.secondary)
+                        }
                         Spacer(minLength: 0)
                     }.frame(height: layout.rowHeight).contentShape(Rectangle())
                 }.buttonStyle(.plain)
+                    .accessibilityIdentifier("sidebar-section-\(section.rawValue)")
                     .accessibilityValue(library.expandedSections.contains(section) ? L("Expanded") : L("Collapsed"))
                 if section == .bookmarks {
                     Menu {
@@ -185,8 +192,11 @@ struct SidebarView: View {
                     .disabled(library.sectionOrder.last == section)
             }
             if library.expandedSections.contains(section) {
-                if section == .bookmarks { bookmarkContents }
-                else { recentContents }
+                switch section {
+                case .open: openContents
+                case .bookmarks: bookmarkContents
+                case .recent: recentContents
+                }
             }
             Divider().padding(.vertical, layout.rowGap)
         }
@@ -211,6 +221,55 @@ struct SidebarView: View {
                     .font(layout.groupFont).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var openContents: some View {
+        VStack(alignment: .leading, spacing: layout.rowGap) {
+            ForEach(windows.windows) { window in
+                Button {
+                    dismiss()
+                    windows.activate(window.id)
+                } label: {
+                    HStack(spacing: layout.iconGap) {
+                        Group {
+                            if window.isLoading {
+                                ProgressView().controlSize(.small)
+                            } else if let url = window.url {
+                                SiteIcon(settings: settings, url: url, size: layout.iconSize)
+                            } else {
+                                Image(systemName: "globe")
+                            }
+                        }.frame(width: layout.iconSize, height: layout.iconSize)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(window.title).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor)
+                                .lineLimit(1).truncationMode(.tail)
+                            if let url = window.url {
+                                Text(PreviewAddressControlView.compactAddress(for: url))
+                                    .font(layout.groupFont).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        if window.isMiniaturized {
+                            Image(systemName: "minus.rectangle").font(.system(size: 11))
+                                .foregroundStyle(.secondary).accessibilityLabel(L("Minimized"))
+                        } else if window.isKey {
+                            Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                                .accessibilityLabel(L("Active window"))
+                        }
+                    }.frame(maxWidth: .infinity, minHeight: layout.rowHeight, alignment: .leading)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .help(window.url?.absoluteString ?? window.title)
+                    .accessibilityIdentifier("sidebar-window-\(window.id.uuidString)")
+                    .contextMenu {
+                        Button(L("Close window"), role: .destructive) { windows.close(window.id) }
+                    }
+            }
+            if windows.windows.isEmpty {
+                Text(L("No open windows.")).font(layout.groupFont).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("sidebar-open-empty")
+            }
+        }.padding(.top, layout.rowGap)
     }
 
     private var recentContents: some View {
@@ -513,7 +572,7 @@ struct SidebarSettingsView: View {
         Form {
             Section {
                 Toggle(L("Enable global sidebar"), isOn: Binding(get: { library.isEnabled }, set: library.setEnabled))
-                Text(L("Hover at the left edge of any screen to show bookmarks and recent links. Clicking a link opens a normal Linklet preview."))
+                Text(L("Hover at the left edge of any screen to see open windows, bookmarks and recent links. Select an open window to return to it, or a saved link to open a preview."))
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle(L("Show sidebar reveal indicator"), isOn: Binding(get: { library.showsRevealIndicator }, set: library.setShowsRevealIndicator))
                     .disabled(!library.isEnabled)

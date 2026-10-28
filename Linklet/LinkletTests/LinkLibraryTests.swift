@@ -363,24 +363,38 @@ final class LinkLibraryTests: XCTestCase {
         let library = LinkLibrary(defaults: defaults)
         library.bind(to: settings)
         let site = try settings.addFavoriteSite(name: "Docs", address: "https://swift.org")
-        XCTAssertEqual(library.sectionOrder, [.bookmarks, .recent])
+        XCTAssertEqual(library.sectionOrder, [.open, .bookmarks, .recent])
         XCTAssertEqual(library.expandedSections, Set(SidebarSection.allCases))
         library.toggleSection(.bookmarks)
         library.moveSection(.recent, before: .bookmarks)
-        XCTAssertEqual(library.sectionOrder, [.recent, .bookmarks])
+        XCTAssertEqual(library.sectionOrder, [.open, .recent, .bookmarks])
         XCTAssertFalse(library.expandedSections.contains(.bookmarks))
         XCTAssertTrue(library.expandedSections.contains(.recent))
         let restored = LinkLibrary(defaults: defaults)
-        XCTAssertEqual(restored.sectionOrder, [.recent, .bookmarks])
-        XCTAssertEqual(restored.expandedSections, [.recent])
+        XCTAssertEqual(restored.sectionOrder, [.open, .recent, .bookmarks])
+        XCTAssertEqual(restored.expandedSections, [.open, .recent])
+        restored.toggleSection(.open)
+        restored.moveSection(.open, before: nil)
+        let reordered = LinkLibrary(defaults: defaults)
+        XCTAssertEqual(reordered.sectionOrder, [.recent, .bookmarks, .open])
+        XCTAssertEqual(reordered.expandedSections, [.recent])
+        restored.moveSection(.open, before: .recent)
+        restored.toggleSection(.open)
         XCTAssertEqual(library.rootOrder, [site.id])
         XCTAssertEqual(settings.favoriteSites, [site])
         restored.moveSection(.recent, before: nil)
         restored.toggleSection(.bookmarks)
-        XCTAssertEqual(restored.sectionOrder, [.bookmarks, .recent])
+        XCTAssertEqual(restored.sectionOrder, [.open, .bookmarks, .recent])
         XCTAssertEqual(restored.expandedSections, Set(SidebarSection.allCases))
         defaults.set(try JSONEncoder().encode([SidebarSection.recent, .recent]), forKey: "sidebarSectionOrder")
-        XCTAssertEqual(LinkLibrary(defaults: defaults).sectionOrder, [.recent, .bookmarks])
+        XCTAssertEqual(LinkLibrary(defaults: defaults).sectionOrder, [.open, .recent, .bookmarks])
+        // A profile from before Open windows keeps its chosen order and collapses.
+        defaults.set(try JSONEncoder().encode([SidebarSection.recent, .bookmarks]), forKey: "sidebarSectionOrder")
+        defaults.set(false, forKey: "sidebarExpanded.recent")
+        let migrated = LinkLibrary(defaults: defaults)
+        XCTAssertEqual(migrated.sectionOrder, [.open, .recent, .bookmarks])
+        XCTAssertEqual(migrated.expandedSections, [.open, .bookmarks])
+        XCTAssertEqual(settings.favoriteSites, [site])
     }
 
     func testRecentPaginationAddsTenAndResetsWithoutDiscardingHistory() {
@@ -1499,6 +1513,95 @@ final class WebPopupTests: XCTestCase {
         XCTAssertFalse(model.hasOpenWindows)
     }
 
+    func testSidebarOpenWindowsTracksLivePagesAndActivatesWithoutReloading() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "SidebarOpenWindows.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in throw FavoriteSiteIconError.unavailable })
+        let model = AppModel(defaults: defaults, searchSettings: settings, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        model.linkLibrary.setEnabled(true)
+        let sidebar = SidebarWindowController(model: model, reduceMotion: { true })
+        defer {
+            sidebar.hide(animated: false)
+            model.closeAllWindows()
+            model.linkLibrary.setEnabled(false)
+            defaults.removePersistentDomain(forName: suite)
+        }
+        let source = URL(string: "http://127.0.0.1:\(port)/site")!
+        model.showPreview(url: source)
+        try await waitUntil { model.previewSession.pageTitle == "Original site" }
+        let page = try XCTUnwrap(model.previewSession.webView)
+        _ = try await page.evaluateJavaScript("window.open('/destination','sidebar-child');true")
+        try await waitUntil { model.windowRegistry.windows.count == 2 && model.windowRegistry.windows.last?.title == "Destination" }
+        let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        let popupWindow = try XCTUnwrap(popup.window)
+        _ = try await popup.webView.evaluateJavaScript("window.sidebarSentinel='kept';document.title='Changed window';true")
+        try await waitUntil { model.windowRegistry.windows.last?.title == "Changed window" }
+        // Production chrome hides native buttons; enable miniaturization in this fixture.
+        popupWindow.styleMask.insert(.miniaturizable)
+        popupWindow.miniaturize(nil)
+        try await waitUntil { model.windowRegistry.windows.last?.isMiniaturized == true }
+        sidebar.toggle()
+        let content = try XCTUnwrap(sidebar.window?.contentView)
+        let sourceID = "sidebar-window-\(model.previewSession.windowID.uuidString)"
+        let popupID = "sidebar-window-\(popup.session.windowID.uuidString)"
+        try await waitUntil { self.accessibilityNode(in: content, identifier: popupID) != nil }
+        XCTAssertNotNil(accessibilityNode(in: content, identifier: sourceID))
+        let row = try XCTUnwrap(accessibilityNode(in: content, identifier: popupID))
+        let before = server.pageRequests
+        XCTAssertEqual(row.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { !sidebar.isPresented && !popupWindow.isMiniaturized && popupWindow.isKeyWindow }
+        let sentinel = try await popup.webView.evaluateJavaScript("window.sidebarSentinel") as? String
+        XCTAssertEqual(sentinel, "kept")
+        XCTAssertEqual(server.pageRequests, before, "Selecting a live window must not issue a new page request")
+
+        sidebar.toggle()
+        try await waitUntil { self.accessibilityNode(in: content, identifier: popupID) != nil }
+        if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-open-windows-sidebar.png"))
+        }
+        let section = try XCTUnwrap(accessibilityNode(in: content, identifier: "sidebar-section-open"))
+        XCTAssertEqual(section.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { self.accessibilityNode(in: content, identifier: popupID) == nil }
+        XCTAssertFalse(model.linkLibrary.expandedSections.contains(.open))
+        XCTAssertEqual(section.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { self.accessibilityNode(in: content, identifier: popupID) != nil }
+        // Site-controlled window.close must remove the visible row immediately.
+        _ = try await popup.webView.evaluateJavaScript("window.close();true")
+        try await waitUntil { self.accessibilityNode(in: content, identifier: popupID) == nil }
+        XCTAssertNotNil(accessibilityNode(in: content, identifier: sourceID))
+        model.windowRegistry.close(model.previewSession.windowID)
+        try await waitUntil { self.accessibilityNode(in: content, identifier: "sidebar-open-empty") != nil }
+        XCTAssertNil(accessibilityNode(in: content, identifier: sourceID))
+        XCTAssertNil(defaults.data(forKey: "recentLinks"))
+        XCTAssertTrue(LinkLibrary(defaults: defaults).recentLinks.isEmpty)
+    }
+
+    private func accessibilityNode(in value: Any, identifier: String) -> NSObject? {
+        guard let element = value as? NSObject else { return nil }
+        // SwiftUI AX elements expose these selectors without adopting the full
+        // NSAccessibility protocol. KVC also bridges the Boolean Press action.
+        if element.responds(to: NSSelectorFromString("accessibilityIdentifier")),
+           element.value(forKey: "accessibilityIdentifier") as? String == identifier { return element }
+        let children = element.responds(to: NSSelectorFromString("accessibilityChildren"))
+            ? element.value(forKey: "accessibilityChildren") as? [Any] ?? [] : []
+        for child in children {
+            if let match = accessibilityNode(in: child, identifier: identifier) { return match }
+        }
+        // AppKit containers ignored by AX may not expose their hosting view as an AX child.
+        if let view = value as? NSView {
+            for child in view.subviews {
+                if let match = accessibilityNode(in: child, identifier: identifier) { return match }
+            }
+        }
+        return nil
+    }
+
     func testRegistryDistinguishesDuplicateAddressesAndRestoresMinimizedWindow() async throws {
         let registry = BrowserWindowRegistry()
         let blocker = AdBlockService(automaticUpdates: false)
@@ -1606,12 +1709,12 @@ final class WebPopupTests: XCTestCase {
         }
     }
 
-    private func waitUntil(_ condition: () async -> Bool) async throws {
+    private func waitUntil(file: StaticString = #filePath, line: UInt = #line, _ condition: () async -> Bool) async throws {
         for _ in 0..<100 {
             if await condition() { return }
             try await Task.sleep(for: .milliseconds(100))
         }
-        XCTFail("WebKit fixture did not complete within 10 seconds")
+        XCTFail("WebKit fixture did not complete within 10 seconds", file: file, line: line)
     }
 
     private func addressControl(in window: NSWindow) throws -> PreviewAddressControlView {
