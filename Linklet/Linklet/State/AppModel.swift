@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import ServiceManagement
 import WebKit
 
@@ -85,6 +86,7 @@ final class AppModel: ObservableObject {
     // Child preview models report Dock state to the coordinator that owns all windows.
     private var dockVisibilityHandler: (() -> Void)?
     private var sidebarActionHandler: (() -> Void)?
+    private var windowObservations = Set<AnyCancellable>()
 
     init(
         defaults: UserDefaults = .standard,
@@ -147,6 +149,8 @@ final class AppModel: ObservableObject {
         previewSession.makePopup = { [weak self] configuration, parent, features in
             WebPopupWindowController(configuration: configuration, parent: parent, features: features, model: self)
         }
+        registry.$windows.map { !$0.isEmpty }.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.updateDockVisibilitySoon() }.store(in: &windowObservations)
     }
 
     var manuallyOrderedTargets: [BrowserTarget] {
@@ -307,8 +311,7 @@ final class AppModel: ObservableObject {
 
     func previewApplicationDidHide() {
         if !keepsPreviewVisibleWhenInactive || NSApp.isHidden {
-            previewWindowController.close()
-            childPreviewModels.forEach { $0.previewApplicationDidHide() }
+            closeAllPreviewWindows()
         }
     }
 
@@ -322,16 +325,19 @@ final class AppModel: ObservableObject {
         await siteData.delete(record)
     }
 
-    func openOriginalURL(in target: BrowserTarget) {
-        guard let url = previewSession.originalURL else { return }
+    func openOriginalURL(in target: BrowserTarget, session: PreviewSession? = nil) {
+        let source = session ?? previewSession
+        guard let url = source.originalURL else { return }
+        let navigationID = source.navigationID
 
-        launchService.open(url, in: target) { [weak self] error in
+        launchService.open(url, in: target) { [weak self, weak source] error in
+            guard let self, let source, source.isActive, source.navigationID == navigationID else { return }
             if let error {
-                self?.statusMessage = error.localizedDescription
-                self?.previewSession.errorMessage = error.localizedDescription
+                self.statusMessage = error.localizedDescription
+                source.errorMessage = error.localizedDescription
             } else {
-                self?.recordUsage(of: target)
-                self?.previewWindowController.close()
+                self.recordUsage(of: target)
+                self.windowRegistry.close(source.windowID)
             }
         }
     }
@@ -494,7 +500,7 @@ final class AppModel: ObservableObject {
     }
 
     var hasOpenWindows: Bool {
-        hasVisiblePreviewWindow || settingsWindowController.window?.isVisible == true
+        windowRegistry.hasWindows || settingsWindowController.window?.isVisible == true
     }
 
     private func recordUsage(of target: BrowserTarget) {
@@ -505,14 +511,11 @@ final class AppModel: ObservableObject {
     private var allPreviewModels: [AppModel] { [self] + childPreviewModels }
 
     private var hasVisiblePreviewWindow: Bool {
-        allPreviewModels.contains { $0.previewWindowController.isVisible }
+        windowRegistry.hasVisibleWindows
     }
 
     private func showPreviewInNewWindow(url: URL) {
-        let referenceFrame = allPreviewModels.reversed().compactMap { preview -> NSRect? in
-            guard let window = preview.previewWindowController.window, window.isVisible else { return nil }
-            return window.frame
-        }.first
+        let referenceFrame = windowRegistry.lastVisibleFrame
         let child = AppModel(
             defaults: defaults,
             siteData: siteData,
@@ -535,11 +538,13 @@ final class AppModel: ObservableObject {
             self.focusRemainingPreviewWindowSoon()
         }
         childPreviewModels.append(child)
-        child.showPreview(url: url)
+        // This destination shares the registry with already visible pages. Present
+        // it directly instead of routing it through the new-window decision again.
+        child.previewWindowController.show(url: url)
     }
 
     private func closeAllPreviewWindows() {
-        allPreviewModels.forEach { $0.previewWindowController.close() }
+        windowRegistry.closeAll()
     }
 
     func updateDockVisibilitySoon() {
@@ -557,11 +562,7 @@ final class AppModel: ObservableObject {
     private func focusRemainingPreviewWindowSoon() {
         DispatchQueue.main.async { [weak self] in
             guard let self, NSApp.isActive else { return }
-            guard let window = self.allPreviewModels.reversed().compactMap({ preview -> NSWindow? in
-                guard let window = preview.previewWindowController.window, window.isVisible else { return nil }
-                return window
-            }).first else { return }
-            window.makeKeyAndOrderFront(nil)
+            self.windowRegistry.activateLastWindow()
         }
     }
 

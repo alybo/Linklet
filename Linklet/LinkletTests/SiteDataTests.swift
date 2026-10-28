@@ -67,6 +67,35 @@ final class SiteDataTests: XCTestCase {
         XCTAssertNil(data.lastVisit(for: "example.org"))
     }
 
+    func testRelatedPrivateWindowsKeepCookiesUntilTheLastWindowCloses() async throws {
+        let blocker = AdBlockService(defaults: defaults, automaticUpdates: false)
+        let parent = PreviewSession(adBlockService: blocker, siteData: data)
+        parent.load(URL(string: "https://example.org/source")!)
+        let sharedStore = parent.websiteDataStore
+        await sharedStore.httpCookieStore.setCookie(cookie("example.org"))
+        let configuration = WebPreview.configuration(websiteDataStore: sharedStore)
+        let first = PreviewSession(adBlockService: blocker, siteData: data, windowRegistry: parent.windowRegistry)
+        let second = PreviewSession(adBlockService: blocker, siteData: data, windowRegistry: parent.windowRegistry)
+        let firstView = WKWebView(frame: .zero, configuration: configuration)
+        let secondView = WKWebView(frame: .zero, configuration: configuration)
+        first.adoptPopup(firstView, from: parent)
+        second.adoptPopup(secondView, from: first)
+        XCTAssertTrue(first.websiteDataStore === sharedStore)
+        XCTAssertTrue(second.websiteDataStore === sharedStore)
+        parent.endSession()
+        XCTAssertFalse(parent.websiteDataStore === sharedStore)
+        first.endSession()
+        let remainingCookies = await second.websiteDataStore.httpCookieStore.allCookies()
+        XCTAssertTrue(remainingCookies.contains { $0.name == "session" })
+        second.endSession()
+        for _ in 0..<50 {
+            if await sharedStore.httpCookieStore.allCookies().isEmpty { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let clearedCookies = await sharedStore.httpCookieStore.allCookies()
+        XCTAssertTrue(clearedCookies.isEmpty, "Private cookies clear after the last related page closes")
+    }
+
     func testInactivityUsesTopLevelVisitsAndDoesNotMatchSimilarDomains() async throws {
         let now = Date()
         await data.setEnabled(true)

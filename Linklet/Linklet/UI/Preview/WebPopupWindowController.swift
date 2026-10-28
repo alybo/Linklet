@@ -10,15 +10,21 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
     let session: PreviewSession
     let webView: WKWebView
     let coordinator: WebPreview.Coordinator
-    var onClose: (() -> Void)?
     private var observations = Set<AnyCancellable>()
-    private let parentID: UUID
+    let openerID: UUID
 
     init(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures, model: AppModel? = nil) {
-        parentID = parent.windowID
+        openerID = parent.windowID
         session = PreviewSession(adBlockService: parent.adBlockService, siteData: parent.siteData,
                                  windowRegistry: parent.windowRegistry)
-        session.onContinueInBrowser = parent.onContinueInBrowser
+        if let model {
+            session.onContinueInBrowser = { [weak model, weak session] in
+                guard let model, let session, let target = model.preferredTarget else { return }
+                model.openOriginalURL(in: target, session: session)
+            }
+        } else {
+            session.onContinueInBrowser = parent.onContinueInBrowser
+        }
         session.makePopup = parent.makePopup
         session.onSiteLoaded = parent.onSiteLoaded
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -39,7 +45,7 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         webView.uiDelegate = coordinator
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
-        session.adoptPopup(webView, originalURL: parent.originalURL)
+        session.adoptPopup(webView, from: parent)
         coordinator.startObserving(webView)
 
         if let model {
@@ -56,8 +62,16 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
             .map { title, url in title.isEmpty ? (url?.host ?? L("Website window")) : title }
             .removeDuplicates()
             .sink { [weak panel] title in panel?.title = title }.store(in: &observations)
-        parent.webView?.window?.addChildWindow(panel, ordered: .above)
-        panel.center()
+        // An AppKit child window moves and orders with its parent. OAuth needs
+        // only WebKit's opener/configuration, not a native window attachment.
+        if let frame = parent.webView?.window?.frame,
+           let screen = parent.webView?.window?.screen ?? NSScreen.main {
+            let proposed = NSRect(x: frame.minX + 28, y: frame.minY - 28,
+                                  width: panel.frame.width, height: panel.frame.height)
+            panel.setFrame(WindowGeometryService.clamped(proposed, to: screen.visibleFrame), display: false)
+        } else {
+            panel.center()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -66,14 +80,10 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
         window?.contentView?.layoutSubtreeIfNeeded()
         window?.makeFirstResponder(webView)
-        if let window { session.windowRegistry.register(window, session: session, parentID: parentID) }
+        if let window { session.windowRegistry.register(window, session: session, parentID: openerID) }
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let window { window.parent?.removeChildWindow(window) }
-        coordinator.closePopupWindows()
         session.endSession()
-        onClose?()
-        onClose = nil
     }
 }

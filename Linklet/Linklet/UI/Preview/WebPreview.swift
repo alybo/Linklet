@@ -44,7 +44,6 @@ struct WebPreview: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
-        coordinator.closePopupWindows()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
     }
@@ -52,7 +51,10 @@ struct WebPreview: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private weak var session: PreviewSession?
         private var observations: [NSKeyValueObservation] = []
-        private(set) var popupWindows: [UUID: WebPopupWindowController] = [:]
+        var popupWindows: [UUID: WebPopupWindowController] {
+            guard let session else { return [:] }
+            return session.windowRegistry.webWindows(openedBy: session.windowID)
+        }
         var onWebViewClose: (() -> Void)?
 
         init(session: PreviewSession) {
@@ -60,7 +62,6 @@ struct WebPreview: NSViewRepresentable {
         }
 
         func startObserving(_ webView: WKWebView) {
-            session?.onCloseAuxiliaryWindows = { [weak self] in self?.closePopupWindows() }
             observations = [
                 webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
                     self?.synchronize(webView)
@@ -128,23 +129,10 @@ struct WebPreview: NSViewRepresentable {
             guard let session, session.webView === webView, !session.isWelcome,
                   navigationAction.targetFrame == nil,
                   Self.canCreatePopup(for: navigationAction.request.url) else { return nil }
-            // Normal target=_blank links belong to the existing preview, with its toolbar,
-            // back/forward history and original browser handoff. Script/POST windows keep
-            // their supplied WebKit configuration and opener for sign-in workflows.
-            if Self.opensInCurrentPreview(navigationType: navigationAction.navigationType,
-                                          request: navigationAction.request, features: windowFeatures) {
-                webView.load(navigationAction.request)
-                return nil
-            }
+            // A new browsing context is an independent window, just as a browser
+            // creates a tab. WebKit loads the supplied request exactly once.
             guard popupWindows.count < 8 else { return nil }
             return createPopup(configuration: configuration, parent: session, features: windowFeatures).webView
-        }
-
-        static func opensInCurrentPreview(navigationType: WKNavigationType, request: URLRequest,
-                                          features: WKWindowFeatures) -> Bool {
-            navigationType == .linkActivated && request.url.map(URLPolicy.canPreview) == true &&
-                (request.httpMethod ?? "GET").uppercased() == "GET" &&
-                features.width == nil && features.height == nil && features.x == nil && features.y == nil
         }
 
         static func canCreatePopup(for url: URL?) -> Bool {
@@ -154,19 +142,11 @@ struct WebPreview: NSViewRepresentable {
 
         @discardableResult
         private func createPopup(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures) -> WebPopupWindowController {
-            let id = UUID()
             let popup = parent.makePopup?(configuration, parent, features)
                 ?? WebPopupWindowController(configuration: configuration, parent: parent, features: features)
-            popup.onClose = { [weak self] in self?.popupWindows.removeValue(forKey: id) }
-            popupWindows[id] = popup
+            parent.windowRegistry.retain(popup)
             popup.present()
             return popup
-        }
-
-        func closePopupWindows() {
-            let windows = Array(popupWindows.values)
-            popupWindows.removeAll()
-            windows.forEach { $0.close() }
         }
 
         func webViewDidClose(_ webView: WKWebView) {

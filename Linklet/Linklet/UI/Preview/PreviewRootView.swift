@@ -112,7 +112,7 @@ struct PreviewPageView: View {
                 }
                 PreviewCopyToolbarView(session: session)
                 if let model {
-                    PreviewOpenInToolbarView(model: model)
+                    PreviewOpenInToolbarView(model: model, session: session)
                 } else if let continueInBrowser = session.onContinueInBrowser {
                     Button(L("Continue in browser"), action: continueInBrowser)
                         .buttonStyle(.bordered).controlSize(.small)
@@ -307,6 +307,7 @@ struct PreviewCopyToolbarView: View {
 struct PreviewOpenInToolbarView: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var model: AppModel
+    @ObservedObject var session: PreviewSession
     @State private var isPickerPresented = false
     @State private var isPrimaryHovered = false
     @State private var isChevronHovered = false
@@ -348,7 +349,7 @@ struct PreviewOpenInToolbarView: View {
 
     private func primaryButton(for target: BrowserTarget) -> some View {
         Button {
-            model.openOriginalURL(in: target)
+            model.openOriginalURL(in: target, session: session)
         } label: {
             HStack(spacing: 7) {
                 Image(nsImage: TargetIconCache.shared.icon(for: target.applicationURL))
@@ -391,7 +392,7 @@ struct PreviewOpenInToolbarView: View {
                 targets: Array(targets.dropFirst()),
                 onOpen: { target in
                     isPickerPresented = false
-                    model.openOriginalURL(in: target)
+                    model.openOriginalURL(in: target, session: session)
                 }
             )
         }

@@ -1086,7 +1086,7 @@ final class WebPopupTests: XCTestCase {
         webView.navigationDelegate = coordinator
         coordinator.startObserving(webView)
         session.attach(webView)
-        defer { coordinator.closePopupWindows(); session.endSession() }
+        defer { session.windowRegistry.closeAll(); session.endSession() }
         webView.loadHTMLString("<html><head><title>Original site</title></head><body><script>window.result='pending';addEventListener('message',e=>window.result=e.data);</script></body></html>", baseURL: nil)
         try await waitUntil { (try? await webView.evaluateJavaScript("window.result")) as? String == "pending" }
         let initialURL = webView.url
@@ -1114,11 +1114,12 @@ final class WebPopupTests: XCTestCase {
         _ = try await webView.evaluateJavaScript("window.open('about:blank','cleanup');true")
         try await waitUntil { coordinator.popupWindows.count == 1 }
         session.load(URL(string: "https://example.org/new")!)
-        XCTAssertTrue(coordinator.popupWindows.isEmpty)
+        XCTAssertEqual(coordinator.popupWindows.count, 1, "Replacing the opener must leave its independent window alive")
+        XCTAssertTrue(coordinator.popupWindows.values.first?.session.isActive == true)
         XCTAssertNil(session.webView)
     }
 
-    func testTargetBlankLinkUsesCurrentStandardPreviewAndPreservesBackHistory() async throws {
+    func testTargetBlankLinkCreatesIndependentWindowAndPreservesSource() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
         defer { server.stop() }
@@ -1132,20 +1133,25 @@ final class WebPopupTests: XCTestCase {
         view.navigationDelegate = coordinator
         coordinator.startObserving(view)
         session.attach(view)
-        defer { coordinator.closePopupWindows(); session.endSession() }
+        defer { session.windowRegistry.closeAll(); session.endSession() }
         try await waitUntil { (try? await view.evaluateJavaScript("window.result")) as? String == "pending" }
         let cookie = HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "fixture", .value: "keep-session"])!
         await view.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
         _ = try await view.evaluateJavaScript("const link=document.createElement('a');link.href='/destination';link.target='_blank';document.body.append(link);link.click();true")
-        try await waitUntil { view.title == "Destination" }
-        XCTAssertTrue(coordinator.popupWindows.isEmpty, "Ordinary new-tab links must never open the sign-in window")
+        try await waitUntil { coordinator.popupWindows.values.first?.session.pageTitle == "Destination" }
+        let popup = try XCTUnwrap(coordinator.popupWindows.values.first)
+        XCTAssertNil(popup.window?.parent)
         XCTAssertTrue(session.webView === view)
+        XCTAssertEqual(view.url, original)
+        XCTAssertEqual(view.title, "Original site")
         XCTAssertEqual(session.originalURL, original)
-        XCTAssertTrue(view.canGoBack)
-        let cookies = await view.configuration.websiteDataStore.httpCookieStore.allCookies()
+        XCTAssertFalse(view.canGoBack)
+        XCTAssertTrue(popup.webView.configuration.websiteDataStore === view.configuration.websiteDataStore)
+        let cookies = await popup.webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         XCTAssertTrue(cookies.contains { $0.name == "fixture" && $0.value == "keep-session" })
-        view.goBack()
-        try await waitUntil { view.url == original && view.title == "Original site" }
+        popup.close()
+        XCTAssertEqual(view.url, original)
+        XCTAssertEqual(view.title, "Original site")
     }
 
     func testPOSTLoginRedirectReturnsToOpenerWithoutReplacingTheSite() async throws {
@@ -1162,7 +1168,7 @@ final class WebPopupTests: XCTestCase {
         webView.navigationDelegate = coordinator
         coordinator.startObserving(webView)
         session.attach(webView)
-        defer { coordinator.closePopupWindows(); session.endSession() }
+        defer { session.windowRegistry.closeAll(); session.endSession() }
         try await waitUntil { (try? await webView.evaluateJavaScript("window.result")) as? String == "pending" }
         _ = try await webView.evaluateJavaScript("document.querySelector('form').submit();true")
         try await waitUntil { (try? await webView.evaluateJavaScript("window.result")) as? String == "signed-in:login=fixture" }
@@ -1187,7 +1193,7 @@ final class WebPopupTests: XCTestCase {
         webView.navigationDelegate = coordinator
         coordinator.startObserving(webView)
         session.attach(webView)
-        defer { coordinator.closePopupWindows(); session.endSession() }
+        defer { session.windowRegistry.closeAll(); session.endSession() }
         try await waitUntil { (try? await webView.evaluateJavaScript("window.result")) as? String == "pending" }
         let longURL = "http://localhost:\(port)/long-login?state=" + String(repeating: "fixture", count: 400)
         _ = try await webView.evaluateJavaScript("window.open('\(longURL)','long-login','width=600,height=700');true")
@@ -1247,7 +1253,17 @@ final class WebPopupTests: XCTestCase {
         try await waitUntil { registry.windows.count == 2 && registry.windows.last?.title == "Destination" }
         let childID = try XCTUnwrap(registry.windows.last?.id)
         XCTAssertEqual(registry.windows.last?.parentID, model.previewSession.windowID)
-        let childWindow = try XCTUnwrap(parentWindow.childWindows?.first)
+        let childWindow = try XCTUnwrap(NSApp.windows.first { window in
+            (window.contentViewController as? NSHostingController<PreviewRootView>)?.rootView.session.windowID == childID
+        })
+        XCTAssertNil(childWindow.parent)
+        XCTAssertTrue(parentWindow.childWindows?.isEmpty ?? true)
+        let initialChildFrame = childWindow.frame
+        parentWindow.setFrameOrigin(NSPoint(x: parentWindow.frame.minX + 30, y: parentWindow.frame.minY + 20))
+        XCTAssertEqual(childWindow.frame, initialChildFrame, "Moving the source must not drag the new window")
+        let movedParentFrame = parentWindow.frame
+        childWindow.setFrameOrigin(NSPoint(x: childWindow.frame.minX - 25, y: childWindow.frame.minY - 15))
+        XCTAssertEqual(parentWindow.frame, movedParentFrame, "Moving the new window must not affect its source")
         let childHost = try XCTUnwrap(childWindow.contentViewController as? NSHostingController<PreviewRootView>)
         let childSession = childHost.rootView.session
         let child = try XCTUnwrap(childSession.webView)
@@ -1271,12 +1287,21 @@ final class WebPopupTests: XCTestCase {
             content.cacheDisplay(in: content.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-unified-popup.png"))
         }
+        let nestedController = try XCTUnwrap(registry.webWindows(openedBy: childID)[nested.id])
+        _ = try await nestedController.webView.evaluateJavaScript("window.sentinel='survives-close';true")
         registry.close(childID)
-        try await waitUntil { registry.windows.map(\.id) == [model.previewSession.windowID] }
+        try await waitUntil { registry.windows.map(\.id) == [model.previewSession.windowID, nested.id] }
         XCTAssertTrue(parent.configuration.websiteDataStore === model.previewSession.websiteDataStore)
         XCTAssertEqual(model.previewSession.pageTitle, "Original site")
         parentWindow.close()
-        XCTAssertTrue(registry.windows.isEmpty)
+        try await waitUntil { registry.windows.map(\.id) == [nested.id] }
+        XCTAssertTrue(model.hasOpenWindows, "The app must retain its independent windows after the source closes")
+        registry.activate(nested.id)
+        let keptValue = try await nestedController.webView.evaluateJavaScript("window.sentinel") as? String
+        XCTAssertEqual(keptValue, "survives-close")
+        _ = try await nestedController.webView.evaluateJavaScript("window.close();true")
+        try await waitUntil { registry.windows.isEmpty }
+        XCTAssertFalse(model.hasOpenWindows)
     }
 
     func testRegistryDistinguishesDuplicateAddressesAndRestoresMinimizedWindow() async throws {

@@ -3,6 +3,7 @@ import Combine
 
 struct BrowserWindowInfo: Identifiable, Equatable {
     let id: UUID
+    /// The logical WebKit opener, never an AppKit parent/child attachment.
     let parentID: UUID?
     let title: String
     let url: URL?
@@ -33,6 +34,25 @@ final class BrowserWindowRegistry: ObservableObject {
     private var entries: [UUID: Entry] = [:]
     private var order: [UUID] = []
     private var refreshIsScheduled = false
+    // Site-created windows outlive the coordinator/page that opened them.
+    private var webWindows: [UUID: WebPopupWindowController] = [:]
+
+    var hasWindows: Bool { entries.values.contains { $0.window != nil } }
+    var hasVisibleWindows: Bool { entries.values.contains { $0.window?.isVisible == true } }
+    var lastVisibleFrame: NSRect? {
+        order.reversed().compactMap { id -> NSRect? in
+            guard let window = entries[id]?.window, window.isVisible else { return nil }
+            return window.frame
+        }.first
+    }
+
+    func retain(_ controller: WebPopupWindowController) {
+        webWindows[controller.session.windowID] = controller
+    }
+
+    func webWindows(openedBy id: UUID) -> [UUID: WebPopupWindowController] {
+        webWindows.filter { $0.value.openerID == id && $0.value.session.isActive }
+    }
 
     func register(_ window: NSWindow, session: PreviewSession, parentID: UUID? = nil) {
         let id = session.windowID
@@ -57,6 +77,11 @@ final class BrowserWindowRegistry: ObservableObject {
     func unregister(_ id: UUID) {
         entries.removeValue(forKey: id)
         order.removeAll { $0 == id }
+        // Keep the controller alive until all willClose observers and its delegate
+        // finish detaching the page. Notification delivery order is unspecified.
+        if webWindows[id] != nil {
+            DispatchQueue.main.async { [weak self] in self?.webWindows.removeValue(forKey: id) }
+        }
         refresh()
     }
 
@@ -70,6 +95,18 @@ final class BrowserWindowRegistry: ObservableObject {
 
     func close(_ id: UUID) {
         entries[id]?.window?.performClose(nil)
+    }
+
+    func closeAll() {
+        let windows = entries.values.compactMap(\.window)
+        // Used before changing/deleting website data as well as by Close All.
+        // Preserve the previous unconditional close semantics for that operation.
+        windows.forEach { $0.close() }
+    }
+
+    func activateLastWindow() {
+        guard let id = order.reversed().first(where: { entries[$0]?.window?.isVisible == true }) else { return }
+        activate(id)
     }
 
     func refresh() {

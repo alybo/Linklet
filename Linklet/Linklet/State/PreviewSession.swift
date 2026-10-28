@@ -2,6 +2,22 @@ import AppKit
 import Foundation
 import WebKit
 
+/// Related private pages share cookies until the last page closes. Closing the
+/// opener must not erase the store still in use by another independent window.
+@MainActor
+private final class TemporaryWebsiteData {
+    let store = WKWebsiteDataStore.nonPersistent()
+    private var sessions = Set<UUID>()
+
+    func start(_ id: UUID) { sessions.insert(id) }
+    func finish(_ id: UUID, clearWhenUnused: Bool) {
+        sessions.remove(id)
+        if clearWhenUnused && sessions.isEmpty {
+            store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+        }
+    }
+}
+
 @MainActor
 final class PreviewSession: ObservableObject {
     let windowID = UUID()
@@ -22,7 +38,6 @@ final class PreviewSession: ObservableObject {
     @Published private(set) var isWelcome = false
     var onOpenSettings: (() -> Void)?
     var onContinueInBrowser: (() -> Void)?
-    var onCloseAuxiliaryWindows: (() -> Void)?
     var onPageFinished: ((URL, String) -> Void)?
     var onSiteLoaded: ((URL) -> Void)?
     var makePopup: ((WKWebViewConfiguration, PreviewSession, WKWindowFeatures) -> WebPopupWindowController)?
@@ -30,11 +45,11 @@ final class PreviewSession: ObservableObject {
 
     weak var webView: WKWebView?
     let siteData: SiteDataService
-    // A private store belongs to one preview window. Closing one private preview
-    // must never clear website data used by another open preview.
-    private var temporaryStore = WKWebsiteDataStore.nonPersistent()
+    // Separate incoming windows are isolated; pages opened by a website share
+    // their browsing context's store, including after the opener closes.
+    private var temporaryStore = TemporaryWebsiteData()
     var websiteDataStore: WKWebsiteDataStore {
-        siteData.isEnabled ? siteData.dataStore : temporaryStore
+        siteData.isEnabled ? siteData.dataStore : temporaryStore.store
     }
     @Published private(set) var isActive = false
     private var pendingURL: URL?
@@ -55,7 +70,6 @@ final class PreviewSession: ObservableObject {
     }
 
     func endSession(resetTemporaryData: Bool = true) {
-        onCloseAuxiliaryWindows?()
         let wasActive = isActive
         webView?.stopLoading()
         webView?.navigationDelegate = nil
@@ -76,12 +90,13 @@ final class PreviewSession: ObservableObject {
         isPreparingNewPage = false
         errorMessage = nil
         navigationID = UUID()
-        if resetTemporaryData && !siteData.isEnabled {
-            let oldStore = temporaryStore
-            temporaryStore = WKWebsiteDataStore.nonPersistent()
-            oldStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
+        let oldStore = temporaryStore
+        let clearsPrivateData = resetTemporaryData && !siteData.isEnabled
+        if clearsPrivateData { temporaryStore = TemporaryWebsiteData() }
+        if wasActive {
+            oldStore.finish(windowID, clearWhenUnused: clearsPrivateData)
+            siteData.previewSessionDidEnd()
         }
-        if wasActive { siteData.previewSessionDidEnd() }
     }
 
     func attach(_ webView: WKWebView) {
@@ -104,10 +119,10 @@ final class PreviewSession: ObservableObject {
         }
     }
 
-    func adoptPopup(_ view: WKWebView, originalURL: URL?) {
-        siteData.previewSessionDidStart()
-        isActive = true
-        self.originalURL = originalURL
+    func adoptPopup(_ view: WKWebView, from parent: PreviewSession) {
+        temporaryStore = parent.temporaryStore
+        startSessionIfNeeded()
+        originalURL = parent.originalURL
         webView = view
         synchronize(from: view)
     }
@@ -117,9 +132,7 @@ final class PreviewSession: ObservableObject {
             errorMessage = L("Only HTTP and HTTPS links can be previewed.")
             return
         }
-        onCloseAuxiliaryWindows?()
-        if !isActive { siteData.previewSessionDidStart() }
-        isActive = true
+        startSessionIfNeeded()
         isWelcome = false
         errorMessage = nil
         webView?.stopLoading()
@@ -140,9 +153,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func showWelcome(isDefault: Bool) {
-        onCloseAuxiliaryWindows?()
-        if !isActive { siteData.previewSessionDidStart() }
-        isActive = true
+        startSessionIfNeeded()
         webView?.stopLoading()
         webView = nil
         pendingURL = nil
@@ -166,6 +177,13 @@ final class PreviewSession: ObservableObject {
         welcomeIsDefault = isDefault
         guard isWelcome else { return }
         webView?.evaluateJavaScript("window.updateStatus(\(isDefault ? "true" : "false"))", completionHandler: nil)
+    }
+
+    private func startSessionIfNeeded() {
+        guard !isActive else { return }
+        temporaryStore.start(windowID)
+        siteData.previewSessionDidStart()
+        isActive = true
     }
 
     func welcomeDidFinish() {
