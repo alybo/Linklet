@@ -2220,6 +2220,372 @@ final class WebPopupTests: XCTestCase {
 }
 
 @MainActor
+final class WebUploadTests: XCTestCase {
+    func testPickerUploadsSingleAndMultipleFilesInMainAndPopupWindows() async throws {
+        let server = try UploadHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/page")!)
+        defer { page.close() }
+        try await waitUntil { (try? await page.view.evaluateJavaScript("document.title")) as? String == "Upload fixture" }
+        _ = try await page.view.evaluateJavaScript("window.open('/page','upload-child');true")
+        try await waitUntil { page.coordinator.popupWindows.values.first?.session.pageTitle == "Upload fixture" }
+        let popup = try XCTUnwrap(page.coordinator.popupWindows.values.first)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Upload.\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let one = folder.appendingPathComponent("first file.txt")
+        let two = folder.appendingPathComponent("second.bin")
+        let firstBytes = Data("single upload payload".utf8)
+        let secondBytes = Data([0, 255, 42, 13, 10, 128])
+        try firstBytes.write(to: one)
+        try secondBytes.write(to: two)
+        let cookie = HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "upload_session", .value: "fixture"])!
+        await page.view.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+        for (view, coordinator) in [(page.view, page.coordinator), (popup.webView, popup.coordinator)] {
+            var panels: [UploadTestPanel] = []
+            coordinator.makeFileUploadPanel = {
+                let panel = UploadTestPanel()
+                panel.selection = panels.isEmpty ? [one] : [one, two]
+                panel.automaticResponse = .OK
+                panels.append(panel)
+                return panel
+            }
+            _ = try await view.evaluateJavaScript("document.getElementById('single').click();true")
+            try await waitUntil { (try? await view.evaluateJavaScript("document.getElementById('single').files.length")) as? Int == 1 }
+            XCTAssertFalse(panels[0].allowsMultipleSelection)
+            XCTAssertTrue(panels[0].canChooseFiles)
+            XCTAssertFalse(panels[0].canChooseDirectories)
+            XCTAssertTrue(panels[0].message.contains("http://127.0.0.1:\(port)"))
+            let bytes = try await view.callAsyncJavaScript("return Array.from(new Uint8Array(await document.getElementById('single').files[0].arrayBuffer()))", in: nil, contentWorld: .page) as? [UInt8]
+            XCTAssertEqual(bytes, Array(firstBytes))
+            _ = try await view.evaluateJavaScript("document.getElementById('multiple').click();true")
+            try await waitUntil { (try? await view.evaluateJavaScript("document.getElementById('multiple').files.length")) as? Int == 2 }
+            XCTAssertTrue(panels[1].allowsMultipleSelection)
+            let result = try await view.callAsyncJavaScript("return await sendUpload(document.getElementById('multiple').files)", in: nil, contentWorld: .page) as? String
+            XCTAssertEqual(result, "ok")
+            XCTAssertEqual(view.url?.path, "/page")
+            XCTAssertEqual(page.session.originalURL?.path, "/page")
+        }
+        XCTAssertEqual(server.uploads.count, 2)
+        for upload in server.uploads {
+            XCTAssertTrue(upload.headers.lowercased().contains("multipart/form-data; boundary="))
+            XCTAssertTrue(upload.headers.contains("upload_session=fixture"))
+            XCTAssertNotNil(upload.body.range(of: firstBytes))
+            XCTAssertNotNil(upload.body.range(of: secondBytes))
+        }
+    }
+
+    func testFolderSelectionAndCancellationUseWebKitFileLists() async throws {
+        let server = try UploadHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/page")!)
+        defer { page.close() }
+        try await waitUntil { (try? await page.view.evaluateJavaScript("document.title")) as? String == "Upload fixture" }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("UploadFolder.\(UUID())")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data("one".utf8).write(to: folder.appendingPathComponent("one.txt"))
+        try Data("two".utf8).write(to: folder.appendingPathComponent("nested/two.txt"))
+        let chooser = UploadTestPanel()
+        chooser.selection = [folder]
+        chooser.automaticResponse = .OK
+        page.coordinator.makeFileUploadPanel = { chooser }
+        _ = try await page.view.evaluateJavaScript("document.getElementById('folder').click();true")
+        try await waitUntil { (try? await page.view.evaluateJavaScript("document.getElementById('folder').files.length")) as? Int == 2 }
+        XCTAssertTrue(chooser.canChooseDirectories)
+        XCTAssertFalse(chooser.canChooseFiles)
+        let paths = try await page.view.evaluateJavaScript("Array.from(document.getElementById('folder').files,f=>f.webkitRelativePath).sort()") as? [String]
+        XCTAssertEqual(paths, ["\(folder.lastPathComponent)/nested/two.txt", "\(folder.lastPathComponent)/one.txt"])
+        let cancel = UploadTestPanel()
+        cancel.automaticResponse = .cancel
+        page.coordinator.makeFileUploadPanel = { cancel }
+        _ = try await page.view.evaluateJavaScript("document.getElementById('single').click();true")
+        try await waitUntil { cancel.presented }
+        let count = try await page.view.evaluateJavaScript("document.getElementById('single').files.length") as? Int
+        XCTAssertEqual(count, 0)
+        XCTAssertTrue(server.uploads.isEmpty)
+    }
+
+    func testNativeUploadSheetCancelsOnNavigationAndWindowClose() async throws {
+        let server = try UploadHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/page")!)
+        defer { page.close() }
+        try await waitUntil { (try? await page.view.evaluateJavaScript("document.title")) as? String == "Upload fixture" }
+        _ = try await page.view.evaluateJavaScript("document.getElementById('multiple').click();true")
+        try await waitUntil { page.window.attachedSheet is NSOpenPanel }
+        let first = try XCTUnwrap(page.window.attachedSheet as? NSOpenPanel)
+        XCTAssertTrue(first.allowsMultipleSelection)
+        XCTAssertTrue(first.message.contains("http://127.0.0.1:\(port)"))
+        page.view.load(URLRequest(url: URL(string: "http://127.0.0.1:\(port)/next")!))
+        try await waitUntil { page.window.attachedSheet == nil && page.view.url?.path == "/next" }
+        _ = try await page.view.evaluateJavaScript("document.getElementById('single').click();true")
+        try await waitUntil { page.window.attachedSheet is NSOpenPanel }
+        let second = try XCTUnwrap(page.window.attachedSheet)
+        page.window.close()
+        try await waitUntil { second.sheetParent == nil }
+        XCTAssertTrue(server.uploads.isEmpty)
+    }
+
+    func testNativeFileDropReachesInputAndDropZoneInMainAndPopup() async throws {
+        let server = try UploadHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/page")!)
+        defer { page.close() }
+        try await waitUntil { (try? await page.view.evaluateJavaScript("document.title")) as? String == "Upload fixture" }
+        _ = try await page.view.evaluateJavaScript("window.open('/page','drop-child');true")
+        try await waitUntil { page.coordinator.popupWindows.values.first?.session.pageTitle == "Upload fixture" }
+        let popup = try XCTUnwrap(page.coordinator.popupWindows.values.first)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Drop.\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let one = folder.appendingPathComponent("drop-one.txt")
+        let two = folder.appendingPathComponent("drop-two.txt")
+        try Data("first dragged payload".utf8).write(to: one)
+        try Data("second dragged payload".utf8).write(to: two)
+        for view in [page.view, popup.webView] {
+            try await drop([one], onto: "single", in: view)
+            try await waitUntil { (try? await view.evaluateJavaScript("document.getElementById('single').files.length")) as? Int == 1 }
+            try await drop([one, two], onto: "dropzone", in: view)
+            try await waitUntil { (try? await view.evaluateJavaScript("window.droppedFiles?.length")) as? Int == 2 }
+            let text = try await view.callAsyncJavaScript("return await droppedFiles[1].text()", in: nil, contentWorld: .page) as? String
+            XCTAssertEqual(text, "second dragged payload")
+            let result = try await view.callAsyncJavaScript("return await sendUpload(droppedFiles)", in: nil, contentWorld: .page) as? String
+            XCTAssertEqual(result, "ok")
+            XCTAssertEqual(view.url?.path, "/page")
+        }
+        XCTAssertEqual(server.uploads.count, 2)
+    }
+
+    func testLocalFileNavigationIsNotHandedToAnotherApplication() async throws {
+        let server = try UploadHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/page")!)
+        defer { page.close() }
+        try await waitUntil { (try? await page.view.evaluateJavaScript("document.title")) as? String == "Upload fixture" }
+        var opened: [URL] = []
+        page.coordinator.openExternalURL = { opened.append($0) }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("local-\(UUID()).txt")
+        try Data("local file".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let probe = UploadPolicyProbe(coordinator: page.coordinator)
+        page.view.navigationDelegate = probe
+        page.view.loadFileURL(file, allowingReadAccessTo: file)
+        try await waitUntil { probe.localFileDecision != nil }
+        XCTAssertEqual(probe.localFileDecision, .cancel)
+        XCTAssertTrue(opened.isEmpty)
+        XCTAssertNotEqual(page.view.url, file)
+    }
+
+    private func drop(_ urls: [URL], onto id: String, in view: WKWebView) async throws {
+        let window = try XCTUnwrap(view.window)
+        window.makeKeyAndOrderFront(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let value = try await view.evaluateJavaScript("(()=>{const r=document.getElementById('\(id)').getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()")
+        let position = try XCTUnwrap(value as? [Double])
+        let point = NSPoint(x: position[0], y: position[1])
+        let windowPoint = view.convert(point, to: nil)
+        var receiver = view.hitTest(view.convert(point, to: view.superview))
+        while let candidate = receiver, candidate.registeredDraggedTypes.isEmpty { receiver = candidate.superview }
+        let target = try XCTUnwrap(receiver)
+        let info = UploadDraggingInfo(urls: urls, window: window, point: windowPoint)
+        _ = target.draggingEntered(info)
+        for _ in 0..<40 {
+            if !target.draggingUpdated(info).isEmpty { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(target.prepareForDragOperation(info))
+        XCTAssertTrue(target.performDragOperation(info))
+        target.concludeDragOperation(info)
+    }
+
+    private func waitUntil(_ condition: () async -> Bool) async throws {
+        for _ in 0..<100 {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("Upload fixture did not complete within 10 seconds")
+    }
+}
+
+@MainActor
+private final class UploadPolicyProbe: NSObject, WKNavigationDelegate {
+    let coordinator: WebPreview.Coordinator
+    var localFileDecision: WKNavigationActionPolicy?
+    init(coordinator: WebPreview.Coordinator) { self.coordinator = coordinator }
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        coordinator.webView(webView, decidePolicyFor: navigationAction) { policy in
+            if navigationAction.request.url?.isFileURL == true { self.localFileDecision = policy }
+            decisionHandler(policy)
+        }
+    }
+}
+
+@MainActor
+private final class UploadTestPage {
+    let session: PreviewSession
+    let view: WKWebView
+    let coordinator: WebPreview.Coordinator
+    let window: NSWindow
+    private let suite = "UploadPage.\(UUID())"
+    private let defaults: UserDefaults
+
+    init(url: URL) {
+        defaults = UserDefaults(suiteName: suite)!
+        let data = SiteDataService(defaults: defaults, persistentStore: .nonPersistent())
+        session = PreviewSession(adBlockService: AdBlockService(defaults: defaults, automaticUpdates: false), siteData: data)
+        session.load(url)
+        view = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: WebPreview.configuration(websiteDataStore: session.websiteDataStore))
+        coordinator = WebPreview.Coordinator(session: session)
+        view.navigationDelegate = coordinator
+        view.uiDelegate = coordinator
+        coordinator.startObserving(view)
+        session.attach(view)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        PreviewWindowAppearance.apply(to: window)
+        let host = NSHostingController(rootView: PreviewPageView(session: session, existingWebView: view))
+        host.sizingOptions = []
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+    }
+
+    func close() {
+        coordinator.cancelFileUpload()
+        session.windowRegistry.closeAll()
+        window.close()
+        session.endSession()
+        defaults.removePersistentDomain(forName: suite)
+    }
+}
+
+@MainActor
+private final class UploadTestPanel: NSOpenPanel {
+    var selection: [URL] = []
+    var automaticResponse: NSApplication.ModalResponse?
+    var presented = false
+    private var reply: ((NSApplication.ModalResponse) -> Void)?
+    override var urls: [URL] { selection }
+    override func beginSheetModal(for window: NSWindow, completionHandler handler: @escaping (NSApplication.ModalResponse) -> Void) {
+        presented = true
+        reply = handler
+        if let automaticResponse { DispatchQueue.main.async { [weak self] in self?.finish(automaticResponse) } }
+    }
+    override func cancel(_ sender: Any?) { finish(.cancel) }
+    private func finish(_ response: NSApplication.ModalResponse) {
+        let handler = reply
+        reply = nil
+        handler?(response)
+    }
+}
+
+@MainActor
+private final class UploadDraggingInfo: NSObject, NSDraggingInfo {
+    let draggingDestinationWindow: NSWindow?
+    let draggingPasteboard = NSPasteboard.withUniqueName()
+    let draggingLocation: NSPoint
+    let draggingSourceOperationMask: NSDragOperation = .copy
+    let draggingSource: Any? = nil
+    let draggingSequenceNumber = Int.random(in: 1000...99999)
+    let draggedImageLocation = NSPoint.zero
+    let draggedImage: NSImage? = nil
+    var draggingFormation: NSDraggingFormation = .none
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 0
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    private let urls: [URL]
+
+    init(urls: [URL], window: NSWindow, point: NSPoint) {
+        self.urls = urls
+        draggingDestinationWindow = window
+        draggingLocation = point
+        super.init()
+        draggingPasteboard.writeObjects(urls.map { $0 as NSURL })
+    }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func resetSpringLoading() {}
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {
+        var stop: ObjCBool = false
+        for (index, url) in urls.enumerated() {
+            let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+            item.setDraggingFrame(NSRect(x: draggingLocation.x, y: draggingLocation.y, width: 20, height: 20), contents: NSImage(size: NSSize(width: 20, height: 20)))
+            block(item, index, &stop)
+            if stop.boolValue { break }
+        }
+    }
+}
+
+private final class UploadHTTPFixture: @unchecked Sendable {
+    struct Upload { let headers: String; let body: Data }
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "Linklet.UploadHTTPFixture", qos: .utility)
+    private let lock = NSLock()
+    private var received: [Upload] = []
+    var uploads: [Upload] { lock.lock(); defer { lock.unlock() }; return received }
+    init() throws { listener = try NWListener(using: .tcp, on: .any) }
+    func start() async throws -> UInt16 {
+        try await withCheckedThrowingContinuation { continuation in
+            listener.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .ready:
+                    guard let self, let port = self.listener.port?.rawValue else { return }
+                    self.listener.stateUpdateHandler = nil
+                    continuation.resume(returning: port)
+                case .failed(let error): continuation.resume(throwing: error)
+                default: break
+                }
+            }
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { connection.cancel(); return }
+                connection.start(queue: self.queue)
+                self.receive(connection, data: Data())
+            }
+            listener.start(queue: queue)
+        }
+    }
+    func stop() { listener.cancel() }
+    private func receive(_ connection: NWConnection, data: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] bytes, _, complete, error in
+            guard let self, error == nil else { connection.cancel(); return }
+            var data = data; data.append(bytes ?? Data())
+            guard data.count < 2_097_152 else { connection.cancel(); return }
+            guard let split = data.range(of: Data("\r\n\r\n".utf8)), let headers = String(data: data[..<split.lowerBound], encoding: .utf8) else {
+                if complete { connection.cancel() } else { self.receive(connection, data: data) }; return
+            }
+            let length = headers.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("content-length:") }
+                .flatMap { Int($0.split(separator: ":", maxSplits: 1).last!.trimmingCharacters(in: .whitespaces)) } ?? 0
+            let body = data[split.upperBound...]
+            guard body.count >= length else { self.receive(connection, data: data); return }
+            let upload = headers.hasPrefix("POST /upload ")
+            if upload { self.lock.lock(); self.received.append(Upload(headers: headers, body: Data(body.prefix(length)))); self.lock.unlock() }
+            let payload = Data((upload ? "ok" : Self.html).utf8)
+            var response = Data("HTTP/1.1 200 OK\r\nContent-Type: \(upload ? "text/plain" : "text/html"); charset=utf-8\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n".utf8)
+            response.append(payload)
+            connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+        }
+    }
+    private static let html = """
+    <!doctype html><meta charset="utf-8"><title>Upload fixture</title>
+    <style>body{font:16px system-ui;margin:24px}input{display:block;width:350px;height:40px;margin:10px 0}#dropzone{width:350px;height:100px;border:3px dashed #777;margin-top:24px}</style>
+    <input id="single" type="file"><input id="multiple" type="file" multiple><input id="folder" type="file" multiple webkitdirectory>
+    <div id="dropzone">Drop files here</div>
+    <script>
+    let zone=document.getElementById('dropzone');
+    zone.addEventListener('dragover',e=>e.preventDefault());
+    zone.addEventListener('drop',e=>{e.preventDefault();window.droppedFiles=Array.from(e.dataTransfer.files)});
+    async function sendUpload(files){let body=new FormData();for(let file of files)body.append('files',file,file.name);return await (await fetch('/upload',{method:'POST',body})).text()}
+    </script>
+    """
+}
+
+@MainActor
 private final class DownloadTestPage {
     let session: PreviewSession
     var view: WKWebView?

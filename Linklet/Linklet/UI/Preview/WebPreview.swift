@@ -44,6 +44,7 @@ struct WebPreview: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.cancelFileUpload()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
     }
@@ -56,6 +57,11 @@ struct WebPreview: NSViewRepresentable {
             return session.windowRegistry.webWindows(openedBy: session.windowID)
         }
         var onWebViewClose: (() -> Void)?
+        // Test seams keep real WebKit file selection and policy callbacks while
+        // choosing temporary files without sending them to an external service.
+        var makeFileUploadPanel: () -> NSOpenPanel = { NSOpenPanel() }
+        var openExternalURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+        private var fileUpload: FileUploadRequest?
 
         init(session: PreviewSession) {
             self.session = session
@@ -85,6 +91,7 @@ struct WebPreview: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation?) {
+            cancelFileUpload()
             Task { @MainActor [weak self] in
                 self?.session?.synchronize(from: webView)
             }
@@ -151,7 +158,57 @@ struct WebPreview: NSViewRepresentable {
 
         func webViewDidClose(_ webView: WKWebView) {
             guard session?.webView === webView else { return }
+            cancelFileUpload()
             onWebViewClose?()
+        }
+
+        func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+            cancelFileUpload()
+            guard let session, session.webView === webView, session.isActive, !session.isWelcome,
+                  let window = webView.window, window.attachedSheet == nil else {
+                completionHandler(nil)
+                return
+            }
+            let panel = makeFileUploadPanel()
+            panel.title = parameters.allowsDirectories ? L("Upload folder") : L("Upload files")
+            panel.prompt = L("Choose")
+            panel.message = L("Choose files to share with %@.", Self.uploadOrigin(frame.securityOrigin))
+            panel.canChooseFiles = !parameters.allowsDirectories
+            panel.canChooseDirectories = parameters.allowsDirectories
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            panel.canCreateDirectories = false
+            let request = FileUploadRequest(panel: panel, completion: completionHandler)
+            fileUpload = request
+            request.closeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: window, queue: .main
+            ) { [weak self] _ in self?.cancelFileUpload() }
+            panel.beginSheetModal(for: window) { [weak self, weak session, weak webView, request] response in
+                let valid = self?.fileUpload === request && session?.webView === webView
+                    && session?.isActive == true && session?.isWelcome == false
+                if self?.fileUpload === request { self?.fileUpload = nil }
+                let urls = request.panel.urls
+                request.resolve(response == .OK && valid && !urls.isEmpty && urls.allSatisfy(\.isFileURL) ? urls : nil)
+            }
+        }
+
+        private static func uploadOrigin(_ origin: WKSecurityOrigin) -> String {
+            var components = URLComponents()
+            components.scheme = origin.protocol
+            components.host = origin.host
+            if origin.port != 0 { components.port = origin.port }
+            return components.string ?? origin.host
+        }
+
+        func cancelFileUpload() {
+            guard let request = fileUpload else { return }
+            fileUpload = nil
+            // Resolve first: ending the sheet can deliver its completion later.
+            request.resolve(nil)
+            if let parent = request.panel.sheetParent {
+                parent.endSheet(request.panel, returnCode: .cancel)
+                request.panel.orderOut(nil)
+            } else { request.panel.cancel(nil) }
         }
 
         func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
@@ -209,9 +266,13 @@ struct WebPreview: NSViewRepresentable {
                 decisionHandler(.download)
             } else if URLPolicy.canPreview(url) || url.scheme == "about" {
                 decisionHandler(.allow)
+            } else if url.isFileURL {
+                // A drop outside a file input/drop zone must not open a local
+                // file in another application or replace the website with it.
+                decisionHandler(.cancel)
             } else {
                 decisionHandler(.cancel)
-                NSWorkspace.shared.open(url)
+                openExternalURL(url)
             }
         }
 
@@ -270,5 +331,25 @@ struct WebPreview: NSViewRepresentable {
                 self?.session?.errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+@MainActor
+private final class FileUploadRequest {
+    let panel: NSOpenPanel
+    var closeObserver: NSObjectProtocol?
+    private var completion: (([URL]?) -> Void)?
+
+    init(panel: NSOpenPanel, completion: @escaping ([URL]?) -> Void) {
+        self.panel = panel
+        self.completion = completion
+    }
+
+    func resolve(_ urls: [URL]?) {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        closeObserver = nil
+        let handler = completion
+        completion = nil
+        handler?(urls)
     }
 }
