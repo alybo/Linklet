@@ -63,9 +63,8 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         // Our contour provides the complete transition; AppKit must not add an ordering fade.
         panel.animationBehavior = .none
         super.init(window: panel)
-        let hosting = NSHostingController(rootView: SidebarRevealSurface(reveal: reveal) {
-            SidebarView(model: model, dismiss: { [weak self] in self?.hide() }, editor: editor)
-        })
+        let hosting = NSHostingController(rootView: SidebarPanelSurface(model: model, library: library,
+            reveal: reveal, editor: editor, dismiss: { [weak self] in self?.hide() }))
         hosting.sizingOptions = []
         let resizeHandle = SidebarResizeView()
         resizeHandle.start = { [weak self] in self?.isResizing = true }

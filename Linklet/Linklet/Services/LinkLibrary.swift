@@ -26,6 +26,16 @@ enum SidebarSection: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum SidebarAppearance: String, CaseIterable, Identifiable {
+    case black, glass
+    var id: String { rawValue }
+    var title: String { self == .black ? L("Black") : L("Glass (test)") }
+    static var supportsGlass: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
+}
+
 /// Explicit bookmarks persist. Recent incoming links stay in memory unless saving is enabled.
 @MainActor
 final class LinkLibrary: ObservableObject {
@@ -35,6 +45,7 @@ final class LinkLibrary: ObservableObject {
     @Published private(set) var showsRevealIndicator: Bool
     @Published private(set) var sidebarWidth: Double
     @Published private(set) var edgeOpenDelay: TimeInterval
+    @Published private(set) var sidebarAppearance: SidebarAppearance
     @Published private(set) var isHistoryClearPending = false
     @Published private(set) var folders: [BookmarkFolder]
     @Published private(set) var folderAssignments: [String: UUID]
@@ -61,6 +72,7 @@ final class LinkLibrary: ObservableObject {
         let savedWidth = defaults.object(forKey: "sidebarWidth") as? Double ?? 300
         sidebarWidth = savedWidth.isFinite && savedWidth > 0 ? savedWidth : 300
         isEnabled = defaults.bool(forKey: "sidebarEnabled")
+        sidebarAppearance = defaults.string(forKey: "sidebarAppearance").flatMap(SidebarAppearance.init(rawValue:)) ?? .black
         showsRevealIndicator = defaults.object(forKey: "sidebarShowsRevealIndicator") as? Bool ?? false
         let delay = defaults.object(forKey: "sidebarEdgeOpenDelay") as? Double ?? 0.4
         edgeOpenDelay = Self.clampedEdgeDelay(delay)
@@ -101,6 +113,11 @@ final class LinkLibrary: ObservableObject {
         guard width.isFinite, width > 0 else { return }
         sidebarWidth = width
         defaults.set(width, forKey: "sidebarWidth")
+    }
+
+    func setSidebarAppearance(_ appearance: SidebarAppearance) {
+        sidebarAppearance = appearance
+        defaults.set(appearance.rawValue, forKey: "sidebarAppearance")
     }
 
     func setShowsRevealIndicator(_ enabled: Bool) {

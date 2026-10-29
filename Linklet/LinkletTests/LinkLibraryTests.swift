@@ -422,6 +422,117 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertFalse(DownloadManager.safeFilename("\n\r").isEmpty)
     }
 
+    func testSidebarAppearanceIsOptInAndPreservesExistingPreferences() throws {
+        let suite = "SidebarAppearance.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let library = LinkLibrary(defaults: defaults)
+        XCTAssertEqual(library.sidebarAppearance, .black)
+        library.setSidebarWidth(240)
+        library.setEdgeOpenDelay(0.7)
+        library.toggleSection(.recent)
+        library.moveSection(.downloads, before: .open)
+        let order = library.sectionOrder
+        library.setSidebarAppearance(.glass)
+        let restored = LinkLibrary(defaults: defaults)
+        XCTAssertEqual(restored.sidebarAppearance, .glass)
+        XCTAssertFalse(restored.isEnabled, "Trying glass must not enable screen-edge activation")
+        XCTAssertEqual(restored.sidebarWidth, 240)
+        XCTAssertEqual(restored.edgeOpenDelay, 0.7)
+        XCTAssertEqual(restored.sectionOrder, order)
+        XCTAssertFalse(restored.expandedSections.contains(.recent))
+        restored.setSidebarAppearance(.black)
+        XCTAssertEqual(LinkLibrary(defaults: defaults).sidebarAppearance, .black)
+        defaults.set("unknown-future-style", forKey: "sidebarAppearance")
+        XCTAssertEqual(LinkLibrary(defaults: defaults).sidebarAppearance, .black)
+    }
+
+    func testSidebarAppearanceRenderingAndReducedTransparencyFallback() async throws {
+        guard SidebarAppearance.supportsGlass else { throw XCTSkip("Liquid Glass requires macOS 26") }
+        let reveal = SidebarRevealState()
+        reveal.progress = 1
+        reveal.shoulderProgress = 1
+        let sceneSize = NSSize(width: 460, height: 600)
+        for (appearance, reduced, name) in [(SidebarAppearance.black, false, "black"), (.glass, false, "glass"), (.glass, true, "glass-reduced")] {
+            let scene = ZStack(alignment: .leading) {
+                SidebarGlassTestBackdrop()
+                SidebarRevealSurface(reveal: reveal, appearance: appearance, reduceTransparency: reduced) { Color.clear }
+                    .frame(width: 320, height: sceneSize.height)
+            }.frame(width: sceneSize.width, height: sceneSize.height).preferredColorScheme(.dark)
+            let host = NSHostingView(rootView: scene)
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: sceneSize),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            window.setContentSize(sceneSize)
+            window.orderFrontRegardless()
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(180))
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            // Liquid Glass is composed by WindowServer. AppKit bitmap capture
+            // returns its intermediate refraction map, so color assertions apply
+            // to the opaque variants; native glass also gets an on-screen check.
+            let scale = CGFloat(bitmap.pixelsWide) / sceneSize.width
+            func sample(_ x: CGFloat, _ y: CGFloat) throws -> NSColor {
+                try XCTUnwrap(bitmap.colorAt(x: Int(x * scale), y: Int(y * scale))?.usingColorSpace(.deviceRGB))
+            }
+            if appearance == .black || reduced {
+                let left = try sample(30, 300)
+                XCTAssertLessThan(left.redComponent + left.greenComponent + left.blueComponent, 0.03)
+                XCTAssertGreaterThan(left.alphaComponent, 0.99)
+                let right = try sample(300, 300)
+                XCTAssertLessThan(right.redComponent + right.greenComponent + right.blueComponent, 0.03)
+            }
+            // The existing contour leaves the center of the top edge exposed.
+            if appearance == .black || reduced {
+                let outside = try sample(160, 5)
+                XCTAssertGreaterThan(outside.blueComponent, 0.1)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-sidebar-\(name).png"))
+            }
+            window.close()
+        }
+    }
+
+    func testSidebarAppearancePickerChangesTheLivePanelWithoutResizing() async throws {
+        guard SidebarAppearance.supportsGlass else { throw XCTSkip("Liquid Glass requires macOS 26") }
+        let suite = "SidebarAppearancePicker.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.linkLibrary.setEnabled(true)
+        let controller = SidebarWindowController(model: model, reduceMotion: { true })
+        let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 800),
+                                styleMask: [.titled], backing: .buffered, defer: false)
+        settings.isReleasedWhenClosed = false
+        settings.contentView = NSHostingView(rootView: SidebarSettingsView(library: model.linkLibrary, show: {}))
+        defer { settings.close(); controller.hide(animated: false); model.linkLibrary.setEnabled(false) }
+        settings.orderFront(nil)
+        settings.contentView?.layoutSubtreeIfNeeded()
+        controller.toggle()
+        let panel = try XCTUnwrap(controller.window)
+        let frame = panel.frame
+        func segmented(in view: NSView) -> NSSegmentedControl? {
+            if let control = view as? NSSegmentedControl, control.segmentCount == 2 { return control }
+            return view.subviews.compactMap { segmented(in: $0) }.first
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let picker = try XCTUnwrap(settings.contentView.flatMap { segmented(in: $0) })
+        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .black)
+        picker.selectedSegment = 1
+        XCTAssertTrue(picker.sendAction(picker.action, to: picker.target))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .glass)
+        XCTAssertEqual(panel.frame, frame)
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertFalse(panel.isOpaque)
+        picker.selectedSegment = 0
+        XCTAssertTrue(picker.sendAction(picker.action, to: picker.target))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .black)
+        XCTAssertEqual(panel.frame, frame)
+    }
+
     func testRecentPaginationAddsTenAndResetsWithoutDiscardingHistory() {
         let suite = "RecentPagination.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -2294,6 +2405,24 @@ private final class PopupHTTPFixture: @unchecked Sendable {
             guard error == nil, let self else { connection.cancel(); return }
             self.queue.asyncAfter(deadline: .now() + 0.03) { self.stream(connection, remaining: remaining - count) }
         })
+    }
+}
+
+private struct SidebarGlassTestBackdrop: View {
+    var body: some View {
+        Canvas { context, size in
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(red: 0.04, green: 0.16, blue: 0.44)))
+            for index in -8...18 {
+                let x = CGFloat(index) * 55
+                var stripe = Path()
+                stripe.move(to: CGPoint(x: x, y: 0))
+                stripe.addLine(to: CGPoint(x: x + 22, y: 0))
+                stripe.addLine(to: CGPoint(x: x + size.height * 0.4 + 22, y: size.height))
+                stripe.addLine(to: CGPoint(x: x + size.height * 0.4, y: size.height))
+                stripe.closeSubpath()
+                context.fill(stripe, with: .color(Color(red: 0.08, green: 0.31, blue: 0.70)))
+            }
+        }
     }
 }
 

@@ -12,10 +12,16 @@ final class SidebarRevealState: ObservableObject {
 struct SidebarRevealSurface<Content: View>: View {
     @ObservedObject var reveal: SidebarRevealState
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
+    let appearance: SidebarAppearance
+    private let reduceTransparency: Bool?
     let content: Content
 
-    init(reveal: SidebarRevealState, @ViewBuilder content: () -> Content) {
+    init(reveal: SidebarRevealState, appearance: SidebarAppearance = .black,
+         reduceTransparency: Bool? = nil, @ViewBuilder content: () -> Content) {
         self.reveal = reveal
+        self.appearance = appearance
+        self.reduceTransparency = reduceTransparency
         self.content = content()
     }
 
@@ -25,13 +31,53 @@ struct SidebarRevealSurface<Content: View>: View {
             let width = (geometry.size.width * reveal.progress * displayScale).rounded() / displayScale
             let progress = geometry.size.width > 0 ? width / geometry.size.width : 0
             let contour = SidebarContour(revealProgress: progress, shoulderProgress: reveal.shoulderProgress)
+            let glass = appearance == .glass && SidebarAppearance.supportsGlass && !(reduceTransparency ?? systemReduceTransparency)
             content
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .offset(x: width - geometry.size.width)
-                .background(Color.black)
+                .background {
+                    if glass {
+                        LinearGradient(stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: 0.58),
+                            .init(color: .black.opacity(0.96), location: 0.72),
+                            .init(color: .black.opacity(0.30), location: 0.92),
+                            .init(color: .clear, location: 1)
+                        ], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: width)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else { Color.black }
+                }
+                .modifier(SidebarGlassEffect(enabled: glass, contour: contour))
                 .clipShape(contour)
         }
         .transaction { $0.animation = nil }
+    }
+}
+
+/// Keep the material's shape identical to our moving contour. The system owns
+/// refraction and highlights; the black-to-clear gradient is ordinary content.
+private struct SidebarGlassEffect: ViewModifier {
+    let enabled: Bool
+    let contour: SidebarContour
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(enabled ? .clear : .identity, in: contour)
+        } else { content }
+    }
+}
+
+struct SidebarPanelSurface: View {
+    let model: AppModel
+    @ObservedObject var library: LinkLibrary
+    let reveal: SidebarRevealState
+    let editor: SidebarEditorState
+    let dismiss: () -> Void
+
+    var body: some View {
+        SidebarRevealSurface(reveal: reveal, appearance: library.sidebarAppearance) {
+            SidebarView(model: model, dismiss: dismiss, editor: editor)
+        }
     }
 }
 
@@ -663,6 +709,24 @@ struct SidebarSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let error = library.shortcutError { Text(error).font(.caption).foregroundStyle(.red) }
+            Section(L("Sidebar appearance")) {
+                if SidebarAppearance.supportsGlass {
+                    Picker(L("Appearance"), selection: Binding(get: { library.sidebarAppearance }, set: { appearance in
+                        // AppKit's segmented picker can send its action while another
+                        // hosting view is updating. Publish to both hosts next turn.
+                        DispatchQueue.main.async { library.setSidebarAppearance(appearance) }
+                    })) {
+                        ForEach(SidebarAppearance.allCases) { appearance in Text(appearance.title).tag(appearance) }
+                    }.pickerStyle(.segmented).accessibilityIdentifier("sidebar-appearance-picker")
+                    Text(L("Test appearance: black on the left, native Liquid Glass on the right. The sidebar shape and row sizes stay the same."))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(L("Reduce Transparency uses the black appearance."))
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(L("Liquid Glass requires macOS 26 or later. The black appearance is used on this Mac."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section(L("Recent links")) {
                 Toggle(L("Save history between launches"), isOn: Binding(get: { library.savesHistory }, set: library.setSavesHistory))
                 Text(L("Only links opened in Linklet are listed. Page redirects and sign-in windows are excluded. Up to 200 links are kept; turning saving off removes history from disk."))
