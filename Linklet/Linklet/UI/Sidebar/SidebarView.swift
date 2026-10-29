@@ -60,13 +60,7 @@ private struct SidebarGlassSurface: View {
                 let radius = min(24, geometry.size.height / 4)
                 let extensionWidth: CGFloat = 48
                 ZStack(alignment: .topLeading) {
-                    LinearGradient(stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.58),
-                        .init(color: .black.opacity(0.96), location: 0.72),
-                        .init(color: .black.opacity(0.30), location: 0.92),
-                        .init(color: .clear, location: 1)
-                    ], startPoint: .leading, endPoint: .trailing)
+                    SidebarSmokeTint(layer: .backing)
                         .frame(width: revealedWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .clipShape(contour)
@@ -74,13 +68,7 @@ private struct SidebarGlassSurface: View {
                         .frame(width: revealedWidth + extensionWidth,
                                height: max(0, geometry.size.height - 2 * radius))
                         .offset(x: -extensionWidth, y: radius)
-                    LinearGradient(stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.58),
-                        .init(color: .black.opacity(0.70), location: 0.68),
-                        .init(color: .clear, location: 0.80),
-                        .init(color: .clear, location: 1)
-                    ], startPoint: .leading, endPoint: .trailing)
+                    SidebarSmokeTint(layer: .correction)
                         .frame(width: revealedWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .clipShape(contour)
@@ -89,6 +77,34 @@ private struct SidebarGlassSurface: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         } else { Color.black }
+    }
+}
+
+/// Broad, static mesh lobes soften the tint boundary without moving the
+/// background or adding grain. The left stays opaque and the far right clear.
+@available(macOS 26.0, *)
+private struct SidebarSmokeTint: View {
+    enum Layer { case backing, correction }
+    let layer: Layer
+
+    private var points: [SIMD2<Float>] {
+        let shifts: [Float] = [0, 0.025, -0.015, 0.035, -0.025, 0.018, 0]
+        let columns: [Float] = [0, 0.50, 0.65, 0.86, 1]
+        let weights: [Float] = [0, 1, 0.8, 0.4, 0]
+        return shifts.enumerated().flatMap { row, shift in
+            columns.enumerated().map { column, x in
+                SIMD2(x + shift * weights[column], Float(row) / Float(shifts.count - 1))
+            }
+        }
+    }
+
+    var body: some View {
+        let row: [Color] = layer == .backing
+            ? [.black, .black, .black.opacity(0.90), .black.opacity(0.28), .clear]
+            : [.black, .black, .black.opacity(0.40), .clear, .clear]
+        MeshGradient(width: 5, height: 7, points: points,
+                     colors: Array(repeating: row, count: 7).flatMap { $0 },
+                     smoothsColors: true)
     }
 }
 
@@ -110,7 +126,7 @@ private struct SidebarNativeGlassBody: NSViewRepresentable {
 
     private var glass: AnyView {
         AnyView(Color.clear
-            .glassEffect(.clear, in: SidebarGlassBody(cornerRadius: cornerRadius))
+            .glassEffect(.clear.tint(.black.opacity(0.16)), in: SidebarGlassBody(cornerRadius: cornerRadius))
             .environment(\.colorScheme, .dark))
     }
 }
