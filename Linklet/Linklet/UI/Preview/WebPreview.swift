@@ -241,10 +241,18 @@ struct WebPreview: NSViewRepresentable {
             adopt(download, in: webView)
         }
 
-        private func adopt(_ download: WKDownload, in view: WKWebView) {
+        // macOS WebKit uses this separate ObjC delegate hook for native menu
+        // downloads (images, links and media), not the navigation callbacks above.
+        // It is WebKit SPI; see DOWNLOADS-LOCAL-TEST.md for the compatibility note.
+        @objc(_webView:contextMenuDidCreateDownload:)
+        func webView(_ webView: WKWebView, contextMenuDidCreateDownload download: WKDownload) {
+            adopt(download, in: webView, updatesNavigation: false)
+        }
+
+        private func adopt(_ download: WKDownload, in view: WKWebView, updatesNavigation: Bool = true) {
             guard let session, session.webView === view, !session.isWelcome else { download.cancel(nil); return }
             session.windowRegistry.downloads.adopt(download, from: session)
-            session.navigationBecameDownload(in: view)
+            if updatesNavigation { session.navigationBecameDownload(in: view) }
         }
 
         func synchronize(_ webView: WKWebView) {

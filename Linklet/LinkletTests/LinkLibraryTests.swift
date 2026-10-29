@@ -1895,6 +1895,90 @@ final class WebPopupTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "keep")
     }
 
+    func testNativeContextMenusDownloadImagesAndLinkedFilesInMainAndSiteWindows() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var choices = 0
+        let manager = DownloadManager { name in choices += 1; return folder.appendingPathComponent("\(choices)-\(name)") }
+        let page = DownloadTestPage(manager: manager, url: URL(string: "http://127.0.0.1:\(port)/image-page")!)
+        let main = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        PreviewWindowAppearance.apply(to: main)
+        let source = try XCTUnwrap(page.view)
+        main.contentView = source
+        main.center()
+        main.makeKeyAndOrderFront(nil)
+        page.session.windowRegistry.register(main, session: page.session)
+        defer { page.session.windowRegistry.closeAll(); page.close(); manager.cancelAll() }
+        try await waitUntil { page.session.pageTitle == "Image context fixture" }
+        _ = try await source.evaluateJavaScript("window.contextSentinel='kept';window.open('/image-page','image-child');true")
+        try await waitUntil { page.session.windowRegistry.webWindows(openedBy: page.session.windowID).count == 1 }
+        let child = try XCTUnwrap(page.session.windowRegistry.webWindows(openedBy: page.session.windowID).values.first)
+        for (index, view) in [source, child.webView].enumerated() {
+            try await waitUntil { (try? await view.evaluateJavaScript("document.getElementById('photo')?.naturalWidth > 0")) as? Bool == true }
+            let beforeURL = view.url
+            try await selectNativeContextMenuItem(tag: Int(WebMenuItemTagDownloadImageToDisk), point: NSPoint(x: 60, y: 60), in: view)
+            try await waitUntil { manager.items.count == index + 1 && manager.items.last?.state == .finished }
+            let saved = try XCTUnwrap(manager.items.last?.destination)
+            XCTAssertEqual(try Data(contentsOf: saved), PopupHTTPFixture.picture)
+            XCTAssertTrue(saved.lastPathComponent.hasSuffix("photo.png"))
+            XCTAssertEqual(view.url, beforeURL)
+        }
+        try await selectNativeContextMenuItem(tag: Int(WebMenuItemTagDownloadLinkToDisk), point: NSPoint(x: 80, y: 210), in: source)
+        try await waitUntil { manager.items.count == 3 && manager.items.last?.state == .finished }
+        let linked = try XCTUnwrap(manager.items.last?.destination)
+        XCTAssertEqual(try String(contentsOf: linked, encoding: .utf8), "attachment payload")
+        let sentinel = try await source.evaluateJavaScript("window.contextSentinel") as? String
+        XCTAssertEqual(sentinel, "kept")
+    }
+
+    private func selectNativeContextMenuItem(tag: Int, point: NSPoint, in view: WKWebView) async throws {
+        let window = try XCTUnwrap(view.window)
+        let originalPointer = CGEvent(source: nil)?.location
+        defer { if let originalPointer { CGWarpMouseCursorPosition(originalPointer) } }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(view)
+        window.contentView?.layoutSubtreeIfNeeded()
+        var selected = false
+        var openedMenu: NSMenu?
+        let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { notification in
+            MainActor.assumeIsolated {
+                guard let menu = notification.object as? NSMenu,
+                      let index = menu.items.firstIndex(where: { $0.tag == tag }) else { return }
+                openedMenu = menu
+                let action = Timer(timeInterval: 0.05, repeats: false) { _ in
+                    MainActor.assumeIsolated {
+                        menu.performActionForItem(at: index)
+                        selected = true
+                        menu.cancelTrackingWithoutAnimation()
+                    }
+                }
+                RunLoop.main.add(action, forMode: .common)
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer); openedMenu?.cancelTrackingWithoutAnimation() }
+        let location = view.convert(point, to: nil)
+        let screenPoint = window.convertPoint(toScreen: location)
+        CGWarpMouseCursorPosition(CGPoint(x: screenPoint.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - screenPoint.y))
+        for type in [NSEvent.EventType.rightMouseDown, .rightMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: type == .rightMouseDown ? 1 : 0))
+            NSApp.postEvent(event, atStart: true)
+            while let queued = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02), inMode: .default, dequeue: true) {
+                NSApp.sendEvent(queued)
+            }
+        }
+        try await waitUntil { selected }
+        XCTAssertTrue(selected, "The actual WebKit context-menu command must be selected")
+    }
+
     func testNativeDownloadSavePanelSuggestsNameAndCancelsWithoutSaving() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
@@ -2019,6 +2103,7 @@ private final class AddressNavigationCapture: NSObject, WKNavigationDelegate {
 /// Local HTTP fixture: different origins for the site (127.0.0.1) and provider (localhost).
 /// Socket parsing and response work stay on a utility queue.
 private final class PopupHTTPFixture: @unchecked Sendable {
+    static let picture = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
     private let listener: NWListener
     private let queue = DispatchQueue(label: "Linklet.PopupHTTPFixture", qos: .utility)
     private let lock = NSLock()
@@ -2123,7 +2208,16 @@ private final class PopupHTTPFixture: @unchecked Sendable {
         let status: String
         var extraHeaders = ""
         let html: String
-        if firstLine.hasPrefix("GET /download-page ") {
+        if firstLine.hasPrefix("GET /photo.png ") {
+            let bytes = Self.picture
+            var response = Data("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: \(bytes.count)\r\nConnection: close\r\n\r\n".utf8)
+            response.append(bytes)
+            connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+            return
+        } else if firstLine.hasPrefix("GET /image-page ") {
+            status = "200 OK"
+            html = "<title>Image context fixture</title><img id='photo' src='/photo.png' style='position:absolute;left:24px;top:24px;width:160px;height:120px'><a href='/attachment' style='position:absolute;left:24px;top:200px'>Download linked file</a>"
+        } else if firstLine.hasPrefix("GET /download-page ") {
             status = "200 OK"
             html = """
             <title>Downloads fixture</title><a id='attachment' href='/attachment'>Attachment</a>
