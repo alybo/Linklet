@@ -57,6 +57,7 @@ struct PreviewPageView: View {
                 .padding(.bottom, PreviewLayout.contentInset)
         }
         .background { PreviewWindowMaterial() }
+        .background { PreviewPageKeyboardCommands(session: session) }
         .ignoresSafeArea(.container, edges: .all)
         .sheet(isPresented: $showsBookmarkEditor) {
             if let model {
@@ -159,6 +160,74 @@ struct PreviewPageView: View {
             return L("Preview")
         }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+}
+
+/// Shared by normal and adopted windows; does not add any visible chrome.
+private struct PreviewPageKeyboardCommands: NSViewRepresentable {
+    let session: PreviewSession
+    func makeNSView(context: Context) -> PreviewPageCommandView {
+        PreviewPageCommandView(session: session)
+    }
+    func updateNSView(_ view: PreviewPageCommandView, context: Context) {}
+    static func dismantleNSView(_ view: PreviewPageCommandView, coordinator: ()) {
+        view.stopObserving()
+    }
+}
+
+final class PreviewPageCommandView: NSView {
+    private weak var session: PreviewSession?
+    private var eventMonitor: Any?
+
+    init(session: PreviewSession) {
+        self.session = session
+        super.init(frame: .zero)
+        setAccessibilityElement(false)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopObserving()
+        guard window != nil else { return }
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handle(event) == true ? nil : event
+        }
+    }
+
+    func stopObserving() {
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+        eventMonitor = nil
+    }
+
+    func handle(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown, event.window === window, window?.isKeyWindow == true,
+              window?.attachedSheet == nil, let session, session.isActive,
+              !session.isWelcome, session.webView != nil else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        guard modifiers == .command || modifiers == [.command, .shift] else { return false }
+        // Character matching supports other layouts; physical fallbacks also
+        // keep these commands available when Russian letters are reported.
+        let character = event.charactersIgnoringModifiers?.lowercased()
+        if modifiers == .command, character == "r" || event.keyCode == 15 {
+            if !event.isARepeat { session.reload() }
+            return true
+        }
+        if character == "+" || character == "=" || [24, 69].contains(event.keyCode) {
+            session.changePageZoom(increase: true)
+            return true
+        }
+        guard modifiers == .command else { return false }
+        if character == "-" || [27, 78].contains(event.keyCode) {
+            session.changePageZoom(increase: false)
+            return true
+        }
+        if character == "0" || [29, 82].contains(event.keyCode) {
+            session.resetPageZoom()
+            return true
+        }
+        return false
     }
 }
 

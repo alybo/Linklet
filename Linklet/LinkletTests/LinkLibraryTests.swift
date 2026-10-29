@@ -2876,6 +2876,105 @@ private struct SidebarSizeProbe: NSViewRepresentable {
 
 @MainActor
 final class PageFindTests: XCTestCase {
+    func testReloadAndZoomShortcutsInMainAndPopupWithoutChangingChrome() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "PageCommands.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/find")!)
+        try await waitUntil { model.previewSession.pageTitle == "Find fixture" && !model.previewSession.isLoading }
+        let main = model.previewSession
+        let source = try XCTUnwrap(main.webView)
+        _ = try await source.evaluateJavaScript("window.open('/find','commands-child');true")
+        try await waitUntil { model.windowRegistry.webWindows(openedBy: main.windowID).values.first?.session.pageTitle == "Find fixture" }
+        let child = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: main.windowID).values.first?.session)
+        for session in [main, child] {
+            let view = try XCTUnwrap(session.webView)
+            let window = try XCTUnwrap(view.window)
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            try await waitUntil { window.isKeyWindow && NSApp.isActive }
+            window.makeFirstResponder(view)
+            _ = try await view.evaluateJavaScript("document.getElementById('draft').focus();window.reloadMarker='before';true")
+            let original = session.originalURL
+            let current = view.url
+            let navigation = session.navigationID
+            let historyCount = view.backForwardList.backList.count
+            let frame = view.frame
+            let textWidth = (try await view.evaluateJavaScript("document.getElementById('draft').getBoundingClientRect().width") as! NSNumber).doubleValue
+            try sendKey(to: window, code: 24, characters: "+", modifiers: [.command, .shift])
+            XCTAssertEqual(view.pageZoom, 1.1, accuracy: 0.001)
+            XCTAssertEqual((session === main ? child : main).webView?.pageZoom, 1)
+            // A DOM measurement verifies that WebKit actually scales content.
+            try await Task.sleep(for: .milliseconds(100))
+            let scaledWidth = (try await view.evaluateJavaScript("document.getElementById('draft').getBoundingClientRect().width * window.devicePixelRatio") as! NSNumber).doubleValue
+            let baselineWidth = textWidth * (window.backingScaleFactor)
+            XCTAssertGreaterThan(scaledWidth, baselineWidth * 1.05)
+            XCTAssertEqual(view.frame, frame, "Page zoom must not resize the chrome or viewport")
+            try sendKey(to: window, code: 27, characters: "-", modifiers: .command)
+            XCTAssertEqual(view.pageZoom, 1, accuracy: 0.001)
+            try sendKey(to: window, code: 24, characters: "=", modifiers: .command)
+            try sendKey(to: window, code: 15, characters: "к", modifiers: .command)
+            for _ in 0..<100 {
+                if try await view.evaluateJavaScript("typeof window.reloadMarker") as? String == "undefined", !view.isLoading { break }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            let marker = try await view.evaluateJavaScript("typeof window.reloadMarker") as? String
+            XCTAssertEqual(marker, "undefined", "Cmd-R must really reload the document, even from a page input")
+            XCTAssertTrue(session.webView === view)
+            XCTAssertEqual(session.navigationID, navigation)
+            XCTAssertEqual(session.originalURL, original)
+            XCTAssertEqual(view.url, current)
+            XCTAssertEqual(view.backForwardList.backList.count, historyCount)
+            XCTAssertEqual(view.pageZoom, 1.1, accuracy: 0.001)
+            try sendKey(to: window, code: 29, characters: "0", modifiers: .command)
+            XCTAssertEqual(view.pageZoom, 1)
+            XCTAssertEqual(session.pageZoom, 1)
+            try sendKey(to: window, code: 3, characters: "f", modifiers: .command)
+            let findPanel = try panel(in: window)
+            try await waitUntil { findPanel.searchField.currentEditor() != nil }
+            try sendKey(to: window, code: 69, characters: "+", modifiers: .command)
+            XCTAssertEqual(view.pageZoom, 1.1, accuracy: 0.001, "Commands also work from native find editor")
+            try sendKey(to: window, code: 37, characters: "l", modifiers: .command)
+            let addressControl = try address(in: window)
+            try await waitUntil { addressControl.addressField.currentEditor() != nil }
+            try sendKey(to: window, code: 82, characters: "0", modifiers: .command)
+            XCTAssertEqual(view.pageZoom, 1, "Reset also works from native address editor")
+            session.pageFind.close()
+        }
+    }
+
+    func testPageZoomBoundsNavigationAndSessionReset() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/find")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Find fixture" && !page.session.isLoading }
+        for _ in 0..<40 { page.session.changePageZoom(increase: true) }
+        XCTAssertEqual(page.view.pageZoom, 3)
+        for _ in 0..<40 { page.session.changePageZoom(increase: false) }
+        XCTAssertEqual(page.view.pageZoom, 0.5)
+        XCTAssertTrue(page.session.submitAddress("http://127.0.0.1:\(port)/find-highlight", engine: .google))
+        try await waitUntil { page.view.url?.path == "/find-highlight" && !page.view.isLoading }
+        XCTAssertEqual(page.view.pageZoom, 0.5)
+        page.session.goBack()
+        try await waitUntil { page.view.url?.path == "/find" && !page.view.isLoading }
+        XCTAssertEqual(page.view.pageZoom, 0.5)
+        page.view.magnification = 1.2
+        page.session.resetPageZoom()
+        XCTAssertEqual(page.view.pageZoom, 1)
+        XCTAssertEqual(page.view.magnification, 1)
+        page.session.changePageZoom(increase: true)
+        page.session.endSession()
+        XCTAssertEqual(page.session.pageZoom, 1)
+    }
+
     func testHTMLFindCountsInlineAndCrossOriginMatchesWithoutChangingDOM() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()

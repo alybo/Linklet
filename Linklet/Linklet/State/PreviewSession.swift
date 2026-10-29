@@ -45,6 +45,8 @@ final class PreviewSession: ObservableObject {
     private var welcomeIsDefault = false
 
     weak var webView: WKWebView?
+    private(set) var pageZoom = 1.0
+    private static let zoomLevels: [Double] = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
     let siteData: SiteDataService
     // Separate incoming windows are isolated; pages opened by a website share
     // their browsing context's store, including after the opener closes.
@@ -80,6 +82,7 @@ final class PreviewSession: ObservableObject {
         webView?.uiDelegate = nil
         webView?.loadHTMLString("", baseURL: nil)
         webView = nil
+        pageZoom = 1
         pendingURL = nil
         requestedURL = nil
         isActive = false
@@ -127,6 +130,7 @@ final class PreviewSession: ObservableObject {
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
+        webView.pageZoom = pageZoom
         pageFind.attach(webView)
         if isWelcome {
             webView.loadHTMLString(Self.welcomeHTML, baseURL: nil)
@@ -156,6 +160,7 @@ final class PreviewSession: ObservableObject {
         startSessionIfNeeded()
         originalURL = parent.originalURL
         webView = view
+        view.pageZoom = pageZoom
         pageFind.attach(view)
         synchronize(from: view)
     }
@@ -259,7 +264,27 @@ final class PreviewSession: ObservableObject {
         guard canGoForward else { return }
         webView?.goForward()
     }
-    func reload() { webView?.reload() }
+    func reload() {
+        guard isActive, !isWelcome else { return }
+        errorMessage = nil
+        webView?.reload()
+    }
+
+    func changePageZoom(increase: Bool) {
+        guard isActive, !isWelcome, let webView else { return }
+        let current = webView.pageZoom
+        pageZoom = increase
+            ? Self.zoomLevels.first(where: { $0 > current + 0.001 }) ?? Self.zoomLevels.last!
+            : Self.zoomLevels.last(where: { $0 < current - 0.001 }) ?? Self.zoomLevels.first!
+        webView.pageZoom = pageZoom
+    }
+
+    func resetPageZoom() {
+        guard isActive, !isWelcome, let webView else { return }
+        pageZoom = 1
+        webView.pageZoom = 1
+        webView.magnification = 1
+    }
     func stopLoading() {
         requestGeneration = UUID()
         webView?.stopLoading()
