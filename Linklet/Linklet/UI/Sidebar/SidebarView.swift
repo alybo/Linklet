@@ -88,12 +88,13 @@ private struct SidebarSmokeTint: View {
     let layer: Layer
 
     private var points: [SIMD2<Float>] {
-        let shifts: [Float] = [0, 0.025, -0.015, 0.035, -0.025, 0.018, 0]
+        let shifts: [Float] = [0, 0.006, 0.010, 0.007, -0.003, -0.005, 0]
+        let heights: [Float] = [0, 0.10, 0.27, 0.51, 0.73, 0.91, 1]
         let columns: [Float] = [0, 0.50, 0.65, 0.86, 1]
         let weights: [Float] = [0, 1, 0.8, 0.4, 0]
         return shifts.enumerated().flatMap { row, shift in
             columns.enumerated().map { column, x in
-                SIMD2(x + shift * weights[column], Float(row) / Float(shifts.count - 1))
+                SIMD2(x + shift * weights[column], heights[row])
             }
         }
     }
@@ -126,7 +127,7 @@ private struct SidebarNativeGlassBody: NSViewRepresentable {
 
     private var glass: AnyView {
         AnyView(Color.clear
-            .glassEffect(.clear.tint(.black.opacity(0.16)), in: SidebarGlassBody(cornerRadius: cornerRadius))
+            .glassEffect(.clear.tint(.black.opacity(0.28)), in: SidebarGlassBody(cornerRadius: cornerRadius))
             .environment(\.colorScheme, .dark))
     }
 }
