@@ -35,25 +35,31 @@ struct SidebarRevealSurface<Content: View>: View {
             content
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .offset(x: width - geometry.size.width)
-                .modifier(SidebarGlassSurface(enabled: glass, contour: contour, revealedWidth: width))
+                .background {
+                    if glass {
+                        SidebarGlassSurface(contour: contour, revealedWidth: width)
+                    } else { Color.black }
+                }
                 .clipShape(contour)
         }
         .transaction { $0.animation = nil }
     }
 }
 
-/// The tint is beneath one continuous pane of glass, so the system's optics
-/// cover the entire contour. Sidebar controls are drawn above both layers.
-private struct SidebarGlassSurface: ViewModifier {
-    let enabled: Bool
+/// Keep concave screen-edge shoulders out of the system's optical contour.
+/// A continuous convex pane extends behind the screen edge, then the original
+/// sidebar contour clips the result. Opaque tint cancels glass brightening on
+/// the left without covering controls, which are above this entire background.
+private struct SidebarGlassSurface: View {
     let contour: SidebarContour
     let revealedWidth: CGFloat
 
-    @ViewBuilder func body(content: Content) -> some View {
-        if #available(macOS 26.0, *), enabled {
-            content
-                .glassEffect(.clear, in: contour)
-                .background {
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            GeometryReader { geometry in
+                let radius = min(24, geometry.size.height / 4)
+                let extensionWidth: CGFloat = 48
+                ZStack(alignment: .topLeading) {
                     LinearGradient(stops: [
                         .init(color: .black, location: 0),
                         .init(color: .black, location: 0.58),
@@ -64,10 +70,70 @@ private struct SidebarGlassSurface: ViewModifier {
                         .frame(width: revealedWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .clipShape(contour)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
+                    SidebarNativeGlassBody(cornerRadius: radius)
+                        .frame(width: revealedWidth + extensionWidth,
+                               height: max(0, geometry.size.height - 2 * radius))
+                        .offset(x: -extensionWidth, y: radius)
+                    LinearGradient(stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.58),
+                        .init(color: .black.opacity(0.70), location: 0.68),
+                        .init(color: .clear, location: 0.80),
+                        .init(color: .clear, location: 1)
+                    ], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: revealedWidth)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .clipShape(contour)
                 }
-        } else { content.background(Color.black) }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        } else { Color.black }
+    }
+}
+
+/// A separate hosting view confines native glass vibrancy to the material.
+/// Sidebar labels and icons keep their own colors when the backdrop changes.
+@available(macOS 26.0, *)
+private struct SidebarNativeGlassBody: NSViewRepresentable {
+    let cornerRadius: CGFloat
+
+    func makeNSView(context: Context) -> NSHostingView<AnyView> {
+        let host = NSHostingView(rootView: glass)
+        host.sizingOptions = []
+        return host
+    }
+
+    func updateNSView(_ host: NSHostingView<AnyView>, context: Context) {
+        host.rootView = glass
+    }
+
+    private var glass: AnyView {
+        AnyView(Color.clear
+            .glassEffect(.clear, in: SidebarGlassBody(cornerRadius: cornerRadius))
+            .environment(\.colorScheme, .dark))
+    }
+}
+
+/// The right-hand quadratic corners match SidebarContour exactly. The left
+/// boundary is positioned outside the visible panel and has no concave joins.
+private struct SidebarGlassBody: Shape {
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        guard rect.width > 0, rect.height > 0 else { return Path() }
+        let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+                          control: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+                          control: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -722,7 +788,7 @@ struct SidebarSettingsView: View {
                     })) {
                         ForEach(SidebarAppearance.allCases) { appearance in Text(appearance.title).tag(appearance) }
                     }.pickerStyle(.segmented).accessibilityIdentifier("sidebar-appearance-picker")
-                    Text(L("Test appearance: a full Liquid Glass panel with a black-to-transparent gradient underneath. The sidebar shape and row sizes stay the same."))
+                    Text(L("Test appearance: a full Liquid Glass panel, tinted black on the left and transparent on the right. The sidebar shape and row sizes stay the same."))
                         .font(.caption).foregroundStyle(.secondary)
                     Text(L("Reduce Transparency uses the black appearance."))
                         .font(.caption).foregroundStyle(.secondary)

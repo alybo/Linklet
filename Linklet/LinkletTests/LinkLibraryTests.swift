@@ -472,16 +472,20 @@ final class LinkLibraryTests: XCTestCase {
             let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: bitmap)
             // Liquid Glass is composed by WindowServer. AppKit bitmap capture
-            // returns its intermediate refraction map, so color assertions apply
-            // to the opaque variants; native glass also gets an on-screen check.
+            // returns intermediate material layers. Color assertions cover opaque
+            // backgrounds/tint; the native optics also get an on-screen check.
             let scale = CGFloat(bitmap.pixelsWide) / sceneSize.width
             func sample(_ x: CGFloat, _ y: CGFloat) throws -> NSColor {
                 try XCTUnwrap(bitmap.colorAt(x: Int(x * scale), y: Int(y * scale))?.usingColorSpace(.deviceRGB))
             }
-            if appearance == .black || reduced {
-                let left = try sample(30, 300)
+            // Opaque correction must keep the left side truly black in glass
+            // mode too, including the original concave screen-edge shoulders.
+            for point in [CGPoint(x: 30, y: 300), CGPoint(x: 2, y: 18), CGPoint(x: 2, y: 582)] {
+                let left = try sample(point.x, point.y)
                 XCTAssertLessThan(left.redComponent + left.greenComponent + left.blueComponent, 0.03)
                 XCTAssertGreaterThan(left.alphaComponent, 0.99)
+            }
+            if appearance == .black || reduced {
                 let right = try sample(300, 300)
                 XCTAssertLessThan(right.redComponent + right.greenComponent + right.blueComponent, 0.03)
             }
