@@ -11,6 +11,7 @@ struct WebPreview: NSViewRepresentable {
         // OAuth SDKs often open a blank child and navigate it after async work.
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        PageFindHighlighter.shared.install(in: configuration.userContentController)
         // Preserve WebKit's native Macintosh/engine tokens and add Safari's
         // browser identity. Generic WKWebView UA lacks these tokens, so sites
         // such as Google may fall back to an unsupported-browser/basic page.

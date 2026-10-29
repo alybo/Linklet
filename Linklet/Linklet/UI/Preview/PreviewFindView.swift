@@ -3,8 +3,8 @@ import Combine
 import SwiftUI
 import WebKit
 
-/// Per-page state. WebKit owns matching, frame traversal, highlights and scrolling;
-/// no script rewrites the page or its editable fields.
+/// Per-page state. WebKit owns matching, frame traversal and scrolling; an
+/// isolated renderer decorates the actual selection without rewriting page text.
 @MainActor
 final class PageFindController: NSObject, ObservableObject {
     @Published private(set) var isPresented = false
@@ -19,6 +19,8 @@ final class PageFindController: NSObject, ObservableObject {
     private var navigationInProgress = false
     private var generation = UUID()
     private var countIsLimited = false
+    private var animatesNextHighlight = false
+    private var requestedMatchIndex: Int?
     private let allowsNativeMatchCounts: Bool
     private static let matchLimit: UInt = 10_000
     private static let findSelector = NSSelectorFromString("_findString:options:maxCount:")
@@ -42,6 +44,7 @@ final class PageFindController: NSObject, ObservableObject {
         if webView === view { return }
         detach()
         webView = view
+        PageFindHighlighter.shared.attach(view, owner: self)
         // Public WKFindResult only exposes a Bool. Isolate the optional native
         // delegate used by WebKit's own MiniBrowser for counts and all highlights.
         // A future WebKit without this SPI keeps public find/next/previous working.
@@ -51,6 +54,7 @@ final class PageFindController: NSObject, ObservableObject {
 
     func detach() {
         close(returnFocus: false)
+        if let webView { PageFindHighlighter.shared.detach(webView) }
         if usesNativeMatchCounts { _ = webView?.perform(Self.delegateSelector, with: nil) }
         webView = nil
         query = ""
@@ -83,6 +87,9 @@ final class PageFindController: NSObject, ObservableObject {
 
     func setQuery(_ text: String) {
         guard text != query else { return }
+        let old = query.lowercased()
+        let next = text.lowercased()
+        animatesNextHighlight = !old.isEmpty && !next.isEmpty && (next.hasPrefix(old) || old.hasPrefix(next))
         query = text
         scheduleSearch()
     }
@@ -91,6 +98,9 @@ final class PageFindController: NSObject, ObservableObject {
         guard isPresented, !query.isEmpty, !navigationInProgress else { return }
         pendingSearch?.cancel()
         pendingSearch = nil
+        animatesNextHighlight = false
+        requestedMatchIndex = (matchIndex ?? 0) + (backwards ? -1 : 1)
+        if let webView { PageFindHighlighter.shared.prepare(webView, preservingHighlight: true) }
         runSearch(backwards: backwards)
     }
 
@@ -112,14 +122,17 @@ final class PageFindController: NSObject, ObservableObject {
     private func scheduleSearch() {
         pendingSearch?.cancel()
         generation = UUID()
+        requestedMatchIndex = nil
         matchCount = nil
         matchIndex = nil
         countIsLimited = false
-        hideHighlights()
+        hideHighlights(clearCustom: !animatesNextHighlight)
+        if let webView, !query.isEmpty { PageFindHighlighter.shared.prepare(webView, preservingHighlight: animatesNextHighlight) }
         isSearching = isPresented && !query.isEmpty
         guard isSearching, !navigationInProgress else { return }
+        let delay = animatesNextHighlight ? 35 : 120
         pendingSearch = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+            do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
             guard !Task.isCancelled else { return }
             self?.runSearch(backwards: false)
         }
@@ -130,9 +143,11 @@ final class PageFindController: NSObject, ObservableObject {
         isSearching = true
         if usesNativeMatchCounts {
             _ = webView.perform(Self.delegateSelector, with: self)
-            // Case-insensitive, wrap, native selected indicator, all highlights,
-            // and a match index. Deliberately omit the page-dimming overlay.
-            let options: UInt = 1 | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 9) | (backwards ? 1 << 3 : 0)
+            // Keep native matching and scrolling. HTML selections use our accent
+            // renderer; documents without a renderer retain WebKit's native UI.
+            let custom = PageFindHighlighter.shared.hasFrames(in: webView)
+            let paint: UInt = custom ? 0 : (1 << 6) | (1 << 7)
+            let options: UInt = 1 | (1 << 4) | (1 << 9) | paint | (backwards ? 1 << 3 : 0) | (animatesNextHighlight ? 1 << 8 : 0)
             typealias Find = @convention(c) (AnyObject, Selector, NSString, UInt, UInt) -> Void
             let find = unsafeBitCast(webView.method(for: Self.findSelector), to: Find.self)
             find(webView, Self.findSelector, query as NSString, options, Self.matchLimit)
@@ -144,16 +159,18 @@ final class PageFindController: NSObject, ObservableObject {
             configuration.wraps = true
             configuration.backwards = backwards
             webView.find(query, configuration: configuration) { [weak self, weak webView] result in
-                guard let self, self.webView === webView, isPresented,
+                guard let self, let webView, self.webView === webView, isPresented,
                       generation == requestGeneration, query == searchedQuery, !navigationInProgress else { return }
                 isSearching = false
                 matchCount = result.matchFound ? nil : 0
+                PageFindHighlighter.shared.clear(webView)
             }
         }
     }
 
-    private func hideHighlights() {
+    private func hideHighlights(clearCustom: Bool = true) {
         guard let webView else { return }
+        if clearCustom { PageFindHighlighter.shared.clear(webView) }
         if usesNativeMatchCounts { _ = webView.perform(Self.hideSelector) }
         else { webView.find("", configuration: WKFindConfiguration()) { _ in } }
     }
@@ -168,7 +185,24 @@ final class PageFindController: NSObject, ObservableObject {
         isSearching = false
         countIsLimited = matches >= Self.matchLimit
         matchCount = Int(min(matches, Self.matchLimit))
-        matchIndex = max(0, index)
+        if let requestedMatchIndex, let matchCount, matchCount > 0 {
+            matchIndex = (requestedMatchIndex % matchCount + matchCount) % matchCount
+        } else {
+            matchIndex = max(0, index)
+        }
+        PageFindHighlighter.shared.render(in: view, query: query, animate: animatesNextHighlight)
+    }
+
+    func hideNativeFindPaint(in view: WKWebView) {
+        // Only remove native paint after a frame confirms it can render the
+        // selection. Inputs, PDFs and other inaccessible text keep native paint.
+        // Hiding paint resets WebKit's UI index; arrows retain our own index.
+        guard view === webView, usesNativeMatchCounts else { return }
+        _ = view.perform(Self.hideSelector)
+    }
+
+    func refreshHighlightAppearance() {
+        if let webView { PageFindHighlighter.shared.updateAppearance(in: webView) }
     }
 
     @objc(_webView:didFailToFindString:)
@@ -177,12 +211,14 @@ final class PageFindController: NSObject, ObservableObject {
         isSearching = false
         matchCount = 0
         matchIndex = nil
+        PageFindHighlighter.shared.clear(view)
     }
 }
 
 struct PreviewFindOverlay: View {
     @ObservedObject var controller: PageFindController
     @ObservedObject private var language = AppLanguage.shared
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         PreviewFindPanel(controller: controller)
@@ -199,6 +235,7 @@ struct PreviewFindOverlay: View {
             .opacity(controller.isPresented ? 1 : 0)
             .allowsHitTesting(controller.isPresented)
             .accessibilityHidden(!controller.isPresented)
+            .onChange(of: colorScheme) { _ in controller.refreshHighlightAppearance() }
     }
 }
 

@@ -2787,6 +2787,15 @@ private final class PopupHTTPFixture: @unchecked Sendable {
             status = "302 Found"
             extraHeaders = "Location: http://localhost:\(port)/callback\r\nSet-Cookie: login=fixture; Path=/; SameSite=Lax\r\n"
             html = ""
+        } else if firstLine.hasPrefix("GET /find-highlight ") {
+            status = "200 OK"
+            extraHeaders = "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\n"
+            html = """
+            <!doctype html><html lang="ru"><meta charset="utf-8"><title>Выделение текста</title>
+            <style>:root{color-scheme:light dark}body{font:17px -apple-system;margin:0;padding:64px 40px}h1{font-size:52px;font-weight:400;margin:0 0 42px}p{line-height:1.7}</style>
+            <h1 id="word">Выделители</h1><p>Текст остаётся на своём месте, пока правая граница следует за запросом.</p>
+            <input id="draft" value="Черновик"><div style="height:1200px"></div><p>Выделители внизу страницы</p></html>
+            """
         } else if firstLine.hasPrefix("GET /find-frame ") {
             status = "200 OK"
             html = "<title>Find frame</title><p>needle inside a cross-origin frame</p>"
@@ -2937,6 +2946,7 @@ final class PageFindTests: XCTestCase {
         for (window, session, name) in [(mainWindow,model.previewSession,"main"),(popupWindow,popup.session,"popup")] {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
+            try await waitUntil { window.isKeyWindow && NSApp.isActive }
             window.setContentSize(NSSize(width:640,height:500))
             window.contentView?.layoutSubtreeIfNeeded()
             let view = try XCTUnwrap(session.webView)
@@ -3045,6 +3055,129 @@ final class PageFindTests: XCTestCase {
         try await waitUntil { find.matchCount == 0 && !find.isSearching }
         find.close()
         XCTAssertFalse(find.isPresented)
+    }
+
+    func testAccentHighlightAnimatesOnlyTheMovingBoundaryAndTracksThePage() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string:"http://127.0.0.1:\(port)/find-highlight")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Выделение текста" && !page.session.isLoading }
+        let before = try await page.view.evaluateJavaScript("document.body.innerHTML") as? String
+        let find = page.session.pageFind
+        find.show(); find.setQuery("выд")
+        try await waitUntil { find.matchCount == 2 && !find.isSearching }
+        let initial = try await waitForHighlight(in:page.view,query:"выд")
+        let firstStart = try XCTUnwrap(initial["start"] as? [String:Double])
+        let firstEnd = try XCTUnwrap(initial["end"] as? [String:Double])
+        XCTAssertEqual(initial["pointerEvents"] as? String,"none")
+        XCTAssertEqual(initial["ariaHidden"] as? String,"true")
+        find.setQuery("выделители")
+        try await waitUntil { find.matchCount == 2 && !find.isSearching }
+        let grown = try await waitForHighlight(in:page.view,query:"выделители")
+        let start = try XCTUnwrap(grown["start"] as? [String:Double])
+        let end = try XCTUnwrap(grown["end"] as? [String:Double])
+        XCTAssertEqual(start["x"]!,firstStart["x"]!,accuracy:1)
+        XCTAssertEqual(start["y"]!,firstStart["y"]!,accuracy:1)
+        XCTAssertGreaterThan(end["x"]!,firstEnd["x"]!+80)
+        XCTAssertEqual(grown["animated"] as? Bool,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        var accent = NSColor.controlAccentColor.usingColorSpace(.sRGB)!
+        page.view.effectiveAppearance.performAsCurrentDrawingAppearance {
+            accent = NSColor.controlAccentColor.usingColorSpace(.sRGB)!
+        }
+        let expectedColor = "rgb(\(Int((accent.redComponent*255).rounded())), \(Int((accent.greenComponent*255).rounded())), \(Int((accent.blueComponent*255).rounded())))"
+        XCTAssertEqual(grown["color"] as? String,expectedColor)
+        let hit = try await page.view.evaluateJavaScript("(()=>{const r=document.getElementById('word').getBoundingClientRect();return document.elementFromPoint(r.x+8,r.y+30)?.id})()") as? String
+        XCTAssertEqual(hit,"word","The decoration must not intercept clicks on the page")
+        try await Task.sleep(for:.milliseconds(230))
+        if let content = page.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in:content.bounds) {
+            content.cacheDisplay(in:content.bounds,to:bitmap)
+            try bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/linklet-find-ios-style.png"))
+        }
+        let reducedValue: Any = try await withCheckedThrowingContinuation { continuation in
+            page.view.callAsyncJavaScript("globalThis.__linkletFindHighlight.appearance(color,true);return globalThis.__linkletFindHighlight.diagnostics()",
+                arguments:["color":expectedColor],in:nil,in:PageFindHighlighter.world) { continuation.resume(with:$0) }
+        }
+        let reduced=try XCTUnwrap(reducedValue as? [String:Any])
+        XCTAssertEqual(reduced["reduced"] as? Bool,true)
+        XCTAssertEqual(reduced["endTransition"] as? String,"none")
+        page.window.appearance=NSAppearance(named:.aqua)
+        for _ in 0..<40 {
+            if (try await page.view.evaluateJavaScript("matchMedia('(prefers-color-scheme: dark)').matches")) as? Bool == false { break }
+            try await Task.sleep(for:.milliseconds(25))
+        }
+        if let content = page.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in:content.bounds) {
+            content.cacheDisplay(in:content.bounds,to:bitmap)
+            try bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/linklet-find-ios-light.png"))
+        }
+        _ = try await page.view.evaluateJavaScript("scrollTo(0,50);true")
+        var scrolled = grown
+        for _ in 0..<40 {
+            scrolled = try await highlightState(in:page.view)
+            if let p=scrolled["start"] as? [String:Double], p["y"]! < start["y"]!-30 { break }
+            try await Task.sleep(for:.milliseconds(25))
+        }
+        let scrollStart = try XCTUnwrap(scrolled["start"] as? [String:Double])
+        XCTAssertEqual(scrollStart["y"]!,start["y"]!-50,accuracy:2)
+        let after = try await page.view.evaluateJavaScript("document.body.innerHTML") as? String
+        XCTAssertEqual(before,after,"No search spans may be inserted into the page content")
+        find.close()
+        for _ in 0..<40 {
+            if (try await highlightState(in:page.view))["active"] as? Bool == false { break }
+            try await Task.sleep(for:.milliseconds(25))
+        }
+        let hidden = try await highlightState(in:page.view)
+        XCTAssertEqual(hidden["active"] as? Bool,false)
+        XCTAssertEqual(hidden["display"] as? String,"none")
+    }
+
+    func testHighlightFollowsTheNativeResultIntoACrossOriginFrame() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url:URL(string:"http://127.0.0.1:\(port)/find")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Find fixture" && !page.session.isLoading }
+        let find = page.session.pageFind
+        find.show(); find.setQuery("needle")
+        try await waitUntil { find.matchCount == 5 && !find.isSearching }
+        var reachedFrame = false
+        for _ in 0..<5 {
+            _ = try await waitForHighlight(in:page.view,query:"needle",selectedFrame:true)
+            if let frame=PageFindHighlighter.shared.selectedFrame(in:page.view), !frame.isMainFrame {
+                let state=try await highlightState(in:page.view,frame:frame)
+                XCTAssertEqual(state["active"] as? Bool,true)
+                XCTAssertEqual((state["selected"] as? String)?.lowercased(),"needle")
+                let rects=try XCTUnwrap(state["rects"] as? [[String:Double]])
+                XCTAssertEqual(rects.first?["x"] ?? 0,8,accuracy:2,"The iframe paints in its own coordinate space")
+                reachedFrame=true; break
+            }
+            let previous=find.matchIndex
+            find.navigate()
+            try await waitUntil { !find.isSearching && find.matchIndex != previous }
+        }
+        XCTAssertTrue(reachedFrame,"Native result traversal must retain custom styling inside another origin")
+    }
+
+    private func highlightState(in view:WKWebView,frame:WKFrameInfo?=nil) async throws -> [String:Any] {
+        let value: Any = try await withCheckedThrowingContinuation { continuation in
+            view.callAsyncJavaScript("return globalThis.__linkletFindHighlight?.diagnostics() ?? {}",arguments:[:],in:frame,in:PageFindHighlighter.world) { result in
+                continuation.resume(with: result)
+            }
+        }
+        return value as? [String:Any] ?? [:]
+    }
+
+    private func waitForHighlight(in view:WKWebView,query:String,selectedFrame:Bool=false) async throws -> [String:Any] {
+        for _ in 0..<80 {
+            let frame=selectedFrame ? PageFindHighlighter.shared.selectedFrame(in:view) : nil
+            let state=try await highlightState(in:view,frame:frame)
+            if state["active"] as? Bool == true, state["query"] as? String == query { return state }
+            try await Task.sleep(for:.milliseconds(25))
+        }
+        XCTFail("Custom highlight did not appear for the native result")
+        return [:]
     }
 
     private func address(in window:NSWindow) throws -> PreviewAddressControlView {
