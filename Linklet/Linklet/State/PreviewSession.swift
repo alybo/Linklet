@@ -21,6 +21,7 @@ private final class TemporaryWebsiteData {
 @MainActor
 final class PreviewSession: ObservableObject {
     let windowID = UUID()
+    let pageFind = PageFindController()
     let windowRegistry: BrowserWindowRegistry
     @Published private(set) var navigationID = UUID()
     // Browser handoff keeps the incoming link even after redirects and navigation.
@@ -71,6 +72,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func endSession(resetTemporaryData: Bool = true) {
+        pageFind.detach()
         requestGeneration = UUID()
         let wasActive = isActive
         webView?.stopLoading()
@@ -115,6 +117,7 @@ final class PreviewSession: ObservableObject {
 
     func navigationBecameDownload(in view: WKWebView) {
         guard webView === view else { return }
+        pageFind.navigationFinished()
         requestedURL = nil
         shouldRecordInitialTitle = false
         isPreparingNewPage = false
@@ -124,6 +127,7 @@ final class PreviewSession: ObservableObject {
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
+        pageFind.attach(webView)
         if isWelcome {
             webView.loadHTMLString(Self.welcomeHTML, baseURL: nil)
         } else if let pendingURL {
@@ -152,6 +156,7 @@ final class PreviewSession: ObservableObject {
         startSessionIfNeeded()
         originalURL = parent.originalURL
         webView = view
+        pageFind.attach(view)
         synchronize(from: view)
     }
 
@@ -164,6 +169,7 @@ final class PreviewSession: ObservableObject {
         startSessionIfNeeded()
         isWelcome = false
         errorMessage = nil
+        pageFind.detach()
         webView?.stopLoading()
         webView = nil
         requestedURL = url
@@ -182,6 +188,7 @@ final class PreviewSession: ObservableObject {
     }
 
     func showWelcome(isDefault: Bool) {
+        pageFind.detach()
         requestGeneration = UUID()
         startSessionIfNeeded()
         webView?.stopLoading()
@@ -259,10 +266,12 @@ final class PreviewSession: ObservableObject {
         pendingURL = nil
         requestedURL = nil
         isPreparingNewPage = false
+        pageFind.navigationFinished()
     }
 
     func pageDidFinish(in view: WKWebView) {
         guard webView === view else { return }
+        pageFind.navigationFinished()
         welcomeDidFinish()
         if !isWelcome, let url = view.url, URLPolicy.canPreview(url) { onSiteLoaded?(url) }
         guard !isWelcome, shouldRecordInitialTitle, let originalURL else { return }
@@ -280,6 +289,7 @@ final class PreviewSession: ObservableObject {
 
     func navigationDidFail(in webView: WKWebView) {
         guard self.webView === webView else { return }
+        pageFind.navigationFinished()
         requestedURL = nil
         isPreparingNewPage = false
         synchronize(from: webView)

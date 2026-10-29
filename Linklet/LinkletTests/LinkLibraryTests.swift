@@ -2787,6 +2787,19 @@ private final class PopupHTTPFixture: @unchecked Sendable {
             status = "302 Found"
             extraHeaders = "Location: http://localhost:\(port)/callback\r\nSet-Cookie: login=fixture; Path=/; SameSite=Lax\r\n"
             html = ""
+        } else if firstLine.hasPrefix("GET /find-frame ") {
+            status = "200 OK"
+            html = "<title>Find frame</title><p>needle inside a cross-origin frame</p>"
+        } else if firstLine.hasPrefix("GET /find ") {
+            status = "200 OK"
+            html = """
+            <!doctype html><meta charset="utf-8"><title>Find fixture</title>
+            <style>body{font:16px -apple-system;padding:24px}input{display:block;margin:20px 0}</style>
+            <h1>Find on page</h1><p>Needle and ne<b>ed</b>le.</p><p>NEEDLE</p>
+            <p hidden>needle is hidden</p><input id="draft" value="unchanged">
+            <iframe src="http://localhost:\(port)/find-frame"></iframe>
+            <div style="height:1400px"></div><p id="last-match">needle at the end</p>
+            """
         } else if firstLine.hasPrefix("GET /cursor ") {
             status = "200 OK"
             html = """
@@ -2850,4 +2863,221 @@ private struct SidebarSizeProbe: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView { NSView() }
     func updateNSView(_ nsView: NSView, context: Context) { report(rowSize) }
+}
+
+@MainActor
+final class PageFindTests: XCTestCase {
+    func testNativeFindCountsInlineAndCrossOriginMatchesWithoutChangingDOM() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/find")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Find fixture" && !page.session.isLoading }
+        let html = try await page.view.evaluateJavaScript("document.body.innerHTML") as? String
+        let original = page.session.originalURL
+        let find = page.session.pageFind
+        XCTAssertTrue(find.usesNativeMatchCounts, "The tested WebKit must exercise native counts, not the fallback")
+        find.show()
+        find.setQuery("needle")
+        try await waitUntil { find.matchCount == 5 && !find.isSearching }
+        let initial = try XCTUnwrap(find.matchIndex)
+        find.navigate()
+        try await waitUntil { find.matchIndex == (initial + 1) % 5 && !find.isSearching }
+        find.navigate(backwards: true)
+        try await waitUntil { find.matchIndex == initial && !find.isSearching }
+        for _ in 0..<5 {
+            let previous = find.matchIndex
+            find.navigate()
+            try await waitUntil { find.matchIndex != previous && !find.isSearching }
+        }
+        XCTAssertEqual(find.matchIndex, initial, "Next wraps after the last match")
+        let after = try await page.view.evaluateJavaScript("document.body.innerHTML") as? String
+        XCTAssertEqual(html, after, "Native highlights must not insert spans or rewrite page HTML")
+        let draft = try await page.view.evaluateJavaScript("document.getElementById('draft').value") as? String
+        XCTAssertEqual(draft, "unchanged")
+        XCTAssertEqual(page.session.originalURL, original)
+        XCTAssertEqual(page.session.currentURL, original)
+        find.setQuery("not-present-in-this-document")
+        try await waitUntil { find.matchCount == 0 && !find.isSearching }
+        find.setQuery("'"); find.setQuery("\\"); find.setQuery("needle")
+        try await waitUntil { find.matchCount == 5 && !find.isSearching }
+        find.setQuery("")
+        XCTAssertFalse(find.isSearching)
+        XCTAssertEqual(find.counterText, "")
+        find.close()
+        XCTAssertFalse(find.isPresented)
+        _ = try await page.view.evaluateJavaScript("document.body.innerHTML='<p>'+('manyneedle '.repeat(10050))+'</p>';true")
+        find.show()
+        find.setQuery("manyneedle")
+        try await waitUntil { find.matchCount == 10000 && !find.isSearching }
+        XCTAssertEqual(find.counterText,L("%d+ matches",10000),"Large results display a lower bound instead of an invented exact total")
+    }
+
+    func testFloatingPanelKeyboardFocusGeometryAndIndependentPopupState() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "PageFindKeyboard.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/find")!)
+        try await waitUntil { model.previewSession.pageTitle == "Find fixture" && !model.previewSession.isLoading }
+        let mainWindow = try XCTUnwrap(NSApp.windows.first {
+            ($0.contentViewController as? NSHostingController<PreviewRootView>)?.rootView.session === model.previewSession
+        })
+        let source = try XCTUnwrap(model.previewSession.webView)
+        _ = try await source.evaluateJavaScript("window.open('/find','find-child');true")
+        try await waitUntil { model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first?.session.pageTitle == "Find fixture" }
+        let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        let popupWindow = try XCTUnwrap(popup.window)
+        for (window, session, name) in [(mainWindow,model.previewSession,"main"),(popupWindow,popup.session,"popup")] {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.setContentSize(NSSize(width:640,height:500))
+            window.contentView?.layoutSubtreeIfNeeded()
+            let view = try XCTUnwrap(session.webView)
+            let webFrame = view.frame
+            let windowFrame = window.frame
+            let panel = try panel(in:window)
+            try sendKey(to:window,code:3,characters:"а",modifiers:.command)
+            try await waitUntil { session.pageFind.isPresented && panel.searchField.currentEditor() != nil }
+            let editor = try XCTUnwrap(panel.searchField.currentEditor() as? NSTextView)
+            editor.insertText("needle",replacementRange:editor.selectedRange())
+            try await waitUntil { session.pageFind.matchCount == 5 && !session.pageFind.isSearching }
+            XCTAssertEqual(view.frame,webFrame,"Floating search must not resize the viewport")
+            XCTAssertEqual(window.frame,windowFrame)
+            let oldIndex = try XCTUnwrap(session.pageFind.matchIndex)
+            try sendKey(to:window,code:36,characters:"\r")
+            try await waitUntil { session.pageFind.matchIndex == (oldIndex+1)%5 && !session.pageFind.isSearching }
+            try sendKey(to:window,code:36,characters:"\r",modifiers:.shift)
+            try await waitUntil { session.pageFind.matchIndex == oldIndex && !session.pageFind.isSearching }
+            window.contentView?.layoutSubtreeIfNeeded()
+            let content = try XCTUnwrap(window.contentView)
+            XCTAssertTrue(content.bounds.contains(panel.convert(panel.bounds,to:content)))
+            if let bitmap = content.bitmapImageRepForCachingDisplay(in:content.bounds) {
+                content.cacheDisplay(in:content.bounds,to:bitmap)
+                try bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/linklet-find-\(name).png"))
+            }
+            // Escape from the web content must dismiss search without closing it.
+            window.makeFirstResponder(view)
+            try sendKey(to:window,code:53,characters:"\u{1b}")
+            XCTAssertFalse(session.pageFind.isPresented)
+            XCTAssertTrue(window.isVisible)
+            XCTAssertTrue(session.isActive)
+            try sendKey(to:window,code:3,characters:"f",modifiers:.command)
+            try await waitUntil { panel.searchField.currentEditor() != nil }
+            let other = session === model.previewSession ? popup.session : model.previewSession
+            let otherQuery = other.pageFind.query
+            let newEditor = try XCTUnwrap(panel.searchField.currentEditor() as? NSTextView)
+            newEditor.insertText("missing",replacementRange:newEditor.selectedRange())
+            try await waitUntil { session.pageFind.matchCount == 0 && !session.pageFind.isSearching }
+            XCTAssertEqual(other.pageFind.query,otherQuery)
+            try sendKey(to:window,code:37,characters:"l",modifiers:.command)
+            let address = try address(in:window)
+            try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
+            try sendKey(to:window,code:53,characters:"\u{1b}")
+            XCTAssertFalse(address.isExpanded)
+            XCTAssertTrue(session.pageFind.isPresented,"Escape first belongs to the address editor")
+            try sendKey(to:window,code:3,characters:"f",modifiers:.command)
+            try await waitUntil { panel.searchField.currentEditor() != nil }
+            try sendKey(to:window,code:53,characters:"\u{1b}")
+            XCTAssertFalse(session.pageFind.isPresented,"Escape in the search editor closes only the search")
+            XCTAssertTrue(window.isVisible)
+            session.pageFind.show()
+            if name == "popup" {
+                panel.closeButton.performClick(nil)
+                XCTAssertFalse(session.pageFind.isPresented)
+                XCTAssertTrue(model.previewSession.pageFind.isPresented,"Another window retains its open search")
+            }
+        }
+    }
+
+    func testNavigationAndCloseCancelPendingResultsAndRetainQueryOnlyWithinWindow() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url:URL(string:"http://127.0.0.1:\(port)/find")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Find fixture" && !page.session.isLoading }
+        let find = page.session.pageFind
+        find.show(); find.setQuery("needle")
+        try await waitUntil { find.matchCount == 5 && !find.isSearching }
+        XCTAssertTrue(page.session.submitAddress("http://127.0.0.1:\(port)/destination",engine:.google))
+        try await waitUntil { page.session.pageTitle == "Destination" && find.matchCount == 0 && !find.isSearching }
+        XCTAssertTrue(find.isPresented)
+        XCTAssertEqual(find.query,"needle")
+        page.session.goBack()
+        try await waitUntil { page.session.pageTitle == "Find fixture" && find.matchCount == 5 && !find.isSearching }
+        find.setQuery("pending-close")
+        page.session.endSession()
+        XCTAssertFalse(find.isPresented)
+        XCTAssertEqual(find.query,"")
+        XCTAssertNil(find.matchCount)
+        try await Task.sleep(for:.milliseconds(250))
+        XCTAssertFalse(find.isPresented)
+        XCTAssertNil(find.matchCount,"A cancelled debounce or native callback must not resurrect closed state")
+    }
+
+    func testPublicFindFallbackCanSearchAndNavigateWithoutInventingMatchCounts() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url:URL(string:"http://127.0.0.1:\(port)/find")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Find fixture" && !page.session.isLoading }
+        page.session.pageFind.detach()
+        let find=PageFindController(allowsNativeMatchCounts:false)
+        find.attach(page.view)
+        defer { find.detach() }
+        XCTAssertFalse(find.usesNativeMatchCounts)
+        find.show(); find.setQuery("needle")
+        try await waitUntil { !find.isSearching }
+        XCTAssertNil(find.matchCount)
+        XCTAssertEqual(find.counterText,L("Found"))
+        find.navigate(backwards:true)
+        try await waitUntil { !find.isSearching }
+        XCTAssertNil(find.matchCount)
+        find.setQuery("absent-on-this-page")
+        try await waitUntil { find.matchCount == 0 && !find.isSearching }
+        find.close()
+        XCTAssertFalse(find.isPresented)
+    }
+
+    private func address(in window:NSWindow) throws -> PreviewAddressControlView {
+        func search(_ view:NSView)->PreviewAddressControlView? {
+            if let address=view as? PreviewAddressControlView { return address }
+            return view.subviews.lazy.compactMap(search).first
+        }
+        return try XCTUnwrap(window.contentView.flatMap(search))
+    }
+
+    private func panel(in window:NSWindow) throws -> PreviewFindControlView {
+        func search(_ view:NSView)->PreviewFindControlView? {
+            if let panel=view as? PreviewFindControlView { return panel }
+            return view.subviews.lazy.compactMap(search).first
+        }
+        return try XCTUnwrap(window.contentView.flatMap(search))
+    }
+
+    private func sendKey(to window:NSWindow,code:UInt16,characters:String,modifiers:NSEvent.ModifierFlags=[]) throws {
+        let event=try XCTUnwrap(NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:modifiers,
+            timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,
+            characters:characters,charactersIgnoringModifiers:characters,isARepeat:false,keyCode:code))
+        NSApp.postEvent(event,atStart:true)
+        if let next=NSApp.nextEvent(matching:.keyDown,until:Date().addingTimeInterval(0.1),inMode:.default,dequeue:true) {
+            NSApp.sendEvent(next)
+        }
+    }
+
+    private func waitUntil(_ predicate:()->Bool,file:StaticString=#filePath,line:UInt=#line) async throws {
+        for _ in 0..<100 {
+            if predicate() { return }
+            try await Task.sleep(for:.milliseconds(100))
+        }
+        XCTFail("Find fixture did not reach its expected state",file:file,line:line)
+    }
 }

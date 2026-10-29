@@ -143,6 +143,9 @@ struct PreviewPageView: View {
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 1)
                 .allowsHitTesting(false)
         }
+        .overlay(alignment: .topTrailing) {
+            PreviewFindOverlay(controller: session.pageFind)
+        }
         .animation(.easeOut(duration: 0.13), value: session.isPreparingNewPage)
     }
 

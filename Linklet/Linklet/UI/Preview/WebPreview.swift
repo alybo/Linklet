@@ -93,6 +93,7 @@ struct WebPreview: NSViewRepresentable {
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation?) {
             cancelFileUpload()
             Task { @MainActor [weak self] in
+                if self?.session?.webView === webView { self?.session?.pageFind.navigationStarted() }
                 self?.session?.synchronize(from: webView)
             }
         }

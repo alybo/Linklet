@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        AE10000000000000000000001 = {isa = PBXBuildFile; fileRef = AE20000000000000000000001; };
         AD10000000000000000000001 = {isa = PBXBuildFile; fileRef = AD20000000000000000000001; };
         AC10000000000000000000002 = {isa = PBXBuildFile; fileRef = AC20000000000000000000002; };
         AC10000000000000000000001 = {isa = PBXBuildFile; fileRef = AC20000000000000000000001; };
@@ -64,6 +65,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        AE20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Preview/PreviewFindView.swift; sourceTree = "<group>"; };
         AD20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/DownloadManager.swift; sourceTree = "<group>"; };
         AC20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Preview/PreviewAddressView.swift; sourceTree = "<group>"; };
         AC20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = State/BrowserWindowRegistry.swift; sourceTree = "<group>"; };
@@ -151,6 +153,7 @@
                 AC20000000000000000000001,
                 AD20000000000000000000001,
                 AC20000000000000000000002,
+                AE20000000000000000000001,
                 AB20000000000000000000004,
                 AB20000000000000000000003,
                 AB20000000000000000000002,
@@ -394,6 +397,7 @@
                 AD10000000000000000000001,
                 AC10000000000000000000001,
                 AC10000000000000000000002,
+                AE10000000000000000000001,
                 AB10000000000000000000004,
                 AB10000000000000000000003,
                 AB10000000000000000000002,
