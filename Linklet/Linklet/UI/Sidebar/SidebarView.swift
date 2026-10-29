@@ -35,63 +35,39 @@ struct SidebarRevealSurface<Content: View>: View {
             content
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .offset(x: width - geometry.size.width)
-                .background {
-                    if glass {
-                        LinearGradient(stops: [
-                            .init(color: .black, location: 0),
-                            .init(color: .black, location: 0.58),
-                            .init(color: .black.opacity(0.96), location: 0.72),
-                            .init(color: .black.opacity(0.30), location: 0.92),
-                            .init(color: .clear, location: 1)
-                        ], startPoint: .leading, endPoint: .trailing)
-                            .frame(width: width)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else { Color.black }
-                }
-                .modifier(SidebarGlassEffect(enabled: glass, contour: contour))
+                .modifier(SidebarGlassSurface(enabled: glass, contour: contour, revealedWidth: width))
                 .clipShape(contour)
         }
         .transaction { $0.animation = nil }
     }
 }
 
-/// Full-surface Liquid Glass blurs away backdrop details even with `.clear`.
-/// Restrict the native material to a feathered rim and leave the interior clear.
-private struct SidebarGlassEffect: ViewModifier {
-    @Environment(\.displayScale) private var displayScale
+/// The tint is beneath one continuous pane of glass, so the system's optics
+/// cover the entire contour. Sidebar controls are drawn above both layers.
+private struct SidebarGlassSurface: ViewModifier {
     let enabled: Bool
     let contour: SidebarContour
+    let revealedWidth: CGFloat
+
     @ViewBuilder func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.background {
-                if enabled {
-                    Color.clear
-                        .glassEffect(.clear, in: contour)
-                        .mask { contour.stroke(lineWidth: 36).blur(radius: 6) }
+        if #available(macOS 26.0, *), enabled {
+            content
+                .glassEffect(.clear, in: contour)
+                .background {
+                    LinearGradient(stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.58),
+                        .init(color: .black.opacity(0.96), location: 0.72),
+                        .init(color: .black.opacity(0.30), location: 0.92),
+                        .init(color: .clear, location: 1)
+                    ], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: revealedWidth)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .clipShape(contour)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
-            }
-            .overlay {
-                if enabled {
-                    GeometryReader { geometry in
-                        let width = geometry.size.width * min(1, max(0, contour.revealProgress))
-                        contour.stroke(LinearGradient(colors: [
-                            .white.opacity(0.10), .white.opacity(0.42),
-                            .white.opacity(0.12), .white.opacity(0.28)
-                        ], startPoint: .top, endPoint: .bottom), lineWidth: 2 / displayScale)
-                        .mask {
-                            LinearGradient(stops: [
-                                .init(color: .clear, location: 0.80),
-                                .init(color: .white, location: 0.96)
-                            ], startPoint: .leading, endPoint: .trailing)
-                            .frame(width: width)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                }
-            }
-        } else { content }
+        } else { content.background(Color.black) }
     }
 }
 
@@ -746,7 +722,7 @@ struct SidebarSettingsView: View {
                     })) {
                         ForEach(SidebarAppearance.allCases) { appearance in Text(appearance.title).tag(appearance) }
                     }.pickerStyle(.segmented).accessibilityIdentifier("sidebar-appearance-picker")
-                    Text(L("Test appearance: black on the left, transparent on the right with a native Liquid Glass rim. The sidebar shape and row sizes stay the same."))
+                    Text(L("Test appearance: a full Liquid Glass panel with a black-to-transparent gradient underneath. The sidebar shape and row sizes stay the same."))
                         .font(.caption).foregroundStyle(.secondary)
                     Text(L("Reduce Transparency uses the black appearance."))
                         .font(.caption).foregroundStyle(.secondary)
