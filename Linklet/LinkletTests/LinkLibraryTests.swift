@@ -2876,7 +2876,7 @@ private struct SidebarSizeProbe: NSViewRepresentable {
 
 @MainActor
 final class PageFindTests: XCTestCase {
-    func testNativeFindCountsInlineAndCrossOriginMatchesWithoutChangingDOM() async throws {
+    func testHTMLFindCountsInlineAndCrossOriginMatchesWithoutChangingDOM() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
         defer { server.stop() }
@@ -3040,7 +3040,7 @@ final class PageFindTests: XCTestCase {
         defer { page.close() }
         try await waitUntil { page.session.pageTitle == "Find fixture" && !page.session.isLoading }
         page.session.pageFind.detach()
-        let find=PageFindController(allowsNativeMatchCounts:false)
+        let find=PageFindController(allowsNativeMatchCounts:false,allowsHTMLSearch:false)
         find.attach(page.view)
         defer { find.detach() }
         XCTAssertFalse(find.usesNativeMatchCounts)
@@ -3148,7 +3148,7 @@ final class PageFindTests: XCTestCase {
             if let frame=PageFindHighlighter.shared.selectedFrame(in:page.view), !frame.isMainFrame {
                 let state=try await highlightState(in:page.view,frame:frame)
                 XCTAssertEqual(state["active"] as? Bool,true)
-                XCTAssertEqual((state["selected"] as? String)?.lowercased(),"needle")
+                XCTAssertEqual((state["rangeText"] as? String)?.lowercased(),"needle")
                 let rects=try XCTUnwrap(state["rects"] as? [[String:Double]])
                 XCTAssertEqual(rects.first?["x"] ?? 0,8,accuracy:2,"The iframe paints in its own coordinate space")
                 reachedFrame=true; break
@@ -3158,6 +3158,106 @@ final class PageFindTests: XCTestCase {
             try await waitUntil { !find.isSearching && find.matchIndex != previous }
         }
         XCTAssertTrue(reachedFrame,"Native result traversal must retain custom styling inside another origin")
+    }
+
+    func testBlankClickAndUserSelectionDoNotDismissTheSearchResultOrInvokeNativePaint() async throws {
+        let server=try PopupHTTPFixture()
+        let port=try await server.start()
+        defer {server.stop()}
+        let page=UploadTestPage(url:URL(string:"http://127.0.0.1:\(port)/find-highlight")!)
+        defer {page.close()}
+        try await waitUntil {page.session.pageTitle=="Выделение текста" && !page.session.isLoading}
+        let find=page.session.pageFind
+        find.show();find.setQuery("выд")
+        try await waitUntil {!find.isSearching && find.matchCount==2}
+        _=try await waitForHighlight(in:page.view,query:"выд")
+        XCTAssertEqual(find.nativeFindRequestCount,0,"HTML search must never create an ActiveTextMatch to remove later")
+        NSApp.activate(ignoringOtherApps:true)
+        page.window.makeKeyAndOrderFront(nil)
+        page.window.makeFirstResponder(page.view)
+        let location=page.view.convert(NSPoint(x:500,y:400),to:nil)
+        for type in [NSEvent.EventType.leftMouseDown,.leftMouseUp] {
+            let event=try XCTUnwrap(NSEvent.mouseEvent(with:type,location:location,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,
+                windowNumber:page.window.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:type == .leftMouseDown ? 1 : 0))
+            page.window.sendEvent(event)
+        }
+        _=try await page.view.evaluateJavaScript("getSelection().removeAllRanges();true")
+        let afterClick=try await waitForHighlight(in:page.view,query:"выд")
+        XCTAssertTrue(find.isPresented)
+        XCTAssertEqual(afterClick["display"] as? String,"block")
+        XCTAssertEqual(afterClick["selected"] as? String,"")
+        let findPanel=try panel(in:page.window)
+        findPanel.searchField.selectText(nil)
+        try await waitUntil {findPanel.searchField.currentEditor() != nil}
+        _=try await page.view.evaluateJavaScript("(()=>{const r=document.createRange();r.selectNodeContents(document.querySelector('p'));getSelection().addRange(r);return true})()")
+        let userSelection=try await page.view.evaluateJavaScript("String(getSelection())") as? String
+        let editor=try XCTUnwrap(findPanel.searchField.currentEditor() as? NSTextView)
+        editor.insertText("выделители",replacementRange:editor.selectedRange())
+        try await waitUntil {!find.isSearching && find.matchCount==2}
+        let grown=try await waitForHighlight(in:page.view,query:"выделители")
+        XCTAssertEqual(grown["selected"] as? String,userSelection,"Find must leave the user's selection alone")
+        XCTAssertEqual(find.nativeFindRequestCount,0)
+        find.close()
+        for _ in 0..<40 {
+            if (try await highlightState(in:page.view))["display"] as? String == "none" {break}
+            try await Task.sleep(for:.milliseconds(25))
+        }
+        let finalState=try await highlightState(in:page.view)
+        XCTAssertEqual(finalState["display"] as? String,"none")
+    }
+
+    func testShadowDOMHighlightTracksLayoutAnimationAndRepairsHydrationWithoutGhosts() async throws {
+        let server=try PopupHTTPFixture()
+        let port=try await server.start()
+        defer {server.stop()}
+        let page=UploadTestPage(url:URL(string:"http://127.0.0.1:\(port)/find")!)
+        defer {page.close()}
+        try await waitUntil {page.session.pageTitle=="Find fixture" && !page.session.isLoading}
+        _=try await page.view.evaluateJavaScript("""
+            document.body.innerHTML='<article id="post"></article>';
+            document.body.style.cssText='height:1600px;margin:0;padding:40px';
+            window.testRoot=document.getElementById('post').attachShadow({mode:'open'});
+            window.testMarkup='<style>h2{font:40px -apple-system;margin:0}#move{transition:transform 180ms linear}</style><div id="move"><h2 id="label">What is this title?</h2></div>';
+            testRoot.innerHTML=testMarkup;true
+            """)
+        let find=page.session.pageFind
+        find.show();find.setQuery("what")
+        try await waitUntil {!find.isSearching && find.matchCount==1}
+        _=try await waitForHighlight(in:page.view,query:"what")
+        _=try await page.view.evaluateJavaScript("testRoot.getElementById('move').style.transform='translateY(140px)';true")
+        for _ in 0..<9 {
+            let sample:Any=try await withCheckedThrowingContinuation { continuation in
+                page.view.callAsyncJavaScript("""
+                    return await new Promise(resolve=>requestAnimationFrame(()=>{
+                        const node=document.getElementById('post').shadowRoot.getElementById('label').firstChild;
+                        const r=document.createRange();r.setStart(node,0);r.setEnd(node,4);
+                        resolve({actual:r.getBoundingClientRect().y,highlight:globalThis.__linkletFindHighlight.diagnostics().rects[0]?.y});
+                    }));
+                    """,arguments:[:],in:nil,in:PageFindHighlighter.world) { continuation.resume(with:$0) }
+            }
+            let values=try XCTUnwrap(sample as? [String:Double])
+            XCTAssertEqual(try XCTUnwrap(values["highlight"]),try XCTUnwrap(values["actual"]),accuracy:2,"The highlight must follow every frame of a layout animation")
+            try await Task.sleep(for:.milliseconds(25))
+        }
+        _=try await page.view.evaluateJavaScript("testRoot.innerHTML=testMarkup;true")
+        var repaired:[String:Any]=[:]
+        for _ in 0..<80 {
+            repaired=try await highlightState(in:page.view)
+            if repaired["rangeText"] as? String == "What", repaired["display"] as? String == "block" {break}
+            try await Task.sleep(for:.milliseconds(25))
+        }
+        XCTAssertEqual(repaired["rangeText"] as? String,"What")
+        XCTAssertEqual(repaired["display"] as? String,"block")
+        _=try await page.view.evaluateJavaScript("testRoot.getElementById('label').textContent='Gone';true")
+        for _ in 0..<80 {
+            if (try await highlightState(in:page.view))["display"] as? String == "none" {break}
+            try await Task.sleep(for:.milliseconds(25))
+        }
+        let removedState=try await highlightState(in:page.view)
+        XCTAssertEqual(removedState["display"] as? String,"none","Removed text must never leave a floating highlight")
+        _=try await page.view.evaluateJavaScript("testRoot.getElementById('label').textContent='What is this title?';true")
+        _=try await waitForHighlight(in:page.view,query:"what")
+        XCTAssertEqual(find.nativeFindRequestCount,0)
     }
 
     private func highlightState(in view:WKWebView,frame:WKFrameInfo?=nil) async throws -> [String:Any] {

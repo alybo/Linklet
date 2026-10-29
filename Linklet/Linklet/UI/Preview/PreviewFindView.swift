@@ -3,8 +3,8 @@ import Combine
 import SwiftUI
 import WebKit
 
-/// Per-page state. WebKit owns matching, frame traversal and scrolling; an
-/// isolated renderer decorates the actual selection without rewriting page text.
+/// HTML results own independent text Ranges. WebKit remains the fallback for
+/// documents without a supported DOM; neither path rewrites page text.
 @MainActor
 final class PageFindController: NSObject, ObservableObject {
     @Published private(set) var isPresented = false
@@ -21,14 +21,20 @@ final class PageFindController: NSObject, ObservableObject {
     private var countIsLimited = false
     private var animatesNextHighlight = false
     private var requestedMatchIndex: Int?
+    private var htmlStep = 0
+    private var preservesHTMLMatch = false
+    private(set) var nativeFindRequestCount = 0
     private let allowsNativeMatchCounts: Bool
+    private let allowsHTMLSearch: Bool
+    private var hasUsedNativeSearch = false
     private static let matchLimit: UInt = 10_000
     private static let findSelector = NSSelectorFromString("_findString:options:maxCount:")
     private static let delegateSelector = NSSelectorFromString("_setFindDelegate:")
     private static let hideSelector = NSSelectorFromString("_hideFindUI")
 
-    init(allowsNativeMatchCounts: Bool = true) {
+    init(allowsNativeMatchCounts: Bool = true, allowsHTMLSearch: Bool = true) {
         self.allowsNativeMatchCounts = allowsNativeMatchCounts
+        self.allowsHTMLSearch = allowsHTMLSearch
         super.init()
     }
 
@@ -57,6 +63,7 @@ final class PageFindController: NSObject, ObservableObject {
         if let webView { PageFindHighlighter.shared.detach(webView) }
         if usesNativeMatchCounts { _ = webView?.perform(Self.delegateSelector, with: nil) }
         webView = nil
+        hasUsedNativeSearch = false
         query = ""
         usesNativeMatchCounts = false
         navigationInProgress = false
@@ -100,6 +107,8 @@ final class PageFindController: NSObject, ObservableObject {
         pendingSearch = nil
         animatesNextHighlight = false
         requestedMatchIndex = (matchIndex ?? 0) + (backwards ? -1 : 1)
+        htmlStep = backwards ? -1 : 1
+        preservesHTMLMatch = true
         if let webView { PageFindHighlighter.shared.prepare(webView, preservingHighlight: true) }
         runSearch(backwards: backwards)
     }
@@ -123,6 +132,8 @@ final class PageFindController: NSObject, ObservableObject {
         pendingSearch?.cancel()
         generation = UUID()
         requestedMatchIndex = nil
+        htmlStep = 0
+        preservesHTMLMatch = animatesNextHighlight
         matchCount = nil
         matchIndex = nil
         countIsLimited = false
@@ -138,15 +149,30 @@ final class PageFindController: NSObject, ObservableObject {
         }
     }
 
-    private func runSearch(backwards: Bool) {
+    private func runSearch(backwards: Bool, allowHTML: Bool = true) {
         guard let webView, isPresented, !query.isEmpty, !navigationInProgress else { return }
         isSearching = true
+        if allowHTML, allowsHTMLSearch, PageFindHighlighter.shared.hasFrames(in: webView) {
+            let request = UUID()
+            generation = request
+            PageFindHighlighter.shared.search(in: webView, query: query, step: htmlStep,
+                animate: animatesNextHighlight, preserve: preservesHTMLMatch) { [weak self, weak webView] result in
+                guard let self, self.webView === webView, generation == request, isPresented, !navigationInProgress else { return }
+                guard let result else { runSearch(backwards: backwards, allowHTML: false); return }
+                hasUsedNativeSearch = false
+                isSearching = false
+                matchCount = result.count
+                matchIndex = result.count == 0 ? nil : result.index
+                countIsLimited = result.limited
+            }
+            return
+        }
+        hasUsedNativeSearch = true
         if usesNativeMatchCounts {
+            nativeFindRequestCount += 1
             _ = webView.perform(Self.delegateSelector, with: self)
-            // Keep native matching and scrolling. HTML selections use our accent
-            // renderer; documents without a renderer retain WebKit's native UI.
-            let custom = PageFindHighlighter.shared.hasFrames(in: webView)
-            let paint: UInt = custom ? 0 : (1 << 6) | (1 << 7)
+            // Unsupported DOMs retain the complete native find presentation.
+            let paint: UInt = (1 << 6) | (1 << 7)
             let options: UInt = 1 | (1 << 4) | (1 << 9) | paint | (backwards ? 1 << 3 : 0) | (animatesNextHighlight ? 1 << 8 : 0)
             typealias Find = @convention(c) (AnyObject, Selector, NSString, UInt, UInt) -> Void
             let find = unsafeBitCast(webView.method(for: Self.findSelector), to: Find.self)
@@ -171,6 +197,7 @@ final class PageFindController: NSObject, ObservableObject {
     private func hideHighlights(clearCustom: Bool = true) {
         guard let webView else { return }
         if clearCustom { PageFindHighlighter.shared.clear(webView) }
+        guard hasUsedNativeSearch else { return }
         if usesNativeMatchCounts { _ = webView.perform(Self.hideSelector) }
         else { webView.find("", configuration: WKFindConfiguration()) { _ in } }
     }
@@ -190,15 +217,12 @@ final class PageFindController: NSObject, ObservableObject {
         } else {
             matchIndex = max(0, index)
         }
-        PageFindHighlighter.shared.render(in: view, query: query, animate: animatesNextHighlight)
     }
 
-    func hideNativeFindPaint(in view: WKWebView) {
-        // Only remove native paint after a frame confirms it can render the
-        // selection. Inputs, PDFs and other inaccessible text keep native paint.
-        // Hiding paint resets WebKit's UI index; arrows retain our own index.
-        guard view === webView, usesNativeMatchCounts else { return }
-        _ = view.perform(Self.hideSelector)
+    func refreshHTMLResults() {
+        guard isPresented, !query.isEmpty, !isSearching, !navigationInProgress else { return }
+        htmlStep = 0; preservesHTMLMatch = true; animatesNextHighlight = false
+        runSearch(backwards: false)
     }
 
     func refreshHighlightAppearance() {

@@ -1,8 +1,8 @@
 import AppKit
 import WebKit
 
-/// An isolated-world renderer follows WebKit's real DOM selection inside its own
-/// frame. It never replaces page text, sends requests or intercepts mouse input.
+/// HTML results own their Ranges instead of borrowing the page's user selection.
+/// Inaccessible documents retain the native WebKit search path.
 @MainActor
 final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
     static let shared = PageFindHighlighter()
@@ -15,12 +15,17 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
     private var activeFrames: [ObjectIdentifier: String] = [:]
     private var observers: [NSObjectProtocol] = []
 
+    struct Result { let count: Int; let index: Int; let limited: Bool }
+
     override private init() {
         super.init()
         for name in [NSColor.systemColorsDidChangeNotification, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification] {
             let center = name == NSColor.systemColorsDidChangeNotification ? NotificationCenter.default : NSWorkspace.shared.notificationCenter
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.updateAppearance() }
+                Task { @MainActor in
+                    guard let self else { return }
+                    for view in self.owners.keyEnumerator().allObjects.compactMap({ $0 as? WKWebView }) { self.updateAppearance(in: view) }
+                }
             })
         }
     }
@@ -29,18 +34,11 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
         guard !installedControllers.contains(content) else { return }
         installedControllers.add(content)
         content.add(self, contentWorld: Self.world, name: Self.handlerName)
-        content.addUserScript(WKUserScript(source: Self.script, injectionTime: .atDocumentEnd,
-                                          forMainFrameOnly: false, in: Self.world))
+        content.addUserScript(WKUserScript(source: Self.script, injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: Self.world))
     }
 
-    func attach(_ view: WKWebView, owner: PageFindController) {
-        owners.setObject(owner, forKey: view)
-    }
-
-    func hasFrames(in view: WKWebView) -> Bool {
-        frames[ObjectIdentifier(view)]?.isEmpty == false
-    }
-
+    func attach(_ view: WKWebView, owner: PageFindController) { owners.setObject(owner, forKey: view) }
+    func hasFrames(in view: WKWebView) -> Bool { frames[ObjectIdentifier(view)]?.isEmpty == false }
     func selectedFrame(in view: WKWebView) -> WKFrameInfo? {
         let id = ObjectIdentifier(view)
         guard let key = activeFrames[id] else { return nil }
@@ -56,89 +54,86 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
 
     func detach(_ view: WKWebView) {
         clear(view)
-        owners.removeObject(forKey: view)
-        frames.removeValue(forKey: ObjectIdentifier(view))
-        revisions.removeValue(forKey: ObjectIdentifier(view))
+        let id = ObjectIdentifier(view)
+        owners.removeObject(forKey: view); frames.removeValue(forKey: id); revisions.removeValue(forKey: id)
     }
 
     func clear(_ view: WKWebView) {
         let id = ObjectIdentifier(view)
-        revisions[id] = UUID()
-        activeFrames.removeValue(forKey: id)
-        for frame in frames[id]?.values ?? Dictionary<String, WKFrameInfo>().values {
-            call("globalThis.__linkletFindHighlight?.hide()", in: view, frame: frame)
-        }
+        revisions[id] = UUID(); activeFrames.removeValue(forKey: id)
+        for frame in frames[id]?.values ?? Dictionary<String, WKFrameInfo>().values { call("globalThis.__linkletFindHighlight?.hide()", in: view, frame: frame) }
     }
 
-    func render(in view: WKWebView, query: String, animate: Bool) {
-        guard !query.isEmpty, let knownFrames = frames[ObjectIdentifier(view)], !knownFrames.isEmpty else { return }
+    /// Every frame indexes only its own rendered composed tree. Keep the main
+    /// document first, followed by its frames, as in the existing WebKit results.
+    func search(in view: WKWebView, query: String, step: Int, animate: Bool, preserve: Bool,
+                completion: @escaping (Result?) -> Void) {
         let id = ObjectIdentifier(view)
-        let revision = UUID()
-        revisions[id] = revision
-        var remaining = knownFrames.count
-        var candidates: [(String, WKFrameInfo, Double)] = []
-        for (key, frame) in knownFrames {
-            view.callAsyncJavaScript("return globalThis.__linkletFindHighlight?.candidate(query) ?? null",
-                                     arguments: ["query": query], in: frame, in: Self.world) { [weak self, weak view] result in
+        guard let known = frames[id], !known.isEmpty else { completion(nil); return }
+        let ordered = known.sorted { a, b in
+            if a.value.isMainFrame != b.value.isMainFrame { return a.value.isMainFrame }
+            return a.key < b.key
+        }
+        let revision = UUID(); revisions[id] = revision
+        let oldFrame = activeFrames[id]
+        var remaining = ordered.count
+        var results: [String: (Int, Int?)] = [:]
+        var supported = false
+        for (key, frame) in ordered {
+            view.callAsyncJavaScript("return globalThis.__linkletFindHighlight?.matches(query) ?? null", arguments: ["query": query], in: frame, in: Self.world) { [weak self, weak view] response in
                 guard let self, let view, revisions[id] == revision else { return }
-                if case let .success(value) = result, let value = value as? [String: Any],
-                   let stamp = value["stamp"] as? Double {
-                    candidates.append((key, frame, stamp))
-                } else if case .failure = result {
-                    frames[id]?.removeValue(forKey: key)
-                }
+                if case let .success(value) = response, let data = value as? [String: Any], data["supported"] as? Bool == true {
+                    supported = true
+                    results[key] = (data["count"] as? Int ?? 0, data["preferred"] as? Int)
+                } else if case .failure = response { frames[id]?.removeValue(forKey: key) }
                 remaining -= 1
                 guard remaining == 0 else { return }
-                let winner = candidates.max { $0.2 < $1.2 }
-                activeFrames[id] = winner?.0
-                if winner != nil { owners.object(forKey: view)?.hideNativeFindPaint(in: view) }
-                for (frameKey, info) in knownFrames {
-                    if frameKey == winner?.0 {
-                        call("globalThis.__linkletFindHighlight?.show(query, color, animate, reduceMotion)",
-                             arguments: ["query": query, "color": accentColor(in: view), "animate": animate,
-                                         "reduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion],
-                             in: view, frame: info)
-                    } else {
-                        call("globalThis.__linkletFindHighlight?.hide()", in: view, frame: info)
+                guard supported else { completion(nil); return }
+                let total = ordered.reduce(0) { $0 + (results[$1.key]?.0 ?? 0) }
+                guard total > 0 else { clear(view); completion(Result(count: 0, index: 0, limited: false)); return }
+                var selected = 0, offset = 0
+                if preserve, let oldFrame {
+                    for (key, _) in ordered {
+                        if key == oldFrame, let preferred = results[key]?.1 { selected = offset + preferred; break }
+                        offset += results[key]?.0 ?? 0
                     }
                 }
+                selected = (selected + step % total + total) % total
+                offset = 0
+                for (key, info) in ordered {
+                    let count = results[key]?.0 ?? 0
+                    if selected >= offset && selected < offset + count {
+                        activeFrames[id] = key
+                        call("globalThis.__linkletFindHighlight?.showMatch(index, color, animate, reduceMotion)",
+                             arguments: ["index": selected-offset, "color": accentColor(in: view), "animate": animate,
+                                         "reduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion], in: view, frame: info)
+                    } else { call("globalThis.__linkletFindHighlight?.hide()", in: view, frame: info) }
+                    offset += count
+                }
+                completion(Result(count: min(total, 10_000), index: selected, limited: total >= 10_000))
             }
         }
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == Self.handlerName, let view = message.webView,
-              let body = message.body as? [String: String], let frameID = body["frame"] else { return }
+        guard message.name == Self.handlerName, let view = message.webView, let body = message.body as? [String: String], let frameID = body["frame"] else { return }
         let id = ObjectIdentifier(view)
         if body["event"] == "gone" { frames[id]?.removeValue(forKey: frameID); return }
         guard body["event"] == "ready" else { return }
-        // Frame-local renderers avoid cross-origin coordinate translation. Dead
-        // frame entries are removed when their next evaluation fails.
         frames[id, default: [:]][frameID] = message.frameInfo
-        if let owner = owners.object(forKey: view), owner.usesNativeMatchCounts, owner.isPresented, !owner.isSearching, owner.matchCount != 0 {
-            render(in: view, query: owner.query, animate: false)
-        }
-    }
-
-    private func updateAppearance() {
-        for view in owners.keyEnumerator().allObjects.compactMap({ $0 as? WKWebView }) {
-            updateAppearance(in: view)
-        }
+        if let owner = owners.object(forKey: view), owner.isPresented, !owner.isSearching { owner.refreshHTMLResults() }
     }
 
     func updateAppearance(in view: WKWebView) {
         guard let frame = selectedFrame(in: view) else { return }
         call("globalThis.__linkletFindHighlight?.appearance(color, reduceMotion)",
-             arguments: ["color": accentColor(in: view), "reduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion],
-             in: view, frame: frame)
+             arguments: ["color": accentColor(in: view), "reduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion], in: view, frame: frame)
     }
 
     private func accentColor(in view: WKWebView) -> String {
         var color = NSColor.controlAccentColor
-        view.effectiveAppearance.performAsCurrentDrawingAppearance {
-            color = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue
-        }
-        return "rgb(\(Int((color.redComponent * 255).rounded())), \(Int((color.greenComponent * 255).rounded())), \(Int((color.blueComponent * 255).rounded())))"
+        view.effectiveAppearance.performAsCurrentDrawingAppearance { color = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue }
+        return "rgb(\(Int((color.redComponent*255).rounded())), \(Int((color.greenComponent*255).rounded())), \(Int((color.blueComponent*255).rounded())))"
     }
 
     private func call(_ body: String, arguments: [String: Any] = [:], in view: WKWebView, frame: WKFrameInfo) {
@@ -151,17 +146,130 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
       // Bookkeeping identity, also available on ordinary non-secure HTTP pages.
       const frame = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
       let stamp = performance.timeOrigin + performance.now();
-      let host, shadow, range, startHandle, endHandle, selectionSheet, observer, resizeObserver;
+      let host, shadow, range, startHandle, endHandle, observer, resizeObserver;
       let segments = [], query = '', color = '', reduced = false, queued = false, previous = null;
       let lastAnimation = false, active = false, pending = false, observing = false;
-      const selection = () => {
-        const s = getSelection();
-        if (!s || s.isCollapsed || !s.rangeCount) return null;
-        const r = s.getRangeAt(0);
-        return r.startContainer.isConnected && r.endContainer.isConnected ? r : null;
-      };
+      let hits = [], searchQuery = '', anchor = null, raf = 0, dirty = false, selectionChanges = 0, searchRoots = [];
       const equals = (a,b) => a.toLocaleLowerCase() === b.toLocaleLowerCase();
-      const valid = r => r && !r.collapsed && equals(r.toString(), query);
+      const valid = r => r && !r.collapsed && r.startContainer.nodeType===3 && r.endContainer.nodeType===3 && r.startContainer.isConnected && r.endContainer.isConnected && equals(r.toString().replace(/\s+/gu,' '), query.replace(/\s+/gu,' '));
+      const parentElement = node => node.nodeType===1 ? node : node.parentElement;
+      const composedParent = element => element?.assignedSlot ?? element?.parentElement ?? element?.getRootNode()?.host ?? null;
+      function stableElement(node) {
+        const path=[];
+        for(let e=parentElement(node);e;e=composedParent(e)) if(e.id) path.unshift(e.id);
+        return path.length ? {id:path.join('/')} : null;
+      }
+      function collect(value) {
+        const found = [], visited = new Set();searchRoots=[document.documentElement];
+        if (!value) return found;
+        const expression = new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\s+/gu,'\\s+'),'giu');
+        let text='', parts=[], root=null;
+        function flush() {
+          if(text && parts.length) {
+            expression.lastIndex=0;
+            let match;
+            while(found.length<10001 && (match=expression.exec(text))) {
+              const from=match.index, to=from+match[0].length;
+              const at = offset => { let low=0,high=parts.length;while(low<high){const mid=(low+high)>>1;if(parts[mid].to<=offset)low=mid+1;else high=mid;}return parts[low]; };
+              const a=at(from), b=at(to-1);
+              if(a && b) {
+                const r=document.createRange();
+                r.setStart(a.node,a.space ? a.start : a.start+from-a.from);
+                r.setEnd(b.node,b.space ? b.end : b.start+to-b.from);
+                found.push(r);
+              }
+            }
+          }
+          text='';parts=[];root=null;
+        }
+        function append(node) {
+          if(root && root!==node.getRootNode()) flush();
+          root=node.getRootNode();
+          const raw=node.data;
+          const pattern=/\s+|\S+/gu;
+          let m;
+          while((m=pattern.exec(raw))) {
+            const space=/^\s/u.test(m[0]);
+            if(space && text.endsWith(' ')) continue;
+            const content=space ? ' ' : m[0];
+            const from=text.length; text+=content;
+            parts.push({node,from,to:text.length,start:m.index,end:m.index+m[0].length,space});
+          }
+        }
+        function visit(node) {
+          if(visited.has(node) || found.length>=10001) return;
+          visited.add(node);
+          if(node.nodeType===3) { append(node);return; }
+          if(node.nodeType!==1 && node.nodeType!==11) return;
+          if(node===host) return;
+          let block=false;
+          if(node.nodeType===1) {
+            if(/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|INPUT|TEXTAREA|SELECT|OPTION|IFRAME|FRAME|CANVAS|SVG)$/u.test(node.tagName)) return;
+            const style=getComputedStyle(node);
+            if(style.display==='none' || style.visibility==='hidden' || style.visibility==='collapse' || style.contentVisibility==='hidden') return;
+            block=!(style.display.startsWith('inline') || style.display==='contents');
+            if(block) flush();
+            if(node.shadowRoot) { searchRoots.push(node.shadowRoot);flush();visit(node.shadowRoot);flush(); }
+            else if(node.tagName==='SLOT') {
+              const assigned=node.assignedNodes({flatten:true});
+              for(const child of assigned.length ? assigned : node.childNodes) visit(child);
+            } else for(const child of node.childNodes) visit(child);
+            if(block) flush();
+          } else for(const child of node.childNodes) visit(child);
+        }
+        visit(document.body ?? document.documentElement);flush();
+        return found;
+      }
+      function watch() {
+        if(!observer) return;
+        observer.disconnect();
+        for(const root of searchRoots) if(root.isConnected) observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['class','style','hidden']});
+      }
+      function remember(r,index) {
+        const stable=stableElement(r.startContainer);
+        const start=r.startContainer, end=r.endContainer;
+        anchor={container:parentElement(r.commonAncestorContainer),stable:stable?.id ?? null,index,
+          before:start.nodeType===3 ? start.data.slice(Math.max(0,r.startOffset-28),r.startOffset) : '',
+          after:end.nodeType===3 ? end.data.slice(r.endOffset,r.endOffset+28) : ''};
+      }
+      function preferred(list) {
+        if(range) {
+          const exact=list.findIndex(r=>r.startContainer===range.startContainer && r.startOffset===range.startOffset);
+          if(exact>=0) return exact;
+        }
+        if(!anchor) return -1;
+        const candidates=[];
+        list.forEach((r,index)=>{
+          if(anchor.stable && stableElement(r.startContainer)?.id===anchor.stable) candidates.push(index);
+          else if(!anchor.stable && anchor.container?.isConnected && anchor.container.contains(r.startContainer)) candidates.push(index);
+        });
+        if(candidates.length===1) return candidates[0];
+        const context=list.map((r,index)=>({r,index})).filter(({r})=>
+          (!anchor.before || (r.startContainer.nodeType===3 && r.startContainer.data.slice(Math.max(0,r.startOffset-28),r.startOffset)===anchor.before)) &&
+          (!anchor.after || (r.endContainer.nodeType===3 && r.endContainer.data.slice(r.endOffset,r.endOffset+28)===anchor.after)));
+        if((anchor.before || anchor.after) && context.length===1 && (!anchor.stable || candidates.includes(context[0].index))) return context[0].index;
+        return candidates.length ? candidates.reduce((a,b)=>Math.abs(a-anchor.index)<=Math.abs(b-anchor.index) ? a : b) : -1;
+      }
+      function repair() {
+        if(!query || !anchor) return false;
+        const list=collect(query), index=preferred(list);
+        if(index<0) return false;
+        hits=list;range=list[index].cloneRange();remember(range,index);watch();return true;
+      }
+      function conceal() {
+        if(host && host.style.display!=='none') host.style.display='none';
+        previous=null;
+      }
+      function track() {
+        raf=0;
+        if(!active) return;
+        if(document.visibilityState!=='hidden') {
+          if(!valid(range) && dirty) repair();
+          dirty=false;
+          draw(false);
+        }
+        raf=requestAnimationFrame(track);
+      }
       const create = (styles, parent) => {
         const node = document.createElement('span');
         Object.assign(node.style, {position:'absolute', display:'block', margin:'0', padding:'0', border:'0', pointerEvents:'none', boxSizing:'border-box', ...styles});
@@ -172,7 +280,7 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
         if (host?.isConnected) return;
         host = document.createElement('div');
         host.setAttribute('aria-hidden','true');
-        host.style.cssText = 'all:initial;position:fixed;inset:0;display:block;pointer-events:none;z-index:2147483647;overflow:visible;';
+        host.style.cssText = 'all:initial;position:fixed!important;inset:0!important;margin:0!important;padding:0!important;border:0!important;display:block;pointer-events:none!important;z-index:2147483647;overflow:clip;width:100vw!important;height:100vh!important;';
         shadow = host.attachShadow({mode:'closed'});
         startHandle = create({},shadow);
         endHandle = create({},shadow);
@@ -181,33 +289,41 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
         endHandle.stem = create({}, endHandle);
         endHandle.dot = create({borderRadius:'50%'}, endHandle);
         document.documentElement.append(host);
-        selectionSheet = new CSSStyleSheet();
-        // Suppress only the current DOM selection's default paint while our
-        // presentation is active; never change the page's text or its selection.
-        selectionSheet.replaceSync('::selection { background-color: transparent !important; color: inherit !important; text-shadow: none !important; }');
-      }
-      function suppressSelection(enabled) {
-        if (!selectionSheet) return;
-        const sheets = document.adoptedStyleSheets;
-        const present = sheets.includes(selectionSheet);
-        if (enabled && !present) document.adoptedStyleSheets = [...sheets, selectionSheet];
-        if (!enabled && present) document.adoptedStyleSheets = sheets.filter(s => s !== selectionSheet);
+        if(typeof host.showPopover==='function') { host.popover='manual';host.showPopover(); }
       }
       function hide() {
         active = false; pending = false; range = null; previous = null; query = '';
         if (host) host.style.display = 'none';
-        suppressSelection(false);
+        hits=[];searchQuery='';anchor=null;
+        if(raf) cancelAnimationFrame(raf);raf=0;
+        if(host?.matches(':popover-open')) host.hidePopover();
         observer?.disconnect(); resizeObserver?.disconnect();
         observing = false;
       }
       function schedule() {
         if (!active || queued) return;
         queued = true;
-        requestAnimationFrame(() => { queued = false; draw(false); });
+        requestAnimationFrame(() => { queued=false;dirty=true; });
+      }
+      function clipBounds(r) {
+        let left=0,top=0,right=innerWidth,bottom=innerHeight;
+        for(let e=parentElement(r.startContainer);e;e=composedParent(e)) {
+          if(e===document.documentElement || e===document.body) continue;
+          const style=getComputedStyle(e);
+          const clipX=style.overflowX!=='visible',clipY=style.overflowY!=='visible';
+          if(!clipX && !clipY) continue;
+          const b=e.getBoundingClientRect(),sx=e.offsetWidth ? b.width/e.offsetWidth : 1,sy=e.offsetHeight ? b.height/e.offsetHeight : 1;
+          if(clipX) {left=Math.max(left,b.left+e.clientLeft*sx);right=Math.min(right,b.left+(e.clientLeft+e.clientWidth)*sx);}
+          if(clipY) {top=Math.max(top,b.top+e.clientTop*sy);bottom=Math.min(bottom,b.top+(e.clientTop+e.clientHeight)*sy);}
+        }
+        return {left,top,right,bottom};
       }
       function rectsFor(r) {
-        const result = [];
-        for (const rect of r.getClientRects()) {
+        const result = [], clip=clipBounds(r);
+        for (const raw of r.getClientRects()) {
+          const x=Math.max(raw.x,clip.left),y=Math.max(raw.y,clip.top);
+          const rect={x,y,right:Math.min(raw.right,clip.right),bottom:Math.min(raw.bottom,clip.bottom)};
+          rect.width=rect.right-x;rect.height=rect.bottom-y;
           if (rect.width < .1 || rect.height < .1) continue;
           const sameLine = result.find(a => Math.abs(a.y-rect.y)<1.5 && Math.abs(a.height-rect.height)<2 && rect.x<=a.x+a.width+1 && rect.x+rect.width>=a.x-1);
           if (sameLine) {
@@ -226,10 +342,12 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
         return {x:atStart !== rtl ? fallback.x : fallback.x+fallback.width,y:fallback.y,height:fallback.height};
       }
       function draw(wantsAnimation) {
-        if (!active || !valid(range)) { hide(); return; }
+        if (!active) return;
+        if(!valid(range)) { conceal();return; }
         const rects = rectsFor(range);
-        if (!rects.length) { host.style.display='none'; return; }
-        host.style.display='block';
+        if (!rects.length) { conceal(); return; }
+        if(host.style.display!=='block') host.style.display='block';
+        if(host.popover && !host.matches(':popover-open')) host.showPopover();
         const start = caret(range,true,rects[0]);
         const end = caret(range,false,rects[rects.length-1]);
         if (previous && previous.query===query && previous.color===color && previous.reduced===reduced &&
@@ -249,7 +367,8 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
           node.style.backgroundColor = color; node.style.opacity = '.24';
         });
         [startHandle,endHandle].forEach((node,index) => {
-          const p = index ? end : start;
+          const p = index ? end : start, clip=clipBounds(range);
+          node.style.display=p.x>=clip.left && p.x<=clip.right && p.y>=clip.top && p.y+p.height<=clip.bottom ? 'block' : 'none';
           const radius = Math.min(5.5,Math.max(3,p.height*.16));
           const stroke = Math.min(2.5,Math.max(1.5,p.height*.075));
           node.style.transition = transition;
@@ -261,37 +380,30 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
         lastAnimation = animate;
         previous = {query,start,end,color,reduced,rects};
       }
-      document.addEventListener('selectionchange', () => {
-        stamp = performance.timeOrigin + performance.now();
-        if (!active || pending) return;
-        const next = selection();
-        if (!next || !equals(next.toString(),query)) {
-          hide(); return;
-        }
-        if (range && range.startContainer===next.startContainer && range.startOffset===next.startOffset &&
-            range.endContainer===next.endContainer && range.endOffset===next.endOffset) return;
-        range = next.cloneRange(); schedule();
-      });
+      document.addEventListener('selectionchange',()=>{selectionChanges++;});
       addEventListener('scroll',schedule,{passive:true,capture:true});
       addEventListener('resize',schedule,{passive:true});
       visualViewport?.addEventListener('resize',schedule,{passive:true});
       visualViewport?.addEventListener('scroll',schedule,{passive:true});
       globalThis.__linkletFindHighlight = {
-        candidate(value) { const r=selection(); return r && equals(r.toString(),value) ? {stamp} : null; },
-        prepare(preserve) { if (!preserve) hide(); pending=true; },
-        show(value, accent, animate, reduceMotion) {
-          const r=selection(); if (!r || !equals(r.toString(),value)) { hide(); return; }
-          setup(); query=value; color=accent; reduced=reduceMotion; range=r.cloneRange(); active=true; pending=false;
-          suppressSelection(true);
+        matches(value) {
+          if(document.contentType && !/html|xml/u.test(document.contentType)) return {supported:false};
+          hits=collect(value);searchQuery=value;
+          const index=preferred(hits);
+          return {supported:true,count:hits.length,preferred:index<0 ? null : index};
+        },
+        prepare(preserve) { if(!preserve) hide();pending=true; },
+        showMatch(index, accent, animate, reduceMotion) {
+          const r=hits[index];if(!r) {conceal();return;}
+          setup();query=searchQuery;color=accent;reduced=reduceMotion;range=r.cloneRange();remember(range,index);active=true;pending=false;
+          const rect=range.getBoundingClientRect();
+          if(rect.top<0 || rect.bottom>innerHeight || rect.left<0 || rect.right>innerWidth)
+            parentElement(range.startContainer)?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
           draw(animate);
-          if (!observing) {
-            observing = true;
-            observer = new MutationObserver(schedule);
-            if (document.body) observer.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['class','style','hidden']});
-            let initialSize = true;
-            resizeObserver = new ResizeObserver(() => { if(initialSize) {initialSize=false;return;} schedule(); });
-            resizeObserver.observe(document.documentElement);
-            if (document.fonts?.status !== 'loaded') document.fonts?.ready.then(schedule);
+          if(!raf) raf=requestAnimationFrame(track);
+          if(!observing) {
+            observing=true;
+            observer=new MutationObserver(()=>{dirty=true;});watch();
           }
         },
         appearance(accent, reduceMotion) { color=accent; reduced=reduceMotion; if(active) draw(false); },
@@ -300,7 +412,7 @@ final class PageFindHighlighter: NSObject, WKScriptMessageHandler {
           return {active,query,color,reduced,animated:lastAnimation,rects:range ? rectsFor(range) : [],
             start:previous?.start ?? null,end:previous?.end ?? null,display:host?.style.display ?? 'none',
             endTransform:endHandle?.style.transform ?? '',endTransition:endHandle?.style.transition ?? '',
-            selected:String(getSelection()),pointerEvents:host?.style.pointerEvents ?? '',ariaHidden:host?.getAttribute('aria-hidden') ?? ''};
+            selected:String(getSelection()),rangeText:range?.toString() ?? '',selectionChanges,pointerEvents:host?.style.pointerEvents ?? '',ariaHidden:host?.getAttribute('aria-hidden') ?? ''};
         }
       };
       const announce = () => webkit.messageHandlers.linkletFindHighlight.postMessage({event:'ready',frame});
