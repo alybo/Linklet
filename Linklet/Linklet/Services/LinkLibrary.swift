@@ -14,13 +14,14 @@ struct RecentLink: Codable, Equatable, Identifiable {
 }
 
 enum SidebarSection: String, Codable, CaseIterable, Identifiable {
-    case open, bookmarks, recent
+    case open, bookmarks, recent, downloads
     var id: String { rawValue }
     var title: String {
         switch self {
         case .open: return L("Open windows")
         case .bookmarks: return L("Bookmarks")
         case .recent: return L("Recent links")
+        case .downloads: return L("Downloads")
         }
     }
 }

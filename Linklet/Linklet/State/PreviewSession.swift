@@ -101,6 +101,27 @@ final class PreviewSession: ObservableObject {
         }
     }
 
+    func retainWebsiteDataForDownload() -> () -> Void {
+        let token = UUID()
+        let store = temporaryStore
+        let data = siteData
+        store.start(token)
+        data.previewSessionDidStart()
+        return {
+            store.finish(token, clearWhenUnused: true)
+            data.previewSessionDidEnd()
+        }
+    }
+
+    func navigationBecameDownload(in view: WKWebView) {
+        guard webView === view else { return }
+        requestedURL = nil
+        shouldRecordInitialTitle = false
+        isPreparingNewPage = false
+        synchronize(from: view)
+        isLoading = false
+    }
+
     func attach(_ webView: WKWebView) {
         self.webView = webView
         if isWelcome {

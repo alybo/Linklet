@@ -87,6 +87,7 @@ final class AppModel: ObservableObject {
     private var dockVisibilityHandler: (() -> Void)?
     private var sidebarActionHandler: (() -> Void)?
     private var windowObservations = Set<AnyCancellable>()
+    var downloads: DownloadManager { windowRegistry.downloads }
 
     init(
         defaults: UserDefaults = .standard,
@@ -150,6 +151,8 @@ final class AppModel: ObservableObject {
             WebPopupWindowController(configuration: configuration, parent: parent, features: features, model: self)
         }
         registry.$windows.map { !$0.isEmpty }.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.updateDockVisibilitySoon() }.store(in: &windowObservations)
+        registry.downloads.$activeCount.removeDuplicates().dropFirst()
             .sink { [weak self] _ in self?.updateDockVisibilitySoon() }.store(in: &windowObservations)
     }
 
@@ -235,6 +238,8 @@ final class AppModel: ObservableObject {
         if let sidebarActionHandler { sidebarActionHandler() }
         else { sidebarWindowController.toggle() }
     }
+
+    func showDownloads() { sidebarWindowController.showDownloads() }
 
     func toggleSearch() { searchWindowController.toggle() }
 
@@ -567,7 +572,7 @@ final class AppModel: ObservableObject {
     }
 
     private func updateDockVisibility() {
-        NSApp.setActivationPolicy(hasOpenWindows ? .regular : .accessory)
+        NSApp.setActivationPolicy(hasOpenWindows || downloads.hasActiveDownloads ? .regular : .accessory)
     }
 
     private static func bool(

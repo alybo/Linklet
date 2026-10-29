@@ -80,6 +80,7 @@ struct SidebarView: View {
     @ObservedObject private var library: LinkLibrary
     @ObservedObject private var settings: SearchSettings
     @ObservedObject private var windows: BrowserWindowRegistry
+    @ObservedObject private var downloads: DownloadManager
     let dismiss: () -> Void
     @ObservedObject var editor: SidebarEditorState
 
@@ -88,6 +89,7 @@ struct SidebarView: View {
         self.library = model.linkLibrary
         self.settings = model.searchSettings
         self.windows = model.windowRegistry
+        self.downloads = model.downloads
         self.dismiss = dismiss
         self.editor = editor
     }
@@ -101,29 +103,34 @@ struct SidebarView: View {
                 Spacer()
             }.padding(16)
             Divider().padding(.horizontal, SidebarLayout.inset)
-            ScrollView {
-                if let presentation = editor.presentation {
-                    VStack(alignment: .leading, spacing: 0) {
-                        switch presentation.target {
-                        case let .bookmark(site, recent):
-                            BookmarkEditor(settings: settings, library: library, site: site,
-                                initialURL: recent?.url, initialTitle: recent?.title ?? "",
-                                inline: true, onDismiss: editor.cancel)
-                        case let .folder(folder):
-                            SidebarFolderEditor(library: library, folder: folder, cancel: editor.cancel)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    if let presentation = editor.presentation {
+                        VStack(alignment: .leading, spacing: 0) {
+                            switch presentation.target {
+                            case let .bookmark(site, recent):
+                                BookmarkEditor(settings: settings, library: library, site: site,
+                                    initialURL: recent?.url, initialTitle: recent?.title ?? "",
+                                    inline: true, onDismiss: editor.cancel)
+                            case let .folder(folder):
+                                SidebarFolderEditor(library: library, folder: folder, cancel: editor.cancel)
+                            }
                         }
+                        .id(presentation.id)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                        .padding(SidebarLayout.inset)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(library.sectionOrder) { section in sidebarSection(section) }
+                        }.padding(SidebarLayout.inset)
                     }
-                    .id(presentation.id)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-                    .padding(SidebarLayout.inset)
-                } else {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(library.sectionOrder) { section in sidebarSection(section) }
-                    }.padding(SidebarLayout.inset)
-                }
-            }.id(editor.presentation?.id)
+                }.id(editor.presentation?.id)
+                    .onChange(of: editor.downloadsRequest) { _ in
+                        DispatchQueue.main.async { proxy.scrollTo(SidebarSection.downloads, anchor: .top) }
+                    }
+            }
 
             if library.isHistoryClearPending {
                 HistoryClearConfirmation(library: library).padding(.horizontal, SidebarLayout.inset).padding(.bottom, 12)
@@ -168,6 +175,9 @@ struct SidebarView: View {
                             Text("\(windows.windows.count)")
                                 .font(layout.groupFont).foregroundStyle(.secondary)
                         }
+                        if section == .downloads, downloads.activeCount > 0 {
+                            Text("\(downloads.activeCount)").font(layout.groupFont).foregroundStyle(.secondary)
+                        }
                         Spacer(minLength: 0)
                     }.frame(height: layout.rowHeight).contentShape(Rectangle())
                 }.buttonStyle(.plain)
@@ -179,6 +189,12 @@ struct SidebarView: View {
                         Button(L("New folder")) { editor.showFolder() }
                     } label: { Image(systemName: "plus").font(.system(size: 12)) }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help(L("Add bookmark or folder"))
+                }
+                if section == .downloads, downloads.items.contains(where: { !$0.isActive }) {
+                    Button { downloads.clearFinished() } label: {
+                        Image(systemName: "xmark").font(.system(size: 10))
+                    }.buttonStyle(.plain).help(L("Clear completed downloads"))
+                        .accessibilityLabel(L("Clear completed downloads"))
                 }
             }
             .onDrag {
@@ -196,6 +212,7 @@ struct SidebarView: View {
                 case .open: openContents
                 case .bookmarks: bookmarkContents
                 case .recent: recentContents
+                case .downloads: downloadContents
                 }
             }
             Divider().padding(.vertical, layout.rowGap)
@@ -204,6 +221,18 @@ struct SidebarView: View {
         .contentShape(Rectangle())
         .onDrop(of: [SidebarSectionDropDelegate.dragType], delegate:
             SidebarSectionDropDelegate(library: library, destination: section, draggedSection: $draggedSection))
+        .id(section)
+    }
+
+    private var downloadContents: some View {
+        VStack(alignment: .leading, spacing: layout.rowGap) {
+            ForEach(downloads.items.reversed()) { item in
+                DownloadSidebarRow(item: item, manager: downloads, layout: layout)
+            }
+            if downloads.items.isEmpty {
+                Text(L("No downloads.")).font(layout.groupFont).foregroundStyle(.secondary)
+            }
+        }.padding(.top, layout.rowGap)
     }
 
     private var bookmarkContents: some View {
@@ -376,6 +405,57 @@ struct SidebarView: View {
     }
 }
 
+private struct DownloadSidebarRow: View {
+    @ObservedObject var item: DownloadItem
+    @ObservedObject var manager: DownloadManager
+    let layout: SidebarMetrics
+
+    private var symbol: String {
+        switch item.state {
+        case .choosing, .downloading: return "arrow.down.circle"
+        case .finishing, .finished: return "doc"
+        case .cancelled: return "xmark.circle"
+        case .failed: return "exclamationmark.triangle"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: layout.iconGap) {
+            Button { manager.reveal(item) } label: {
+                HStack(spacing: layout.iconGap) {
+                    Image(systemName: symbol).font(.system(size: layout.iconSize * 0.8))
+                        .foregroundStyle(item.state == .failed ? Color.orange : Color.secondary)
+                        .frame(width: layout.iconSize, height: layout.iconSize)
+                    Text(item.filename).font(layout.labelFont).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(item.state != .finished)
+                .accessibilityLabel("\(item.filename), \(item.status)")
+            if item.canCancel {
+                Button { manager.cancel(item.id) } label: {
+                    Image(systemName: "xmark").font(.system(size: 10)).frame(width: 20, height: 20)
+                }.buttonStyle(.plain).help(L("Cancel download")).accessibilityLabel(L("Cancel download"))
+            }
+        }
+        .frame(height: layout.rowHeight)
+        .overlay(alignment: .bottom) {
+            if item.state == .downloading || item.state == .finishing {
+                Group {
+                    if let fraction = item.fraction { ProgressView(value: fraction).progressViewStyle(.linear) }
+                    else { ProgressView().progressViewStyle(.linear) }
+                }.frame(height: 2).allowsHitTesting(false)
+            }
+        }
+        .help("\(item.filename)\n\(item.status)")
+        .accessibilityIdentifier("sidebar-download-\(item.id.uuidString)")
+        .contextMenu {
+            Text(item.status).disabled(true)
+            if item.state == .finished { Button(L("Show in Finder")) { manager.reveal(item) } }
+            if item.canCancel { Button(L("Cancel download")) { manager.cancel(item.id) } }
+        }
+    }
+}
+
 struct SidebarEditorPresentation: Identifiable {
     enum Target {
         case bookmark(FavoriteSite?, RecentLink?)
@@ -387,6 +467,7 @@ struct SidebarEditorPresentation: Identifiable {
 
 @MainActor
 final class SidebarEditorState: ObservableObject {
+    @Published var downloadsRequest = 0
     @Published private(set) var presentation: SidebarEditorPresentation?
     var isEditing: Bool { presentation != nil }
     func showBookmark(site: FavoriteSite? = nil, recent: RecentLink? = nil) {

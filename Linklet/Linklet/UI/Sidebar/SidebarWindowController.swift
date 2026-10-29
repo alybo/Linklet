@@ -107,6 +107,13 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         else if let screen = screenAtMouse() ?? NSScreen.main { present(on: screen, manual: true) }
     }
 
+    func showDownloads() {
+        editor.cancel()
+        if !library.expandedSections.contains(.downloads) { library.toggleSection(.downloads) }
+        if let screen = screenAtMouse() ?? NSScreen.main { present(on: screen, manual: true) }
+        editor.downloadsRequest += 1
+    }
+
     func hide(animated: Bool = true) {
         // Resigning key while ordering out must not restart an in-flight dismissal.
         guard isPresented || !animated else { return }

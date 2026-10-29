@@ -17,6 +17,9 @@ struct BrowserWindowInfo: Identifiable, Equatable {
 @MainActor
 final class BrowserWindowRegistry: ObservableObject {
     @Published private(set) var windows: [BrowserWindowInfo] = []
+    let downloads: DownloadManager
+
+    init(downloads: DownloadManager? = nil) { self.downloads = downloads ?? DownloadManager() }
 
     private final class Entry {
         weak var window: NSWindow?

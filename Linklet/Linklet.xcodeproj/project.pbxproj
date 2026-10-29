@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        AD10000000000000000000001 = {isa = PBXBuildFile; fileRef = AD20000000000000000000001; };
         AC10000000000000000000002 = {isa = PBXBuildFile; fileRef = AC20000000000000000000002; };
         AC10000000000000000000001 = {isa = PBXBuildFile; fileRef = AC20000000000000000000001; };
         AB10000000000000000000005 = {isa = PBXBuildFile; fileRef = AB20000000000000000000005; };
@@ -63,6 +64,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        AD20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/DownloadManager.swift; sourceTree = "<group>"; };
         AC20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Preview/PreviewAddressView.swift; sourceTree = "<group>"; };
         AC20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = State/BrowserWindowRegistry.swift; sourceTree = "<group>"; };
         AB20000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkLibraryTests.swift; sourceTree = "<group>"; };
@@ -147,6 +149,7 @@
 			children = (
 				F20000000000000000000001,
                 AC20000000000000000000001,
+                AD20000000000000000000001,
                 AC20000000000000000000002,
                 AB20000000000000000000004,
                 AB20000000000000000000003,
@@ -388,6 +391,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F10000000000000000000001,
+                AD10000000000000000000001,
                 AC10000000000000000000001,
                 AC10000000000000000000002,
                 AB10000000000000000000004,

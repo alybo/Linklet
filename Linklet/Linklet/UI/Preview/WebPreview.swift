@@ -204,7 +204,10 @@ struct WebPreview: NSViewRepresentable {
                 return
             }
 
-            if URLPolicy.canPreview(url) || url.scheme == "about" {
+            if navigationAction.shouldPerformDownload,
+               URLPolicy.canPreview(url) || ["blob", "data"].contains(url.scheme?.lowercased() ?? "") {
+                decisionHandler(.download)
+            } else if URLPolicy.canPreview(url) || url.scheme == "about" {
                 decisionHandler(.allow)
             } else {
                 decisionHandler(.cancel)
@@ -215,11 +218,33 @@ struct WebPreview: NSViewRepresentable {
         func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                      decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
             guard session?.webView === webView else { decisionHandler(.cancel); return }
+            let attachment = (navigationResponse.response as? HTTPURLResponse)?
+                .value(forHTTPHeaderField: "Content-Disposition")?
+                .split(separator: ";", maxSplits: 1).first?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "attachment"
+            if attachment || !navigationResponse.canShowMIMEType {
+                decisionHandler(.download)
+                return
+            }
             if navigationResponse.isForMainFrame,
                let response = navigationResponse.response as? HTTPURLResponse, response.statusCode == 403 {
                 session?.errorMessage = L("This website refused access. If sign-in is blocked, continue in your chosen browser from the original site link.")
             }
             decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+            adopt(download, in: webView)
+        }
+
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+            adopt(download, in: webView)
+        }
+
+        private func adopt(_ download: WKDownload, in view: WKWebView) {
+            guard let session, session.webView === view, !session.isWelcome else { download.cancel(nil); return }
+            session.windowRegistry.downloads.adopt(download, from: session)
+            session.navigationBecameDownload(in: view)
         }
 
         func synchronize(_ webView: WKWebView) {

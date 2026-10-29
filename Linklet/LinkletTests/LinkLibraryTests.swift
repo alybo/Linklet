@@ -363,38 +363,63 @@ final class LinkLibraryTests: XCTestCase {
         let library = LinkLibrary(defaults: defaults)
         library.bind(to: settings)
         let site = try settings.addFavoriteSite(name: "Docs", address: "https://swift.org")
-        XCTAssertEqual(library.sectionOrder, [.open, .bookmarks, .recent])
+        XCTAssertEqual(library.sectionOrder, [.open, .bookmarks, .recent, .downloads])
         XCTAssertEqual(library.expandedSections, Set(SidebarSection.allCases))
         library.toggleSection(.bookmarks)
         library.moveSection(.recent, before: .bookmarks)
-        XCTAssertEqual(library.sectionOrder, [.open, .recent, .bookmarks])
+        XCTAssertEqual(library.sectionOrder, [.open, .recent, .bookmarks, .downloads])
         XCTAssertFalse(library.expandedSections.contains(.bookmarks))
         XCTAssertTrue(library.expandedSections.contains(.recent))
         let restored = LinkLibrary(defaults: defaults)
-        XCTAssertEqual(restored.sectionOrder, [.open, .recent, .bookmarks])
-        XCTAssertEqual(restored.expandedSections, [.open, .recent])
+        XCTAssertEqual(restored.sectionOrder, [.open, .recent, .bookmarks, .downloads])
+        XCTAssertEqual(restored.expandedSections, [.open, .recent, .downloads])
         restored.toggleSection(.open)
         restored.moveSection(.open, before: nil)
         let reordered = LinkLibrary(defaults: defaults)
-        XCTAssertEqual(reordered.sectionOrder, [.recent, .bookmarks, .open])
-        XCTAssertEqual(reordered.expandedSections, [.recent])
+        XCTAssertEqual(reordered.sectionOrder, [.recent, .bookmarks, .downloads, .open])
+        XCTAssertEqual(reordered.expandedSections, [.recent, .downloads])
         restored.moveSection(.open, before: .recent)
         restored.toggleSection(.open)
         XCTAssertEqual(library.rootOrder, [site.id])
         XCTAssertEqual(settings.favoriteSites, [site])
         restored.moveSection(.recent, before: nil)
         restored.toggleSection(.bookmarks)
-        XCTAssertEqual(restored.sectionOrder, [.open, .bookmarks, .recent])
+        XCTAssertEqual(restored.sectionOrder, [.open, .bookmarks, .downloads, .recent])
         XCTAssertEqual(restored.expandedSections, Set(SidebarSection.allCases))
         defaults.set(try JSONEncoder().encode([SidebarSection.recent, .recent]), forKey: "sidebarSectionOrder")
-        XCTAssertEqual(LinkLibrary(defaults: defaults).sectionOrder, [.open, .recent, .bookmarks])
+        XCTAssertEqual(LinkLibrary(defaults: defaults).sectionOrder, [.open, .recent, .bookmarks, .downloads])
         // A profile from before Open windows keeps its chosen order and collapses.
         defaults.set(try JSONEncoder().encode([SidebarSection.recent, .bookmarks]), forKey: "sidebarSectionOrder")
         defaults.set(false, forKey: "sidebarExpanded.recent")
         let migrated = LinkLibrary(defaults: defaults)
-        XCTAssertEqual(migrated.sectionOrder, [.open, .recent, .bookmarks])
-        XCTAssertEqual(migrated.expandedSections, [.open, .bookmarks])
+        XCTAssertEqual(migrated.sectionOrder, [.open, .recent, .bookmarks, .downloads])
+        XCTAssertEqual(migrated.expandedSections, [.open, .bookmarks, .downloads])
         XCTAssertEqual(settings.favoriteSites, [site])
+    }
+
+    func testDownloadedFilePublishingPreservesExistingFilesAndDetectsConflicts() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let target = folder.appendingPathComponent("report.txt")
+        try Data("original".utf8).write(to: target)
+        let prepared = try DownloadFiles.prepare(destination: target)
+        defer { DownloadFiles.remove(prepared.folder) }
+        let source = prepared.folder.appendingPathComponent("report.txt")
+        try Data("complete".utf8).write(to: source)
+        try DownloadFiles.publish(source: source, destination: target, existing: prepared.existing)
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "complete")
+        XCTAssertNotNil(try target.resourceValues(forKeys: [.quarantinePropertiesKey]).quarantineProperties)
+        XCTAssertThrowsError(try DownloadFiles.publish(source: source, destination: target, existing: nil))
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "complete")
+        let snapshot = try DownloadFiles.fingerprint(target)
+        try Data("changed in another app".utf8).write(to: target)
+        XCTAssertThrowsError(try DownloadFiles.publish(source: source, destination: target, existing: snapshot))
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "changed in another app")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["report.txt"])
+        XCTAssertEqual(DownloadManager.safeFilename("../../report.txt"), "report.txt")
+        XCTAssertEqual(DownloadManager.safeFilename("..\\hidden\\report.txt"), "report.txt")
+        XCTAssertFalse(DownloadManager.safeFilename("\n\r").isEmpty)
     }
 
     func testRecentPaginationAddsTenAndResetsWithoutDiscardingHistory() {
@@ -1744,6 +1769,149 @@ final class WebPopupTests: XCTestCase {
         session.endSession()
     }
 
+    func testDownloadsUseNativeRequestsForAttachmentsPOSTBlobDataAndSiteWindows() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var choices = 0
+        let manager = DownloadManager { name in choices += 1; return folder.appendingPathComponent("\(choices)-\(name)") }
+        let page = DownloadTestPage(manager: manager, url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
+        defer { page.close(); manager.cancelAll() }
+        let view = try XCTUnwrap(page.view)
+        try await waitUntil { page.session.pageTitle == "Downloads fixture" }
+        let cookie = HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "login", .value: "fixture"])!
+        await view.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+        let triggers = ["document.getElementById('attachment').click()", "document.getElementById('export').submit()",
+                        "saveBlob()", "saveData()", "document.getElementById('inline').click()"]
+        let expected = ["attachment payload", "authorized:token=fixture", "blob payload", "data payload", "inline payload"]
+        for (index, trigger) in triggers.enumerated() {
+            _ = try await view.evaluateJavaScript(trigger + ";true")
+            try await waitUntil { manager.items.count == index + 1 && manager.items.last?.state == .finished }
+            let item = try XCTUnwrap(manager.items.last)
+            let saved = try XCTUnwrap(item.destination)
+            XCTAssertEqual(try String(contentsOf: saved, encoding: .utf8), expected[index])
+            XCTAssertNotNil(try saved.resourceValues(forKeys: [.quarantinePropertiesKey]).quarantineProperties)
+            XCTAssertEqual(view.url?.path, "/download-page")
+            XCTAssertEqual(page.session.originalURL?.path, "/download-page")
+        }
+        XCTAssertEqual(server.downloadRequests.filter { $0.hasPrefix("POST /export ") }.count, 1, "Never replay a POST through URLSession")
+        _ = try await view.evaluateJavaScript("window.open('/download-page','download-child');true")
+        try await waitUntil { page.session.windowRegistry.webWindows(openedBy: page.session.windowID).count == 1 }
+        let child = try XCTUnwrap(page.session.windowRegistry.webWindows(openedBy: page.session.windowID).values.first)
+        try await waitUntil { child.session.pageTitle == "Downloads fixture" }
+        _ = try await child.webView.evaluateJavaScript("document.getElementById('attachment').click();true")
+        try await waitUntil { manager.items.count == 6 && manager.items.last?.state == .finished }
+        XCTAssertTrue(child.session.windowRegistry.downloads === manager)
+        page.session.windowRegistry.closeAll()
+
+        let suite = "DownloadSidebar.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(defaults: defaults, windowRegistry: page.session.windowRegistry, discoverTargets: { [] })
+        let sidebar = SidebarWindowController(model: model, reduceMotion: { true })
+        defer { sidebar.hide(animated: false) }
+        XCTAssertFalse(model.linkLibrary.isEnabled)
+        sidebar.showDownloads()
+        XCTAssertTrue(sidebar.isPresented, "Downloads must be accessible even with edge activation disabled")
+        let content = try XCTUnwrap(sidebar.window?.contentView)
+        let last = try XCTUnwrap(manager.items.last)
+        try await waitUntil { self.accessibilityNode(in: content, identifier: "sidebar-download-\(last.id.uuidString)") != nil }
+        // Let the requested section scroll into view before taking the snapshot.
+        try await Task.sleep(for: .milliseconds(150))
+        if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-downloads-sidebar.png"))
+        }
+        manager.clearFinished()
+        XCTAssertTrue(manager.items.isEmpty)
+    }
+
+    func testDownloadSurvivesClosingItsPrivatePageAndReleasesCookiesAfterFinishing() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let manager = DownloadManager { name in folder.appendingPathComponent(name) }
+        let page = DownloadTestPage(manager: manager, url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
+        defer { page.close(); manager.cancelAll() }
+        try await waitUntil { page.session.pageTitle == "Downloads fixture" }
+        let store = try XCTUnwrap(page.view?.configuration.websiteDataStore)
+        let cookie = HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "login", .value: "fixture"])!
+        await store.httpCookieStore.setCookie(cookie)
+        _ = try await page.view?.evaluateJavaScript("document.getElementById('slow').click();true")
+        try await waitUntil { manager.items.last?.received ?? 0 > 0 && manager.items.last?.state == .downloading }
+        page.close()
+        let liveCookies = await store.httpCookieStore.allCookies()
+        XCTAssertTrue(liveCookies.contains { $0.name == "login" })
+        XCTAssertTrue(manager.hasActiveDownloads)
+        try await waitUntil { manager.items.last?.state == .finished }
+        let file = try XCTUnwrap(manager.items.last?.destination)
+        XCTAssertEqual(try Data(contentsOf: file).count, 524_288)
+        try await waitUntil { await store.httpCookieStore.allCookies().isEmpty }
+    }
+
+    func testDownloadCancellationAndNetworkFailureKeepExistingFileAndOtherDownloads() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let existing = folder.appendingPathComponent("existing.txt")
+        try Data("keep".utf8).write(to: existing)
+        let manager = DownloadManager { name in
+            if name == "skip.txt" { return nil }
+            return name == "slow.bin" || name == "broken.bin" ? existing : folder.appendingPathComponent(name)
+        }
+        let page = DownloadTestPage(manager: manager, url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
+        defer { page.close(); manager.cancelAll() }
+        let view = try XCTUnwrap(page.view)
+        try await waitUntil { page.session.pageTitle == "Downloads fixture" }
+        _ = try await view.evaluateJavaScript("document.getElementById('slow').click();true")
+        try await waitUntil { manager.items.first?.received ?? 0 > 0 }
+        _ = try await view.evaluateJavaScript("document.getElementById('attachment').click();true")
+        try await waitUntil { manager.items.count == 2 && manager.items.last?.state == .finished }
+        let slow = try XCTUnwrap(manager.items.first)
+        manager.cancel(slow.id)
+        try await waitUntil { !manager.hasActiveDownloads }
+        XCTAssertEqual(slow.state, .cancelled)
+        XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "keep")
+        _ = try await view.evaluateJavaScript("document.getElementById('skip').click();true")
+        try await waitUntil { manager.items.count == 3 && manager.items.last?.state == .cancelled }
+        _ = try await view.evaluateJavaScript("document.getElementById('broken').click();true")
+        try await waitUntil { manager.items.count == 4 && manager.items.last?.state == .failed }
+        XCTAssertNotNil(manager.items.last?.error)
+        XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "keep")
+        _ = try await view.evaluateJavaScript("document.getElementById('slow').click();true")
+        try await waitUntil { manager.items.count == 5 && manager.items.last?.state == .downloading && manager.items.last?.received ?? 0 > 0 }
+        await manager.stopForTermination()
+        try await waitUntil { !manager.hasPendingWork }
+        XCTAssertEqual(manager.items.last?.state, .cancelled)
+        XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "keep")
+    }
+
+    func testNativeDownloadSavePanelSuggestsNameAndCancelsWithoutSaving() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let manager = DownloadManager()
+        let page = DownloadTestPage(manager: manager, url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
+        defer { page.close(); manager.cancelAll() }
+        try await waitUntil { page.session.pageTitle == "Downloads fixture" }
+        _ = try await page.view?.evaluateJavaScript("document.getElementById('attachment').click();true")
+        try await waitUntil { NSApp.windows.contains { $0 is NSSavePanel && $0.isVisible } }
+        let panel = try XCTUnwrap(NSApp.windows.first { $0 is NSSavePanel && $0.isVisible } as? NSSavePanel)
+        XCTAssertEqual(panel.nameFieldStringValue, "report.txt")
+        page.close()
+        panel.cancel(nil)
+        try await waitUntil { manager.items.last?.state == .cancelled && !manager.hasActiveDownloads }
+    }
+
     func testWebKitReportsNativePasskeyAvailabilityWithoutCreatingCredentials() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
@@ -1804,6 +1972,39 @@ final class WebPopupTests: XCTestCase {
     }
 }
 
+@MainActor
+private final class DownloadTestPage {
+    let session: PreviewSession
+    var view: WKWebView?
+    private var coordinator: WebPreview.Coordinator?
+    private let suite = "DownloadPage.\(UUID())"
+    private let defaults: UserDefaults
+
+    init(manager: DownloadManager, url: URL) {
+        defaults = UserDefaults(suiteName: suite)!
+        let data = SiteDataService(defaults: defaults, persistentStore: .nonPersistent())
+        session = PreviewSession(adBlockService: AdBlockService(defaults: defaults, automaticUpdates: false),
+                                 siteData: data, windowRegistry: BrowserWindowRegistry(downloads: manager))
+        session.load(url)
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600),
+                            configuration: WebPreview.configuration(websiteDataStore: session.websiteDataStore))
+        let observer = WebPreview.Coordinator(session: session)
+        web.navigationDelegate = observer
+        web.uiDelegate = observer
+        observer.startObserving(web)
+        coordinator = observer
+        view = web
+        session.attach(web)
+    }
+
+    func close() {
+        session.endSession()
+        coordinator = nil
+        view = nil
+        defaults.removePersistentDomain(forName: suite)
+    }
+}
+
 /// Cancel before WebKit contacts the search provider; only inspect the intended URL.
 @MainActor
 private final class AddressNavigationCapture: NSObject, WKNavigationDelegate {
@@ -1825,6 +2026,8 @@ private final class PopupHTTPFixture: @unchecked Sendable {
     private var receivedBody = ""
     private var receivedPageRequests: [String] = []
     var pageRequests: [String] { lock.lock(); defer { lock.unlock() }; return receivedPageRequests }
+    private var receivedDownloadRequests: [String] = []
+    var downloadRequests: [String] { lock.lock(); defer { lock.unlock() }; return receivedDownloadRequests }
     private var iconData: Data?
     private let conventionalIcon: Data?
     private var iconVersion = 1
@@ -1920,7 +2123,43 @@ private final class PopupHTTPFixture: @unchecked Sendable {
         let status: String
         var extraHeaders = ""
         let html: String
-        if firstLine.hasPrefix("POST /authorize ") {
+        if firstLine.hasPrefix("GET /download-page ") {
+            status = "200 OK"
+            html = """
+            <title>Downloads fixture</title><a id='attachment' href='/attachment'>Attachment</a>
+            <a id='inline' download='inline.txt' href='/inline'>Inline</a>
+            <a id='slow' href='/slow'>Slow</a><a id='skip' href='/skip'>Skip</a><a id='broken' href='/broken'>Broken</a>
+            <form id='export' method='POST' action='/export'><input name='token' value='fixture'></form>
+            <script>
+            function saveBlob(){let a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['blob payload'],{type:'text/plain'}));a.download='blob.txt';a.click()}
+            function saveData(){let a=document.createElement('a');a.href='data:text/plain,data%20payload';a.download='data.txt';a.click()}
+            </script>
+            """
+        } else if ["GET /attachment ", "GET /inline ", "GET /slow ", "GET /skip ", "GET /broken ", "POST /export "].contains(where: firstLine.hasPrefix) {
+            lock.lock(); receivedDownloadRequests.append(firstLine); lock.unlock()
+            let isExport = firstLine.hasPrefix("POST /export ")
+            let authenticated = headers.contains("login=fixture")
+            let slow = firstLine.hasPrefix("GET /slow ")
+            let broken = firstLine.hasPrefix("GET /broken ")
+            let skip = firstLine.hasPrefix("GET /skip ")
+            let inline = firstLine.hasPrefix("GET /inline ")
+            let filename = slow ? "slow.bin" : (broken ? "broken.bin" : (skip ? "skip.txt" : "report.txt"))
+            let payload = isExport ? (authenticated ? "authorized:\(body)" : "unauthorized") : (inline ? "inline payload" : "attachment payload")
+            let size = slow ? 524_288 : (broken ? 4096 : payload.utf8.count)
+            let contentType = slow || broken ? "application/octet-stream" : "text/plain"
+            let disposition = inline ? "inline" : "attachment; filename=\"\(filename)\""
+            let code = isExport && !authenticated ? "401 Unauthorized" : "200 OK"
+            let header = "HTTP/1.1 \(code)\r\nContent-Type: \(contentType)\r\nContent-Disposition: \(disposition)\r\nContent-Length: \(size)\r\nConnection: close\r\n\r\n"
+            if slow {
+                connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] error in
+                    guard error == nil else { connection.cancel(); return }
+                    self?.stream(connection, remaining: size)
+                })
+            } else {
+                connection.send(content: Data((header + payload).utf8), completion: .contentProcessed { _ in connection.cancel() })
+            }
+            return
+        } else if firstLine.hasPrefix("POST /authorize ") {
             lock.lock(); receivedPosts += 1; receivedBody = body; lock.unlock()
             status = "302 Found"
             extraHeaders = "Location: http://localhost:\(port)/callback\r\nSet-Cookie: login=fixture; Path=/; SameSite=Lax\r\n"
@@ -1952,6 +2191,15 @@ private final class PopupHTTPFixture: @unchecked Sendable {
         }
         let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\(extraHeaders)\r\n\(html)"
         connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+    }
+
+    private func stream(_ connection: NWConnection, remaining: Int) {
+        guard remaining > 0 else { connection.cancel(); return }
+        let count = min(8192, remaining)
+        connection.send(content: Data(repeating: 120, count: count), completion: .contentProcessed { [weak self] error in
+            guard error == nil, let self else { connection.cancel(); return }
+            self.queue.asyncAfter(deadline: .now() + 0.03) { self.stream(connection, remaining: remaining - count) }
+        })
     }
 }
 

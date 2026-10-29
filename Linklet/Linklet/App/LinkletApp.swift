@@ -30,6 +30,7 @@ private struct MenuBarView: View {
     var body: some View {
         Button(L("Quick Search")) { model.toggleSearch() }
         SidebarMenuItem(model: model, library: model.linkLibrary)
+        Button(L("Downloads")) { model.showDownloads() }
 
         Button(L("Welcome to Linklet")) {
             model.showWelcome()
@@ -126,6 +127,23 @@ final class AppLanguage: ObservableObject {
         "Save links here or add the current page with the bookmark button.": "Сохраняйте ссылки здесь или добавляйте текущую страницу кнопкой закладки.",
         "Recent links": "Недавние",
         "Open windows": "Открытые",
+        "Downloads": "Загрузки",
+        "Download": "Файл",
+        "No downloads.": "Загрузок нет.",
+        "Save download": "Сохранить файл",
+        "Choose where to save": "Выберите папку для сохранения",
+        "Saving file…": "Сохраняем файл…",
+        "Download complete": "Загрузка завершена",
+        "Download cancelled": "Загрузка отменена",
+        "Download failed": "Не удалось скачать файл",
+        "The server returned HTTP %d.": "Сервер вернул ошибку HTTP %d.",
+        "Cancel download": "Отменить загрузку",
+        "Show in Finder": "Показать в Finder",
+        "Clear completed downloads": "Очистить завершённые",
+        "Downloads in progress": "Есть незавершённые загрузки",
+        "Quitting Linklet will stop unfinished downloads.": "При выходе из Linklet незавершённые загрузки остановятся.",
+        "Keep downloading": "Продолжить загрузки",
+        "Quit and stop downloads": "Выйти и остановить загрузки",
         "No open windows.": "Открытых окон нет.",
         "Minimized": "Свёрнуто",
         "Active window": "Активное окно",

@@ -3,6 +3,7 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
+    private var isStoppingDownloads = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model.startSearchShortcut()
@@ -23,7 +24,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        model.downloads.cancelAll()
         model.previewDidEnd()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isStoppingDownloads else { return .terminateLater }
+        guard model.downloads.hasPendingWork else { return .terminateNow }
+        if model.downloads.hasActiveDownloads {
+            let alert = NSAlert()
+            alert.messageText = L("Downloads in progress")
+            alert.informativeText = L("Quitting Linklet will stop unfinished downloads.")
+            alert.addButton(withTitle: L("Keep downloading"))
+            alert.addButton(withTitle: L("Quit and stop downloads"))
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        }
+        isStoppingDownloads = true
+        Task { @MainActor in
+            await model.downloads.stopForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
