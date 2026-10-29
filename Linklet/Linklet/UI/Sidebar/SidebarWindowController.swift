@@ -1,9 +1,28 @@
 import AppKit
 import Combine
 import Carbon
+import ObjectiveC
 import SwiftUI
 
 private final class SidebarPanel: NSPanel {
+    var keepsGlassAppearanceActive = false
+
+    private typealias ActiveAppearanceGetter = @convention(c) (AnyObject, Selector) -> Bool
+    private static let activeAppearanceSelector = NSSelectorFromString("_hasActiveAppearance")
+    private static let nativeActiveAppearance: ActiveAppearanceGetter? = {
+        guard let method = class_getInstanceMethod(NSPanel.self, activeAppearanceSelector) else { return nil }
+        return unsafeBitCast(method_getImplementation(method), to: ActiveAppearanceGetter.self)
+    }()
+
+    // Experimental glass only: Glass ignores SwiftUI's materialActiveAppearance.
+    // AppKit consults this undocumented appearance getter for its lensing pass.
+    // Keep actual key/main window status intact so typing and focus still work.
+    // The black appearance delegates to AppKit's original implementation.
+    @objc(_hasActiveAppearance) private func glassActiveAppearance() -> Bool {
+        if keepsGlassAppearanceActive { return true }
+        return Self.nativeActiveAppearance?(self, Self.activeAppearanceSelector) ?? isKeyWindow
+    }
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
@@ -28,6 +47,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     private var timer: Timer?
     private let hotKey = SearchHotKey(identifier: 2)
     private var enabledObservation: AnyCancellable?
+    private var appearanceObservation: AnyCancellable?
     private var focusObservation: AnyCancellable?
     private var edgeScreenID: ObjectIdentifier?
     private var edgeEnteredAt: Date?
@@ -63,6 +83,9 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         // Our contour provides the complete transition; AppKit must not add an ordering fade.
         panel.animationBehavior = .none
         super.init(window: panel)
+        appearanceObservation = library.$sidebarAppearance.sink { [weak panel] appearance in
+            panel?.keepsGlassAppearanceActive = appearance == .glass && SidebarAppearance.supportsGlass
+        }
         let hosting = NSHostingController(rootView: SidebarPanelSurface(model: model, library: library,
             reveal: reveal, editor: editor, dismiss: { [weak self] in self?.hide() }))
         hosting.sizingOptions = []

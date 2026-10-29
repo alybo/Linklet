@@ -4,6 +4,7 @@ import SwiftUI
 import Network
 import Carbon
 import ImageIO
+import ObjectiveC
 @testable import Linklet
 
 @MainActor
@@ -536,6 +537,53 @@ final class LinkLibraryTests: XCTestCase {
                 XCTAssertLessThan(contrast, 0.02, "The default black appearance must stay opaque")
             }
         }
+    }
+
+    func testSidebarGlassKeepsItsAppearanceWhileKeyboardFocusMovesNormally() async throws {
+        guard SidebarAppearance.supportsGlass else { throw XCTSkip("Liquid Glass requires macOS 26") }
+        let selector = NSSelectorFromString("_hasActiveAppearance")
+        guard class_getInstanceMethod(NSPanel.self, selector) != nil else {
+            throw XCTSkip("This macOS no longer exposes the experimental glass appearance hook")
+        }
+        let suite = "SidebarGlassFocus.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.linkLibrary.setSidebarAppearance(.glass)
+        model.linkLibrary.setEnabled(true)
+        let controller = SidebarWindowController(model: model, reduceMotion: { true })
+        controller.toggle()
+        let panel = try XCTUnwrap(controller.window)
+        // Keep the surface visible for comparison; normal resign-key dismissal
+        // is covered separately by the sidebar interaction tests.
+        panel.delegate = nil
+        let other = NSPanel(contentRect: NSRect(x: 600, y: 100, width: 200, height: 100),
+                            styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+        other.isReleasedWhenClosed = false
+        let field = NSTextField(frame: NSRect(x: 10, y: 10, width: 180, height: 24))
+        other.contentView?.addSubview(field)
+        defer { other.close(); controller.hide(animated: false); model.linkLibrary.setEnabled(false) }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+        let getter = unsafeBitCast(try XCTUnwrap(panel.method(for: selector)), to: Getter.self)
+        panel.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(panel.isKeyWindow)
+        XCTAssertTrue(getter(panel, selector))
+        other.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(other.makeFirstResponder(field))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(other.isKeyWindow, "A decorative glass effect must not retain keyboard focus")
+        XCTAssertFalse(panel.isKeyWindow)
+        XCTAssertFalse(panel.isMainWindow)
+        XCTAssertTrue(getter(panel, selector), "Inactive glass must keep the same native lensing appearance")
+        XCTAssertTrue(other.firstResponder is NSTextView)
+        XCTAssertTrue(panel.isVisible)
+        model.linkLibrary.setSidebarAppearance(.black)
+        try await Task.sleep(for: .milliseconds(100))
+        let native = try XCTUnwrap(class_getInstanceMethod(NSPanel.self, selector))
+        let nativeGetter = unsafeBitCast(method_getImplementation(native), to: Getter.self)
+        XCTAssertEqual(getter(panel, selector), nativeGetter(panel, selector), "Black mode must restore AppKit's original behavior")
+        model.linkLibrary.setSidebarAppearance(.glass)
+        XCTAssertTrue(getter(panel, selector))
     }
 
     func testSidebarAppearancePickerChangesTheLivePanelWithoutResizing() async throws {

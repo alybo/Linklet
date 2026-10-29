@@ -58,6 +58,7 @@ struct SidebarRevealSurface<Content: View>: View {
 /// Full-surface Liquid Glass blurs away backdrop details even with `.clear`.
 /// Restrict the native material to a feathered rim and leave the interior clear.
 private struct SidebarGlassEffect: ViewModifier {
+    @Environment(\.displayScale) private var displayScale
     let enabled: Bool
     let contour: SidebarContour
     @ViewBuilder func body(content: Content) -> some View {
@@ -67,6 +68,27 @@ private struct SidebarGlassEffect: ViewModifier {
                     Color.clear
                         .glassEffect(.clear, in: contour)
                         .mask { contour.stroke(lineWidth: 36).blur(radius: 6) }
+                }
+            }
+            .overlay {
+                if enabled {
+                    GeometryReader { geometry in
+                        let width = geometry.size.width * min(1, max(0, contour.revealProgress))
+                        contour.stroke(LinearGradient(colors: [
+                            .white.opacity(0.10), .white.opacity(0.42),
+                            .white.opacity(0.12), .white.opacity(0.28)
+                        ], startPoint: .top, endPoint: .bottom), lineWidth: 2 / displayScale)
+                        .mask {
+                            LinearGradient(stops: [
+                                .init(color: .clear, location: 0.80),
+                                .init(color: .white, location: 0.96)
+                            ], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: width)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
                 }
             }
         } else { content }
