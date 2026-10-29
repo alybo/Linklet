@@ -117,7 +117,7 @@ final class AppLanguage: ObservableObject {
         "Appearance": "Внешний вид",
         "Black": "Чёрный",
         "Glass (test)": "Стекло (тест)",
-        "Test appearance: black on the left, native Liquid Glass on the right. The sidebar shape and row sizes stay the same.": "Тестовый вид: слева чёрный фон, справа — нативное Liquid Glass. Форма панели и размеры строк сохраняются.",
+        "Test appearance: black on the left, transparent on the right with a native Liquid Glass rim. The sidebar shape and row sizes stay the same.": "Тестовый вид: слева чёрный фон, справа — прозрачная поверхность с нативной стеклянной кромкой. Форма панели и размеры строк сохраняются.",
         "Reduce Transparency uses the black appearance.": "При включённом «Уменьшении прозрачности» используется чёрный вид.",
         "Liquid Glass requires macOS 26 or later. The black appearance is used on this Mac.": "Для Liquid Glass нужна macOS 26 или новее. На этом Mac используется чёрный вид.",
         "Show sidebar": "Показать боковую панель",

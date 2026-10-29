@@ -55,14 +55,20 @@ struct SidebarRevealSurface<Content: View>: View {
     }
 }
 
-/// Keep the material's shape identical to our moving contour. The system owns
-/// refraction and highlights; the black-to-clear gradient is ordinary content.
+/// Full-surface Liquid Glass blurs away backdrop details even with `.clear`.
+/// Restrict the native material to a feathered rim and leave the interior clear.
 private struct SidebarGlassEffect: ViewModifier {
     let enabled: Bool
     let contour: SidebarContour
     @ViewBuilder func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.glassEffect(enabled ? .clear : .identity, in: contour)
+            content.background {
+                if enabled {
+                    Color.clear
+                        .glassEffect(.clear, in: contour)
+                        .mask { contour.stroke(lineWidth: 36).blur(radius: 6) }
+                }
+            }
         } else { content }
     }
 }
@@ -718,7 +724,7 @@ struct SidebarSettingsView: View {
                     })) {
                         ForEach(SidebarAppearance.allCases) { appearance in Text(appearance.title).tag(appearance) }
                     }.pickerStyle(.segmented).accessibilityIdentifier("sidebar-appearance-picker")
-                    Text(L("Test appearance: black on the left, native Liquid Glass on the right. The sidebar shape and row sizes stay the same."))
+                    Text(L("Test appearance: black on the left, transparent on the right with a native Liquid Glass rim. The sidebar shape and row sizes stay the same."))
                         .font(.caption).foregroundStyle(.secondary)
                     Text(L("Reduce Transparency uses the black appearance."))
                         .font(.caption).foregroundStyle(.secondary)

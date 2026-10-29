@@ -494,6 +494,50 @@ final class LinkLibraryTests: XCTestCase {
         }
     }
 
+    func testSidebarGlassInteriorPreservesBackdropDetail() async throws {
+        guard SidebarAppearance.supportsGlass else { throw XCTSkip("Liquid Glass requires macOS 26") }
+        let reveal = SidebarRevealState()
+        reveal.progress = 1
+        reveal.shoulderProgress = 1
+        let size = NSSize(width: 460, height: 600)
+        for appearance in [SidebarAppearance.black, .glass] {
+            let scene = ZStack(alignment: .leading) {
+                Canvas { context, size in
+                    context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
+                    for y in stride(from: 0, to: Int(size.height), by: 48) {
+                        context.fill(Path(CGRect(x: 0, y: y, width: Int(size.width), height: 24)), with: .color(.white))
+                    }
+                }
+                SidebarRevealSurface(reveal: reveal, appearance: appearance, reduceTransparency: false) { Color.clear }
+                    .frame(width: 320, height: size.height)
+            }.frame(width: size.width, height: size.height).preferredColorScheme(.dark)
+            let host = NSHostingView(rootView: scene)
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            window.setContentSize(size)
+            window.orderFrontRegardless()
+            defer { window.close() }
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(180))
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let scale = CGFloat(bitmap.pixelsWide) / size.width
+            // Sample clear interior, away from the native rim's refraction map.
+            func brightness(at y: CGFloat) throws -> CGFloat {
+                let color = try XCTUnwrap(bitmap.colorAt(x: Int(266 * scale), y: Int(y * scale))?.usingColorSpace(.deviceRGB))
+                return (color.redComponent + color.greenComponent + color.blueComponent) / 3
+            }
+            let contrast = abs(try brightness(at: 204) - brightness(at: 228))
+            if appearance == .glass {
+                XCTAssertGreaterThan(contrast, 0.15, "Backdrop details must survive through the transparent interior")
+            } else {
+                XCTAssertLessThan(contrast, 0.02, "The default black appearance must stay opaque")
+            }
+        }
+    }
+
     func testSidebarAppearancePickerChangesTheLivePanelWithoutResizing() async throws {
         guard SidebarAppearance.supportsGlass else { throw XCTSkip("Liquid Glass requires macOS 26") }
         let suite = "SidebarAppearancePicker.\(UUID())"
