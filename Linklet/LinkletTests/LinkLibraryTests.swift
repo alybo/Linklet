@@ -1342,38 +1342,61 @@ final class WebPopupTests: XCTestCase {
             try await waitUntil { session.currentURL == current && address.addressButton.toolTip?.hasPrefix(current.absoluteString) == true }
             let frame = address.frame
             let pageFrame = view.frame
-            func click(_ type: NSEvent.EventType, modifiers: NSEvent.ModifierFlags = []) throws {
-                let point = address.convert(NSPoint(x: address.bounds.midX, y: address.bounds.midY), to: nil)
+            let domain = address.addressButton.title
+            func click(_ type: NSEvent.EventType, onIcon: Bool = true, modifiers: NSEvent.ModifierFlags = []) throws {
+                let target = onIcon ? address.copyButton.frame : address.addressButton.frame
+                let point = address.convert(NSPoint(x: target.midX, y: target.midY), to: nil)
                 let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers,
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
                     eventNumber: 0, clickCount: 1, pressure: 1))
+                let upType: NSEvent.EventType = type == .leftMouseDown ? .leftMouseUp : .rightMouseUp
+                let up = try XCTUnwrap(NSEvent.mouseEvent(with: upType, location: point, modifierFlags: modifiers,
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                    eventNumber: 1, clickCount: 1, pressure: 0))
+                // Native NSButton tracks synchronously until mouse-up.
+                NSApp.postEvent(up, atStart: true)
                 NSApp.postEvent(event, atStart: true)
                 let mask = NSEvent.EventTypeMask(rawValue: 1 << type.rawValue)
                 if let next = NSApp.nextEvent(matching: mask, until: Date().addingTimeInterval(0.1), inMode: .default, dequeue: true) { NSApp.sendEvent(next) }
+                let upMask = NSEvent.EventTypeMask(rawValue: 1 << upType.rawValue)
+                if let remaining = NSApp.nextEvent(matching: upMask, until: Date(), inMode: .default, dequeue: true) { NSApp.sendEvent(remaining) }
             }
-            try click(.rightMouseDown); try click(.rightMouseUp)
+            // Both mouse buttons copy from the icon, leaving the domain visible.
+            try click(.leftMouseDown)
             XCTAssertEqual(pasteboard.string(forType: .string), current.absoluteString)
             XCTAssertTrue(address.isShowingCopyFeedback)
             XCTAssertFalse(address.isExpanded)
             try await Task.sleep(for: .milliseconds(200))
-            XCTAssertEqual(address.addressButton.alphaValue, 0, accuracy: 0.01)
+            XCTAssertEqual(address.addressButton.alphaValue, 1)
+            XCTAssertEqual(address.addressButton.title, domain)
+            XCTAssertEqual(address.copyButton.accessibilityValue() as? String, L("Copied!"))
             XCTAssertEqual(address.frame, frame)
             XCTAssertEqual(view.frame, pageFrame)
             if index == 0 {
                 if let content = window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
                     content.cacheDisplay(in: content.bounds, to: bitmap)
-                    try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-toolbar-copied.png"))
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-address-icon-copied.png"))
                 }
                 try await Task.sleep(for: .milliseconds(1100))
-                try click(.rightMouseDown); try click(.rightMouseUp)
+                try click(.rightMouseDown)
                 try await Task.sleep(for: .milliseconds(900))
                 XCTAssertTrue(address.isShowingCopyFeedback, "Repeated copy restarts the two-second lifetime")
-                try await waitUntil { !address.isShowingCopyFeedback && address.addressButton.alphaValue == 1 }
+                try await waitUntil { !address.isShowingCopyFeedback && address.copyButton.accessibilityValue() == nil }
             } else {
-                // Left click still opens the editor while the domain is faded out.
-                try click(.leftMouseDown); try click(.leftMouseUp)
+                // Domain clicks open the editor even while the icon shows a checkmark.
+                try click(.leftMouseDown, onIcon: false)
                 try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
                 XCTAssertFalse(address.isShowingCopyFeedback)
+                window.contentView?.layoutSubtreeIfNeeded()
+                XCTAssertEqual(address.addressField.frame.midY, address.bounds.midY, accuracy: 0.5)
+                let editor = try XCTUnwrap(address.addressField.currentEditor() as? NSTextView)
+                let editorFrame = editor.convert(editor.bounds, to: address)
+                XCTAssertEqual(editorFrame.midY, address.bounds.midY, accuracy: 1,
+                               "The live editor and insertion cursor must be centered too")
+                if let content = window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                    content.cacheDisplay(in: content.bounds, to: bitmap)
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-address-editor-centered.png"))
+                }
                 try sendAddressKey(to: window, code: 53, characters: "\u{1b}")
             }
             try click(.leftMouseDown, modifiers: .control)

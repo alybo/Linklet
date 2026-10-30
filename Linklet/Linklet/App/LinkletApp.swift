@@ -328,7 +328,6 @@ final class AppLanguage: ObservableObject {
         "Copied!": "Скопировано!",
         "Saved bookmark": "Сохранено в закладках",
         "Not bookmarked": "Нет в закладках",
-        "Right-click to copy the full address": "Правый клик — скопировать полный адрес",
         "Copy current URL": "Скопировать ссылку",
         "Show full address": "Показать полный адрес",
         "Full address": "Полный адрес",
