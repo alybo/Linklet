@@ -14,6 +14,7 @@ final class SiteDataService: ObservableObject {
     @Published private(set) var inactiveDays: Int
     @Published private(set) var records: [WKWebsiteDataRecord] = []
     @Published private(set) var isBusy = false
+    let mediaPermissions: SiteMediaPermissions
     private let defaults: UserDefaults
     private let persistentStore: WKWebsiteDataStore
     private var temporaryStore = WKWebsiteDataStore.nonPersistent()
@@ -29,6 +30,7 @@ final class SiteDataService: ObservableObject {
 
     init(defaults: UserDefaults = .standard, persistentStore: WKWebsiteDataStore? = nil) {
         self.defaults = defaults
+        mediaPermissions = SiteMediaPermissions(defaults: defaults, persists: defaults.bool(forKey: Self.enabledKey))
         self.persistentStore = persistentStore ?? .default()
         isEnabled = defaults.bool(forKey: Self.enabledKey)
         let days = defaults.integer(forKey: Self.daysKey)
@@ -46,6 +48,7 @@ final class SiteDataService: ObservableObject {
         markModeChosen()
         await serialize {
             self.isEnabled = enabled
+            self.mediaPermissions.setPersistence(enabled)
             self.defaults.set(enabled, forKey: Self.enabledKey)
             self.rotateTemporaryStore()
             if !enabled { await self.removeAllStoredData() }
@@ -59,6 +62,7 @@ final class SiteDataService: ObservableObject {
     func selectModeForPreview(_ enabled: Bool) {
         markModeChosen()
         isEnabled = enabled
+        mediaPermissions.setPersistence(enabled)
         defaults.set(enabled, forKey: Self.enabledKey)
         rotateTemporaryStore()
         scheduleMaintenanceIfIdle()
@@ -205,6 +209,7 @@ final class SiteDataService: ObservableObject {
     private func removeRecords(_ records: [WKWebsiteDataRecord]) async {
         await persistentStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: records)
         for record in records {
+            mediaPermissions.remove(forDomain: record.displayName)
             visits = visits.filter { !Self.host($0.key, belongsTo: record.displayName) }
             firstSeen.removeValue(forKey: record.displayName)
         }
@@ -212,6 +217,7 @@ final class SiteDataService: ObservableObject {
     }
 
     private func removeAllStoredData() async {
+        mediaPermissions.remove()
         await persistentStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
         visits = [:]
         firstSeen = [:]

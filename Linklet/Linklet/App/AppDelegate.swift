@@ -16,10 +16,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidResignActive(_ notification: Notification) {
+        guard !model.siteData.mediaPermissions.hasPendingOrActiveCapture else { return }
         model.previewApplicationDidHide()
     }
 
     func applicationDidHide(_ notification: Notification) {
+        guard !model.siteData.mediaPermissions.hasPendingOrActiveCapture else { return }
         model.previewApplicationDidHide()
     }
 
@@ -49,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        model.siteData.mediaPermissions.refreshSystemStatus()
         model.refreshDefaultBrowserStatus()
         model.adBlockService.checkForUpdates()
     }

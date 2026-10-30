@@ -2771,12 +2771,14 @@ private final class UploadTestPage {
     private let suite = "UploadPage.\(UUID())"
     private let defaults: UserDefaults
 
-    init(url: URL) {
+    init(url: URL, configure: (WKWebViewConfiguration) -> Void = { _ in }) {
         defaults = UserDefaults(suiteName: suite)!
         let data = SiteDataService(defaults: defaults, persistentStore: .nonPersistent())
         session = PreviewSession(adBlockService: AdBlockService(defaults: defaults, automaticUpdates: false), siteData: data)
         session.load(url)
-        view = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: WebPreview.configuration(websiteDataStore: session.websiteDataStore))
+        let configuration = WebPreview.configuration(websiteDataStore: session.websiteDataStore)
+        configure(configuration)
+        view = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
         coordinator = WebPreview.Coordinator(session: session)
         view.navigationDelegate = coordinator
         view.uiDelegate = coordinator
@@ -3228,6 +3230,251 @@ private struct SidebarSizeProbe: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView { NSView() }
     func updateNSView(_ nsView: NSView, context: Context) { report(rowSize) }
+}
+
+@MainActor
+final class SiteMediaPermissionTests: XCTestCase {
+    func testConcurrentCameraDenialDoesNotCancelMicrophoneConsent() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        let service = page.session.siteData.mediaPermissions
+        service.systemStatus = { _ in .authorized }
+        let origin = try XCTUnwrap(MediaSiteOrigin(url: page.view.url!))
+        let context = SiteMediaRule(top: origin, requester: origin)
+        var prompts: [(NSAlert, (NSApplication.ModalResponse) -> Void)] = []
+        service.presentAlert = { alert, _, reply in prompts.append((alert, reply)) }
+        var camera: WKPermissionDecision?
+        var microphone: WKPermissionDecision?
+        service.request(in: page.view, context: context, devices: [.camera]) { camera = $0 }
+        service.request(in: page.view, context: context, devices: [.microphone]) { microphone = $0 }
+        XCTAssertEqual(prompts.count, 1)
+        prompts[0].0.suppressionButton?.state = .on
+        prompts[0].1(.alertSecondButtonReturn)
+        XCTAssertEqual(camera, .deny)
+        XCTAssertNil(microphone)
+        XCTAssertEqual(prompts.count, 2)
+        prompts[1].1(.alertFirstButtonReturn)
+        XCTAssertEqual(microphone, .grant)
+        XCTAssertEqual(service.rules.first?.camera, .deny)
+        XCTAssertEqual(service.rules.first?.microphone, .ask, "A one-time grant does not become a remembered permission")
+    }
+
+    func testPrivateSiteChoicesAreSeparateAndExpireWithLastWindow() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        let service = page.session.siteData.mediaPermissions
+        service.systemStatus = { _ in .authorized }
+        let origin = try XCTUnwrap(MediaSiteOrigin(url: page.view.url!))
+        let context = SiteMediaRule(top: origin, requester: origin)
+        var prompts = 0
+        service.presentAlert = { alert, _, reply in
+            prompts += 1
+            XCTAssertTrue(alert.messageText.contains(origin.address))
+            XCTAssertEqual(alert.suppressionButton?.title, L("Remember until all website windows close"))
+            alert.suppressionButton?.state = .on
+            reply(prompts == 1 ? .alertFirstButtonReturn : .alertSecondButtonReturn)
+        }
+        var microphone: WKPermissionDecision?
+        service.request(in: page.view, context: context, devices: [.microphone]) { microphone = $0 }
+        XCTAssertEqual(microphone, .grant)
+        XCTAssertEqual(service.rules.first?.microphone, .allow)
+        XCTAssertEqual(service.rules.first?.camera, .ask)
+        var camera: WKPermissionDecision?
+        service.request(in: page.view, context: context, devices: [.camera]) { camera = $0 }
+        XCTAssertEqual(camera, .deny)
+        XCTAssertEqual(service.rules.first?.camera, .deny)
+        XCTAssertEqual(service.rules.first?.microphone, .allow)
+        XCTAssertFalse(service.persists)
+        page.close()
+        XCTAssertTrue(service.rules.isEmpty)
+    }
+
+    func testPendingNativeAndSystemDecisionsCannotGrantAfterNavigationOrClose() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        let service = page.session.siteData.mediaPermissions
+        let origin = try XCTUnwrap(MediaSiteOrigin(url: page.view.url!))
+        let context = SiteMediaRule(top: origin, requester: origin)
+        service.systemStatus = { _ in .notDetermined }
+        var systemReply: ((Bool) -> Void)?
+        service.requestSystemAccess = { _, reply in systemReply = reply }
+        service.presentAlert = { _, _, reply in reply(.alertFirstButtonReturn) }
+        var decisions: [WKPermissionDecision] = []
+        service.request(in: page.view, context: context, devices: [.camera]) { decisions.append($0) }
+        XCTAssertTrue(service.hasPendingOrActiveCapture, "The native system prompt must not cause preview auto-close")
+        XCTAssertNotNil(systemReply)
+        XCTAssertTrue(decisions.isEmpty)
+        XCTAssertTrue(page.session.submitAddress("http://127.0.0.1:\(port)/destination", engine: .google))
+        try await waitUntil { page.session.pageTitle == "Destination" && !page.session.isLoading }
+        XCTAssertEqual(decisions, [.deny])
+        systemReply?(true)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(decisions, [.deny], "A late TCC answer cannot grant the new document")
+        var siteReply: ((NSApplication.ModalResponse) -> Void)?
+        service.presentAlert = { _, _, reply in siteReply = reply }
+        service.systemStatus = { _ in .authorized }
+        service.request(in: page.view, context: context, devices: [.microphone]) { decisions.append($0) }
+        XCTAssertNotNil(siteReply)
+        page.close()
+        XCTAssertEqual(decisions, [.deny, .deny])
+        siteReply?(.alertFirstButtonReturn)
+        XCTAssertEqual(decisions, [.deny, .deny])
+    }
+
+    func testOriginScopePersistenceAndSystemDenialUseNativeControls() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        let suite = "PersistentMediaRules.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let service = SiteMediaPermissions(defaults: defaults, persists: true, systemStatus: { _ in .authorized })
+        service.attach(page.view, session: page.session)
+        defer { service.detach(page.view) }
+        let top = try XCTUnwrap(MediaSiteOrigin(url: page.view.url!))
+        let sdk = try XCTUnwrap(MediaSiteOrigin(url: URL(string: "https://camera.example")!))
+        let context = SiteMediaRule(top: top, requester: sdk)
+        service.presentAlert = { alert, _, reply in
+            XCTAssertTrue(alert.messageText.contains(sdk.address))
+            XCTAssertTrue(alert.informativeText.contains(top.address))
+            alert.suppressionButton?.state = .on
+            reply(.alertFirstButtonReturn)
+        }
+        var result: WKPermissionDecision?
+        service.request(in: page.view, context: context, devices: [.camera]) { result = $0 }
+        XCTAssertEqual(result, .grant)
+        let stored = SiteMediaPermissions(defaults: defaults, persists: true)
+        XCTAssertEqual(stored.rules.first?.camera, .allow)
+        XCTAssertEqual(stored.rules.first?.top, top)
+        XCTAssertEqual(stored.rules.first?.requester, sdk)
+        let otherTop = try XCTUnwrap(MediaSiteOrigin(url: URL(string: "https://other.example")!))
+        service.request(in: page.view, context: SiteMediaRule(top: otherTop, requester: sdk), devices: [.camera]) { result = $0 }
+        XCTAssertEqual(result, .deny, "A site's grant cannot transfer to a different top-level origin")
+        service.systemStatus = { _ in .denied }
+        var notices = 0
+        service.requestSystemAccess = { _, _ in XCTFail("Do not ask TCC again when macOS has already denied access") }
+        service.presentAlert = { alert, _, reply in
+            notices += 1
+            XCTAssertEqual(alert.buttons.first?.title, L("Open System Settings…"))
+            reply(.alertSecondButtonReturn)
+        }
+        service.request(in: page.view, context: context, devices: [.camera]) { result = $0 }
+        XCTAssertEqual(result, .deny)
+        service.request(in: page.view, context: context, devices: [.camera]) { result = $0 }
+        XCTAssertEqual(notices, 1)
+        service.remove(forDomain: "camera.example")
+        XCTAssertTrue(service.rules.isEmpty)
+        XCTAssertTrue(SiteMediaPermissions(defaults: defaults, persists: true).rules.isEmpty)
+        service.setPersistence(false)
+        XCTAssertNil(defaults.data(forKey: SiteMediaPermissions.storageKey))
+        XCTAssertNil(MediaSiteOrigin(url: URL(string: "file:///tmp/site")!))
+        XCTAssertFalse(MediaSiteOrigin(url: URL(string: "http://localhost.evil.example")!)!.isSecure)
+        XCTAssertFalse(MediaSiteOrigin(url: URL(string: "http://127.evil.0.0.1")!)!.isSecure)
+        XCTAssertFalse(MediaSiteOrigin(url: URL(string: "http://example.com")!)!.isSecure)
+        XCTAssertEqual(MediaSiteOrigin(url: URL(string: "https://EXAMPLE.com:443/path?token=hidden")!)?.address, "https://example.com")
+    }
+
+    func testWebKitMockCaptureUsesRealDelegateAndRevokesDevicesIndependently() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        // Guarded WebKit test preferences select synthetic devices. Never fall
+        // back to physical capture or real OS authorization in automated tests.
+        let setter = NSSelectorFromString("_setMockCaptureDevicesEnabled:")
+        let getter = NSSelectorFromString("_mockCaptureDevicesEnabled")
+        let probe = WKPreferences()
+        guard probe.responds(to: setter), probe.responds(to: getter) else { throw XCTSkip("This WebKit lacks synthetic capture devices") }
+        typealias SetFlag = @convention(c) (AnyObject, Selector, Bool) -> Void
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!) { configuration in
+            let preferences = configuration.preferences
+            unsafeBitCast(preferences.method(for: setter), to: SetFlag.self)(preferences, setter, true)
+            XCTAssertEqual(preferences.value(forKey: "_mockCaptureDevicesEnabled") as? Bool, true)
+            let focus = NSSelectorFromString("_setGetUserMediaRequiresFocus:")
+            if preferences.responds(to: focus) {
+                unsafeBitCast(preferences.method(for: focus), to: SetFlag.self)(preferences, focus, false)
+            }
+        }
+        defer { page.close() }
+        let service = page.session.siteData.mediaPermissions
+        service.systemStatus = { _ in .authorized }
+        service.requestSystemAccess = { _, _ in XCTFail("Synthetic capture must not request physical-device permission") }
+        var prompts = 0
+        service.presentAlert = { alert, _, reply in
+            prompts += 1
+            alert.suppressionButton?.state = .on
+            reply(.alertFirstButtonReturn)
+        }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        NSApp.activate(ignoringOtherApps: true)
+        page.window.makeKeyAndOrderFront(nil)
+        page.window.makeFirstResponder(page.view)
+        _ = try await page.view.evaluateJavaScript("window.captureResult='pending';navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s=>{window.testStream=s;window.captureResult='granted'},e=>window.captureResult=e.name);true")
+        try await waitUntil { ((try? await page.view.evaluateJavaScript("window.captureResult")) as? String) != "pending" }
+        let result = try await page.view.evaluateJavaScript("window.captureResult") as? String
+        XCTAssertEqual(result, "granted")
+        XCTAssertEqual(prompts, 1, "The actual WKUIDelegate must issue one combined site consent")
+        guard result == "granted" else { return }
+        try await waitUntil { page.view.cameraCaptureState == .active && page.view.microphoneCaptureState == .active }
+        XCTAssertTrue(service.hasPendingOrActiveCapture)
+        let rule = try XCTUnwrap(service.rules.first)
+        service.setChoice(.deny, device: .camera, ruleID: rule.id)
+        try await waitUntil { page.view.cameraCaptureState == .none }
+        XCTAssertEqual(page.view.microphoneCaptureState, .active)
+        let videoState = try await page.view.evaluateJavaScript("testStream.getVideoTracks()[0].readyState") as? String
+        XCTAssertEqual(videoState, "ended")
+        service.reset(rule)
+        try await waitUntil { page.view.microphoneCaptureState == .none }
+        let audioState = try await page.view.evaluateJavaScript("testStream.getAudioTracks()[0].readyState") as? String
+        XCTAssertEqual(audioState, "ended")
+        XCTAssertEqual(service.rules.first?.microphone, .ask)
+        XCTAssertNotNil(Bundle.main.object(forInfoDictionaryKey: "NSCameraUsageDescription"))
+        XCTAssertNotNil(Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription"))
+    }
+
+    func testNativeSiteConsentSheetAppearanceWithoutStartingCapture() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        let service = page.session.siteData.mediaPermissions
+        service.systemStatus = { _ in .authorized }
+        let origin = try XCTUnwrap(MediaSiteOrigin(url: page.view.url!))
+        var alert: NSAlert?
+        service.presentAlert = { shown, window, reply in alert = shown; shown.beginSheetModal(for: window, completionHandler: reply) }
+        var decision: WKPermissionDecision?
+        NSApp.activate(ignoringOtherApps: true); page.window.makeKeyAndOrderFront(nil)
+        service.request(in: page.view, context: SiteMediaRule(top: origin, requester: origin), devices: [.camera, .microphone]) { decision = $0 }
+        try await waitUntil { page.window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(alert?.window)
+        try await Task.sleep(for: .milliseconds(350))
+        sheet.contentView?.layoutSubtreeIfNeeded()
+        if let content = sheet.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-native-media-permission.png"))
+        }
+        page.window.endSheet(sheet, returnCode: .alertSecondButtonReturn)
+        sheet.orderOut(nil)
+        try await waitUntil { decision != nil }
+        XCTAssertEqual(decision, .deny)
+        XCTAssertEqual(page.view.cameraCaptureState, .none)
+        XCTAssertEqual(page.view.microphoneCaptureState, .none)
+    }
+
+    private func waitUntil(_ predicate: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<100 { if await predicate() { return }; try await Task.sleep(for: .milliseconds(100)) }
+        XCTFail("Media permission fixture timed out", file: file, line: line)
+    }
 }
 
 @MainActor

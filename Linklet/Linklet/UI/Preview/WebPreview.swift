@@ -47,6 +47,7 @@ struct WebPreview: NSViewRepresentable {
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         coordinator.cancelFileUpload()
+        coordinator.cancelMediaPermissions(webView)
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
     }
@@ -68,6 +69,18 @@ struct WebPreview: NSViewRepresentable {
 
         init(session: PreviewSession) {
             self.session = session
+        }
+
+        func cancelMediaPermissions(_ view: WKWebView) { session?.siteData.mediaPermissions.detach(view) }
+
+        func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            guard let session, session.isActive, !session.isWelcome, session.webView === webView else {
+                decisionHandler(.deny); return
+            }
+            session.siteData.mediaPermissions.request(in: webView, origin: origin, frame: frame,
+                                                     type: type, reply: decisionHandler)
         }
 
         func startObserving(_ webView: WKWebView) {

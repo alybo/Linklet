@@ -108,6 +108,7 @@ final class PreviewSession: ObservableObject {
     func endSession(resetTemporaryData: Bool = true) {
         finishHistoryEntry()
         if let webView { PreviewPageStateBridge.shared.detach(webView) }
+        if let webView { siteData.mediaPermissions.detach(webView) }
         pageFind.detach()
         requestGeneration = UUID()
         let wasActive = isActive
@@ -176,6 +177,7 @@ final class PreviewSession: ObservableObject {
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
+        siteData.mediaPermissions.attach(webView, session: self)
         PreviewPageStateBridge.shared.attach(webView, session: self)
         webView.pageZoom = pageZoom
         pageFind.attach(webView)
@@ -207,6 +209,7 @@ final class PreviewSession: ObservableObject {
         startSessionIfNeeded()
         originalURL = parent.originalURL
         webView = view
+        siteData.mediaPermissions.attach(view, session: self)
         PreviewPageStateBridge.shared.attach(view, session: self)
         view.pageZoom = pageZoom
         pageFind.attach(view)
@@ -220,6 +223,7 @@ final class PreviewSession: ObservableObject {
         }
         requestGeneration = UUID()
         finishHistoryEntry()
+        if let webView { siteData.mediaPermissions.detach(webView) }
         if let webView { PreviewPageStateBridge.shared.detach(webView) }
         lastCommittedURL = nil
         lastCommittedTitle = ""
@@ -254,6 +258,7 @@ final class PreviewSession: ObservableObject {
 
     func showWelcome(isDefault: Bool) {
         finishHistoryEntry()
+        if let webView { siteData.mediaPermissions.detach(webView) }
         if let webView { PreviewPageStateBridge.shared.detach(webView) }
         lastCommittedURL = nil
         restoration = nil
@@ -416,6 +421,7 @@ final class PreviewSession: ObservableObject {
 
     func navigationDidStart(in view: WKWebView) {
         guard webView === view else { return }
+        siteData.mediaPermissions.navigationChanged(in: view)
         navigationIsPending = true
         pageFailure = nil
         pageFind.navigationStarted()
@@ -453,6 +459,7 @@ final class PreviewSession: ObservableObject {
 
     func webContentProcessDidTerminate(in view: WKWebView) {
         guard webView === view, isActive, !isWelcome else { return }
+        siteData.mediaPermissions.navigationChanged(in: view)
         showPageFailure(kind: .crashed, url: lastCommittedURL ?? requestedURL ?? currentURL,
                         detail: "", wasPOST: lastCommittedURL == nil ? false : committedWasPOST)
     }

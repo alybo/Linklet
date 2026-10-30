@@ -308,6 +308,7 @@ private struct SiteDataSettingsView: View {
             } footer: {
                 Text(L("Inactive website data is removed while Linklet is idle. Background requests do not count as visits."))
             }
+            SiteMediaPermissionsSettings(permissions: data.mediaPermissions)
             Section(L("Stored websites")) {
                 if data.records.count > 5 || !search.isEmpty {
                     TextField(L("Search websites"), text: $search)
@@ -368,6 +369,69 @@ private struct SiteDataSettingsView: View {
         if !record.dataTypes.isDisjoint(with: [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeFetchCache]) { labels.append(L("Cache")) }
         if !record.dataTypes.subtracting([WKWebsiteDataTypeCookies, WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeFetchCache]).isEmpty { labels.append(L("Local storage")) }
         return labels.joined(separator: ", ")
+    }
+}
+
+private struct SiteMediaPermissionsSettings: View {
+    @ObservedObject var permissions: SiteMediaPermissions
+    var body: some View {
+        Section {
+            ForEach(SiteMediaDevice.allCases, id: \.self) { device in
+                LabeledContent(device.title) {
+                    HStack {
+                        Text(systemStatus(device)).foregroundStyle(.secondary)
+                        if [.denied, .restricted].contains(permissions.systemStatus(device)) {
+                            Button(L("System Settings…")) { permissions.openSystemSettings(for: device) }
+                        }
+                    }
+                }
+            }
+            if permissions.rules.isEmpty {
+                Text(L("Websites appear here when they request camera or microphone access."))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(permissions.rules) { rule in
+                DisclosureGroup {
+                    ForEach(SiteMediaDevice.allCases, id: \.self) { device in
+                        Picker(device.title, selection: Binding(
+                            get: { permissions.rules.first(where: { $0.id == rule.id })?[device] ?? .ask },
+                            set: { permissions.setChoice($0, device: device, ruleID: rule.id) })) {
+                                ForEach(SiteMediaChoice.allCases, id: \.self) { choice in Text(choice.title).tag(choice) }
+                            }
+                    }
+                    Button(L("Reset permissions")) { permissions.reset(rule) }
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(rule.requester.address).textSelection(.enabled)
+                        if rule.top != rule.requester {
+                            Text(L("Embedded in %@", rule.top.address)).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text(L("Camera and microphone"))
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L(permissions.persists
+                    ? "Remembered permissions stay on this Mac until you reset them or delete website data."
+                    : "In private mode, remembered permissions are removed when the last website window closes."))
+                Text(L("Blocking access stops active capture. Reload the website if it needs to ask again."))
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            permissions.refreshSystemStatus()
+        }
+    }
+
+    private func systemStatus(_ device: SiteMediaDevice) -> String {
+        switch permissions.systemStatus(device) {
+        case .authorized: return L("Allowed by macOS")
+        case .denied: return L("Blocked by macOS")
+        case .restricted: return L("Restricted by macOS")
+        case .notDetermined: return L("macOS will ask when needed")
+        @unknown default: return L("Unknown")
+        }
     }
 }
 
