@@ -68,6 +68,9 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     private(set) var isExpanded = false
     let addressButton = NSButton(title: "", target: nil, action: nil)
     let addressField = NSTextField(labelWithString: "")
+    private let copyFeedback = PreviewAddressFeedbackLabel(labelWithString: "")
+    private(set) var isShowingCopyFeedback = false
+    private var copyFeedbackTask: Task<Void, Never>?
     var onExpansionChanged: ((Bool) -> Void)?
     var returnFocusToPage: (() -> Void)?
     var onSubmit: ((String) -> Bool)?
@@ -88,7 +91,9 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
 
     static func compactWidth(for url: URL) -> CGFloat {
         let text = compactAddress(for: url) as NSString
-        return min(180, max(44, ceil(text.size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width) + 16))
+        let feedback = L("Copied!") as NSString
+        let font: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11)]
+        return min(180, max(44, ceil(max(text.size(withAttributes: font).width, feedback.size(withAttributes: font).width)) + 16))
     }
 
     override init(frame frameRect: NSRect) {
@@ -101,6 +106,9 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         addressButton.contentTintColor = .secondaryLabelColor
         addressButton.cell?.lineBreakMode = .byTruncatingMiddle
         addressButton.setAccessibilityIdentifier("preview-address-disclosure")
+        addressButton.setAccessibilityCustomActions([
+            NSAccessibilityCustomAction(name: L("Copy current URL"), target: self, selector: #selector(copyCurrentAddress))
+        ])
         addressField.isEditable = true
         addressField.isSelectable = true
         addressField.delegate = self
@@ -118,6 +126,14 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         addressField.isHidden = true
         addSubview(addressButton)
         addSubview(addressField)
+        copyFeedback.font = addressButton.font
+        copyFeedback.textColor = .secondaryLabelColor
+        copyFeedback.alignment = .center
+        copyFeedback.lineBreakMode = .byTruncatingTail
+        copyFeedback.alphaValue = 0
+        copyFeedback.setAccessibilityElement(false)
+        copyFeedback.setAccessibilityHidden(true)
+        addSubview(copyFeedback)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -125,12 +141,14 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     func update(url: URL, expanded: Bool) {
         let nextAddress = url.absoluteString
         let addressChanged = nextAddress != fullAddress
+        if addressChanged { dismissCopyFeedback(animated: false) }
         fullAddress = nextAddress
         addressButton.title = Self.compactAddress(for: url)
-        addressButton.toolTip = fullAddress
+        addressButton.toolTip = fullAddress + "\n" + L("Right-click to copy the full address")
         addressButton.setAccessibilityLabel(L("Show full address"))
         addressButton.setAccessibilityValue(addressButton.title)
         addressField.setAccessibilityLabel(L("Full address"))
+        copyFeedback.stringValue = L("Copied!")
         // The field is a draft while expanded. Redirects, SPA changes and KVO
         // progress updates must not replace text or selection under the user.
         if addressChanged && !isExpanded { addressField.stringValue = fullAddress }
@@ -141,6 +159,7 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         super.layout()
         addressButton.frame = bounds
         addressField.frame = bounds.insetBy(dx: 8, dy: 2)
+        copyFeedback.frame = NSRect(x: 8, y: (bounds.height - 14) / 2, width: max(0, bounds.width - 16), height: 14)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -164,6 +183,12 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     override func mouseEntered(with event: NSEvent) { isHovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { isHovered = false; needsDisplay = true }
 
+    override func mouseDown(with event: NSEvent) {
+        // During the crossfade the invisible button no longer hit-tests, but
+        // the compact address still responds to a normal click.
+        if !isExpanded { expandAddress() } else { super.mouseDown(with: event) }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         stopObserving()
@@ -178,6 +203,7 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     }
 
     func stopObserving() {
+        dismissCopyFeedback(animated: false)
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
         eventMonitor = nil
@@ -186,6 +212,7 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
 
     @objc private func expandAddress() {
         guard !fullAddress.isEmpty else { return }
+        dismissCopyFeedback(animated: false)
         setExpanded(true, notify: true)
         selectAddressSoon()
     }
@@ -194,6 +221,7 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         guard isExpanded != expanded else { return }
         if !isExpanded || !expanded { addressField.stringValue = fullAddress }
         isExpanded = expanded
+        if expanded { dismissCopyFeedback(animated: false) }
         addressButton.isHidden = expanded
         addressField.isHidden = !expanded
         needsLayout = true
@@ -230,6 +258,12 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
+        if !isExpanded, event.window === window,
+           bounds.contains(convert(event.locationInWindow, from: nil)),
+           event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)) {
+            _ = copyCurrentAddress()
+            return nil
+        }
         if event.type == .keyDown {
             guard event.window === window else { return event }
             let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
@@ -249,4 +283,40 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         }
         return event
     }
+
+    @objc private func copyCurrentAddress() -> Bool {
+        guard !fullAddress.isEmpty else { return false }
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(fullAddress, forType: .string) else { return false }
+        copyFeedbackTask?.cancel()
+        isShowingCopyFeedback = true
+        setCopyFeedbackVisible(true, animated: true)
+        NSAccessibility.post(element: addressButton, notification: .announcementRequested, userInfo: [
+            .announcement: L("Copied!"), .priority: NSAccessibilityPriorityLevel.medium.rawValue
+        ])
+        copyFeedbackTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            self?.dismissCopyFeedback(animated: true)
+        }
+        return true
+    }
+
+    private func dismissCopyFeedback(animated: Bool) {
+        copyFeedbackTask?.cancel()
+        copyFeedbackTask = nil
+        isShowingCopyFeedback = false
+        setCopyFeedbackVisible(false, animated: animated)
+    }
+
+    private func setCopyFeedbackVisible(_ visible: Bool, animated: Bool) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.16 : 0
+            addressButton.animator().alphaValue = visible ? 0 : 1
+            copyFeedback.animator().alphaValue = visible ? 1 : 0
+        }
+    }
+}
+
+private final class PreviewAddressFeedbackLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

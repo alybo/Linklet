@@ -1276,6 +1276,117 @@ final class LinkLibraryTests: XCTestCase {
 
 @MainActor
 final class WebPopupTests: XCTestCase {
+    func testBookmarkStateAndAddressCopyFeedbackInIndependentWindows() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "CompactToolbar.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in Data() })
+        let model = AppModel(defaults: defaults, searchSettings: settings, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let pasteboard = NSPasteboard.general
+        let savedClipboard = (pasteboard.pasteboardItems ?? []).map { original -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for type in original.types { if let data = original.data(forType: type) { item.setData(data, forType: type) } }
+            return item
+        }
+        defer { pasteboard.clearContents(); pasteboard.writeObjects(savedClipboard) }
+        let original = URL(string: "http://127.0.0.1:\(port)/site")!
+        model.showPreview(url: original)
+        try await waitUntil { model.previewSession.pageTitle == "Original site" }
+        let source = try XCTUnwrap(model.previewSession.webView)
+        _ = try await source.evaluateJavaScript("window.open('/site','toolbar-child');true")
+        try await waitUntil { model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first?.session.pageTitle == "Original site" }
+        let child = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first?.session)
+        let sessions = [model.previewSession, child]
+        let windows = try sessions.map { try XCTUnwrap($0.webView?.window) }
+        func bookmark(in window: NSWindow) -> NSObject? {
+            window.contentView.flatMap { accessibilityNode(in: $0, identifier: "preview-bookmark") }
+        }
+        for window in windows {
+            try await waitUntil { bookmark(in: window)?.value(forKey: "accessibilityValue") as? String == L("Not bookmarked") }
+        }
+        let site = try settings.addFavoriteSite(name: "Saved page", address: original.absoluteString)
+        for window in windows {
+            try await waitUntil { bookmark(in: window)?.value(forKey: "accessibilityValue") as? String == L("Saved bookmark") }
+        }
+        // Clicking an existing bookmark edits it. Saving must not create a duplicate.
+        NSApp.activate(ignoringOtherApps: true)
+        windows[0].makeKeyAndOrderFront(nil)
+        try await waitUntil { windows[0].isKeyWindow && NSApp.isActive }
+        XCTAssertEqual(bookmark(in: windows[0])?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { windows[0].attachedSheet != nil }
+        let sheet = try XCTUnwrap(windows[0].attachedSheet)
+        try sendAddressKey(to: sheet, code: 36, characters: "\r")
+        try await waitUntil { windows[0].attachedSheet == nil }
+        XCTAssertEqual(settings.favoriteSites.count, 1)
+        XCTAssertEqual(settings.favoriteSites.first?.id, site.id)
+        settings.removeFavoriteSite(site)
+        for window in windows {
+            try await waitUntil { bookmark(in: window)?.value(forKey: "accessibilityValue") as? String == L("Not bookmarked") }
+        }
+
+        for (index, session) in sessions.enumerated() {
+            let window = windows[index]
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            try await waitUntil { window.isKeyWindow && NSApp.isActive }
+            window.contentView?.layoutSubtreeIfNeeded()
+            let address = try addressControl(in: window)
+            let view = try XCTUnwrap(session.webView)
+            _ = try await view.evaluateJavaScript("history.replaceState(null,'','/site?copy=full#fragment');window.toolbarSentinel='kept';true")
+            let current = URL(string: original.absoluteString + "?copy=full#fragment")!
+            try await waitUntil { session.currentURL == current && address.addressButton.toolTip?.hasPrefix(current.absoluteString) == true }
+            let frame = address.frame
+            let pageFrame = view.frame
+            func click(_ type: NSEvent.EventType, modifiers: NSEvent.ModifierFlags = []) throws {
+                let point = address.convert(NSPoint(x: address.bounds.midX, y: address.bounds.midY), to: nil)
+                let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers,
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: 1, pressure: 1))
+                NSApp.postEvent(event, atStart: true)
+                let mask = NSEvent.EventTypeMask(rawValue: 1 << type.rawValue)
+                if let next = NSApp.nextEvent(matching: mask, until: Date().addingTimeInterval(0.1), inMode: .default, dequeue: true) { NSApp.sendEvent(next) }
+            }
+            try click(.rightMouseDown); try click(.rightMouseUp)
+            XCTAssertEqual(pasteboard.string(forType: .string), current.absoluteString)
+            XCTAssertTrue(address.isShowingCopyFeedback)
+            XCTAssertFalse(address.isExpanded)
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertEqual(address.addressButton.alphaValue, 0, accuracy: 0.01)
+            XCTAssertEqual(address.frame, frame)
+            XCTAssertEqual(view.frame, pageFrame)
+            if index == 0 {
+                if let content = window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                    content.cacheDisplay(in: content.bounds, to: bitmap)
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-toolbar-copied.png"))
+                }
+                try await Task.sleep(for: .milliseconds(1100))
+                try click(.rightMouseDown); try click(.rightMouseUp)
+                try await Task.sleep(for: .milliseconds(900))
+                XCTAssertTrue(address.isShowingCopyFeedback, "Repeated copy restarts the two-second lifetime")
+                try await waitUntil { !address.isShowingCopyFeedback && address.addressButton.alphaValue == 1 }
+            } else {
+                // Left click still opens the editor while the domain is faded out.
+                try click(.leftMouseDown); try click(.leftMouseUp)
+                try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
+                XCTAssertFalse(address.isShowingCopyFeedback)
+                try sendAddressKey(to: window, code: 53, characters: "\u{1b}")
+            }
+            try click(.leftMouseDown, modifiers: .control)
+            XCTAssertTrue(address.isShowingCopyFeedback)
+            XCTAssertFalse(address.isExpanded)
+            _ = try await view.evaluateJavaScript("history.replaceState(null,'','/destination');true")
+            try await waitUntil { session.currentURL?.path == "/destination" && !address.isShowingCopyFeedback }
+            XCTAssertEqual(session.originalURL, original)
+            let sentinel = try await view.evaluateJavaScript("window.toolbarSentinel") as? String
+            XCTAssertEqual(sentinel, "kept")
+        }
+    }
+
     func testBlankLoginWindowsPreserveOpenerMessagingCookiesAndClose() async throws {
         let session = PreviewSession()
         let incoming = URL(string: "https://example.com/shared")!

@@ -190,6 +190,20 @@ final class SearchSettings: ObservableObject {
 
     var shouldShowFavoriteSites: Bool { showsFavoriteSites && !favoriteSites.isEmpty }
 
+    func bookmark(for url: URL?) -> FavoriteSite? {
+        guard let url, URLPolicy.canPreview(url) else { return nil }
+        func key(_ value: URL) -> String? {
+            guard var parts = URLComponents(url: value, resolvingAgainstBaseURL: false) else { return nil }
+            parts.scheme = parts.scheme?.lowercased()
+            parts.host = parts.host?.lowercased()
+            if parts.path.isEmpty { parts.path = "/" }
+            if (parts.scheme == "https" && parts.port == 443) || (parts.scheme == "http" && parts.port == 80) { parts.port = nil }
+            return parts.string
+        }
+        guard let address = key(url) else { return nil }
+        return favoriteSites.first { key($0.url) == address }
+    }
+
     func setShowsFavoriteSites(_ visible: Bool) {
         showsFavoriteSites = visible
         defaults.set(visible, forKey: PreferenceKey.showsFavoriteSites)

@@ -37,7 +37,6 @@ struct PreviewPageView: View {
     var model: AppModel? = nil
     var existingWebView: WKWebView? = nil
     var isChoosingDataMode = false
-    @State private var showsBookmarkEditor = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,12 +58,6 @@ struct PreviewPageView: View {
         .background { PreviewWindowMaterial() }
         .background { PreviewPageKeyboardCommands(session: session) }
         .ignoresSafeArea(.container, edges: .all)
-        .sheet(isPresented: $showsBookmarkEditor) {
-            if let model {
-                BookmarkEditor(settings: model.searchSettings, library: model.linkLibrary,
-                               initialURL: session.currentURL, initialTitle: session.pageTitle)
-            }
-        }
         .alert(
             L("Couldn't open the page"),
             isPresented: Binding(
@@ -91,14 +84,9 @@ struct PreviewPageView: View {
             }
 
             if !session.isWelcome && session.isActive {
-                if model != nil {
-                    Button { showsBookmarkEditor = true } label: {
-                        Image(systemName: "bookmark").frame(width: 28, height: 28)
-                    }.buttonStyle(.plain).help(L("Add bookmark"))
-                        .accessibilityLabel(L("Add bookmark"))
-                        .disabled(session.currentURL.map(URLPolicy.canPreview) != true)
+                if let model {
+                    PreviewBookmarkToolbarView(session: session, settings: model.searchSettings, library: model.linkLibrary)
                 }
-                PreviewCopyToolbarView(session: session)
                 if let model {
                     PreviewOpenInToolbarView(model: model, session: session)
                 } else if let continueInBrowser = session.onContinueInBrowser {
@@ -110,7 +98,6 @@ struct PreviewPageView: View {
         .padding(.leading, 10)
         .padding(.trailing, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityIdentifier("preview-toolbar")
     }
 
     private var webContent: some View {
@@ -319,47 +306,28 @@ private struct WindowControlButton: View {
     }
 }
 
-struct PreviewCopyToolbarView: View {
+private struct PreviewBookmarkToolbarView: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var session: PreviewSession
-    @State private var didCopyURL = false
-    @State private var isHovered = false
+    @ObservedObject var settings: SearchSettings
+    let library: LinkLibrary
+    @State private var showsEditor = false
+
+    private var saved: FavoriteSite? { settings.bookmark(for: session.currentURL) }
 
     var body: some View {
-        Button(action: copyCurrentURL) {
-            Image(systemName: didCopyURL ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 12, weight: .medium))
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: PreviewLayout.controlHeight, height: PreviewLayout.controlHeight)
-                .background {
-                    Circle()
-                        .fill(Color.primary.opacity(isHovered ? 0.09 : 0))
-                }
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(didCopyURL ? Color.green : Color.primary)
-        .help(didCopyURL ? L("Copied") : L("Copy current URL"))
-        .accessibilityLabel(L("Copy current URL"))
-        .disabled(session.currentURL == nil)
-        .onHover { isHovered = $0 }
-    }
-
-    private func copyCurrentURL() {
-        guard let url = session.currentURL else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url.absoluteString, forType: .string)
-
-        withAnimation(.easeOut(duration: 0.14)) {
-            didCopyURL = true
-        }
-
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.4))
-            withAnimation(.easeIn(duration: 0.14)) {
-                didCopyURL = false
+        Button { showsEditor = true } label: {
+            Image(systemName: saved == nil ? "bookmark" : "bookmark.fill").frame(width: 28, height: 28)
+        }.buttonStyle(.plain)
+            .help(L(saved == nil ? "Add bookmark" : "Edit bookmark"))
+            .accessibilityLabel(L(saved == nil ? "Add bookmark" : "Edit bookmark"))
+            .accessibilityValue(L(saved == nil ? "Not bookmarked" : "Saved bookmark"))
+            .accessibilityIdentifier("preview-bookmark")
+            .disabled(session.currentURL.map(URLPolicy.canPreview) != true)
+            .sheet(isPresented: $showsEditor) {
+                BookmarkEditor(settings: settings, library: library, site: saved,
+                               initialURL: session.currentURL, initialTitle: session.pageTitle)
             }
-        }
     }
 }
 
