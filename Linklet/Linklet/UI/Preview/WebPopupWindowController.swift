@@ -85,6 +85,7 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        coordinator.stopCursorHandling()
         session.endSession()
     }
 }

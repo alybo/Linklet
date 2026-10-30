@@ -62,6 +62,10 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocationUsageDescription</key>
+	<string>Linklet lets websites use your location for nearby places and routes when you allow access.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Linklet lets websites use your location for nearby places and routes when you allow access.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Linklet lets websites use your camera for video calls when you allow access.</string>
 	<key>NSMicrophoneUsageDescription</key>

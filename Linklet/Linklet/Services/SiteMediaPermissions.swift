@@ -1,6 +1,16 @@
 import AppKit
 import AVFoundation
+import CoreLocation
 import WebKit
+
+@MainActor
+enum NativeLocationProvider {
+    static func install(in pool: WKProcessPool) -> Bool { LKInstallNativeLocationProvider(pool) }
+#if DEBUG
+    static func useTestLocation(_ location: CLLocation, in pool: WKProcessPool) { LKUseTestLocation(pool, location) }
+    static func isUpdating(in pool: WKProcessPool) -> Bool { LKLocationProviderIsUpdating(pool) }
+#endif
+}
 
 struct MediaSiteOrigin: Codable, Hashable {
     private enum CodingKeys: String, CodingKey { case address }
@@ -44,9 +54,17 @@ struct MediaSiteOrigin: Codable, Hashable {
 }
 
 enum SiteMediaDevice: String, CaseIterable, Codable {
-    case camera, microphone
-    var title: String { L(self == .camera ? "Camera" : "Microphone") }
-    var mediaType: AVMediaType { self == .camera ? .video : .audio }
+    case camera, microphone, location
+    var title: String {
+        switch self { case .camera: return L("Camera"); case .microphone: return L("Microphone"); case .location: return L("Location") }
+    }
+    var mediaType: AVMediaType? {
+        switch self { case .camera: return .video; case .microphone: return .audio; case .location: return nil }
+    }
+    static var availableDevices: [Self] {
+        if #available(macOS 27.0, *) { return allCases }
+        return [.camera, .microphone]
+    }
 }
 
 enum SiteMediaChoice: String, CaseIterable, Codable {
@@ -61,15 +79,28 @@ struct SiteMediaRule: Codable, Identifiable, Equatable {
     let requester: MediaSiteOrigin
     var camera: SiteMediaChoice = .ask
     var microphone: SiteMediaChoice = .ask
+    var location: SiteMediaChoice = .ask
     var id: String { top.address + "|" + requester.address }
     subscript(device: SiteMediaDevice) -> SiteMediaChoice {
-        get { device == .camera ? camera : microphone }
-        set { if device == .camera { camera = newValue } else { microphone = newValue } }
+        get { switch device { case .camera: return camera; case .microphone: return microphone; case .location: return location } }
+        set { switch device { case .camera: camera = newValue; case .microphone: microphone = newValue; case .location: location = newValue } }
+    }
+
+    private enum CodingKeys: String, CodingKey { case top, requester, camera, microphone, location }
+    init(top: MediaSiteOrigin, requester: MediaSiteOrigin) { self.top = top; self.requester = requester }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        top = try values.decode(MediaSiteOrigin.self, forKey: .top)
+        requester = try values.decode(MediaSiteOrigin.self, forKey: .requester)
+        camera = try values.decodeIfPresent(SiteMediaChoice.self, forKey: .camera) ?? .ask
+        microphone = try values.decodeIfPresent(SiteMediaChoice.self, forKey: .microphone) ?? .ask
+        location = try values.decodeIfPresent(SiteMediaChoice.self, forKey: .location) ?? .ask
     }
 }
 
 /// Site consent uses standard NSAlert sheets. macOS owns TCC prompts, and WebKit
-/// owns capture; this service never opens a camera or microphone itself.
+/// owns capture and site permissions. The native location adapter forwards fixes
+/// to WebKit without storing them in preferences, history, logs or other files.
 @MainActor
 final class SiteMediaPermissions: ObservableObject {
     static let storageKey = "websiteMediaPermissions"
@@ -78,7 +109,8 @@ final class SiteMediaPermissions: ObservableObject {
     private let defaults: UserDefaults
     var systemStatus: (SiteMediaDevice) -> AVAuthorizationStatus
     var requestSystemAccess: (SiteMediaDevice, @escaping (Bool) -> Void) -> Void = {
-        AVCaptureDevice.requestAccess(for: $0.mediaType, completionHandler: $1)
+        guard let media = $0.mediaType else { $1(true); return }
+        AVCaptureDevice.requestAccess(for: media, completionHandler: $1)
     }
     // Tests inspect native alerts and resolve them without accessing devices.
     var presentAlert: (NSAlert, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void = {
@@ -114,18 +146,28 @@ final class SiteMediaPermissions: ObservableObject {
         var observations: [NSKeyValueObservation] = []
         var sheetObserver: NSObjectProtocol?
         var grantGraceUntil = Date.distantPast
+        var locationGranted = false
         init(view: WKWebView, session: PreviewSession) { self.view = view; self.session = session }
     }
 
     var hasPendingOrActiveCapture: Bool {
         isOpeningSystemSettings || bindings.values.contains { binding in
-            !binding.requests.isEmpty || binding.grantGraceUntil > Date()
+            !binding.requests.isEmpty || binding.grantGraceUntil > Date() || binding.locationGranted
                 || (binding.view.map { $0.cameraCaptureState != .none || $0.microphoneCaptureState != .none } ?? false)
         }
     }
 
     init(defaults: UserDefaults, persists: Bool,
-         systemStatus: @escaping (SiteMediaDevice) -> AVAuthorizationStatus = { AVCaptureDevice.authorizationStatus(for: $0.mediaType) }) {
+         systemStatus: @escaping (SiteMediaDevice) -> AVAuthorizationStatus = { device in
+             if let media = device.mediaType { return AVCaptureDevice.authorizationStatus(for: media) }
+             switch CLLocationManager().authorizationStatus {
+             case .authorizedAlways, .authorizedWhenInUse: return .authorized
+             case .denied: return .denied
+             case .restricted: return .restricted
+             case .notDetermined: return .notDetermined
+             @unknown default: return .denied
+             }
+         }) {
         self.defaults = defaults; self.persists = persists; self.systemStatus = systemStatus
         let stored = persists ? defaults.data(forKey: Self.storageKey)
             .flatMap { try? JSONDecoder().decode([SiteMediaRule].self, from: $0) } ?? [] : []
@@ -166,6 +208,7 @@ final class SiteMediaPermissions: ObservableObject {
         cancelRequests(binding)
         binding.contexts = []; binding.revoked = []; binding.warned = []
         binding.grantGraceUntil = .distantPast
+        binding.locationGranted = false
         stop(.camera, in: view); stop(.microphone, in: view)
     }
 
@@ -181,6 +224,13 @@ final class SiteMediaPermissions: ObservableObject {
         @unknown default: reply(.deny); return
         }
         request(in: view, context: SiteMediaRule(top: top, requester: requester), devices: devices, reply: reply)
+    }
+
+    func requestLocation(in view: WKWebView, origin: WKSecurityOrigin, frame: WKFrameInfo,
+                         reply: @escaping (WKPermissionDecision) -> Void) {
+        guard let url = view.url, let top = MediaSiteOrigin(url: url),
+              let requester = MediaSiteOrigin(origin), MediaSiteOrigin(frame.securityOrigin) == requester else { reply(.deny); return }
+        request(in: view, context: SiteMediaRule(top: top, requester: requester), devices: [.location], reply: reply)
     }
 
     func request(in view: WKWebView, context: SiteMediaRule, devices: [SiteMediaDevice],
@@ -242,7 +292,7 @@ final class SiteMediaPermissions: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .informational
         let names = L(request.devices.count > 1 ? "the camera and microphone"
-            : (request.devices.first == .camera ? "the camera" : "the microphone"))
+            : (request.devices.first == .camera ? "the camera" : request.devices.first == .location ? "your location" : "the microphone"))
         if request.systemDenied {
             alert.messageText = L("macOS has blocked access to %@", names)
             alert.informativeText = L("Allow Linklet in System Settings → Privacy & Security, then try again on the website.")
@@ -251,7 +301,7 @@ final class SiteMediaPermissions: ObservableObject {
         } else {
             alert.messageText = L("Allow %@ to use %@?", request.context.requester.address, names)
             alert.informativeText = request.context.top == request.context.requester
-                ? L("This website is requesting access to your devices.")
+                ? L(request.devices == [.location] ? "Your location helps this website show nearby places and routes." : "This website is requesting access to your devices.")
                 : L("This request comes from content embedded in %@.", request.context.top.address)
             alert.addButton(withTitle: L("Allow"))
             alert.addButton(withTitle: L("Don't Allow"))
@@ -290,6 +340,9 @@ final class SiteMediaPermissions: ObservableObject {
         }
         guard index < request.devices.count else { finish(request, in: id, decision: .grant); return }
         let device = request.devices[index]
+        // After site consent, WebKit starts the native Core Location adapter.
+        // That adapter owns system authorization and forwards fixes transiently.
+        if device == .location { authorizeDevices(request, in: id, index: index + 1); return }
         switch systemStatus(device) {
         case .authorized: authorizeDevices(request, in: id, index: index + 1)
         case .notDetermined:
@@ -311,6 +364,7 @@ final class SiteMediaPermissions: ObservableObject {
             if decision == .grant {
                 binding.revoked.subtract(request.devices)
                 binding.grantGraceUntil = Date().addingTimeInterval(5)
+                if request.devices.contains(.location) { binding.locationGranted = true }
             }
         }
         request.resolve(decision)
@@ -326,6 +380,7 @@ final class SiteMediaPermissions: ObservableObject {
                 cancelRequests(binding, context: ruleID, device: device)
                 binding.revoked.insert(device)
                 if let view = binding.view { stop(device, in: view) }
+                if device == .location { revokeLocation(in: binding) }
             } else { binding.revoked.remove(device) }
         }
         save()
@@ -334,13 +389,14 @@ final class SiteMediaPermissions: ObservableObject {
 
     func reset(_ rule: SiteMediaRule) {
         guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
-        rules[index].camera = .ask; rules[index].microphone = .ask
+        rules[index].camera = .ask; rules[index].microphone = .ask; rules[index].location = .ask
         // A one-time grant still has Ask in settings; resetting it must revoke
         // capture too, even though neither stored picker value changes.
         for binding in bindings.values where binding.contexts.contains(rule.id) {
             cancelRequests(binding, context: rule.id)
             binding.revoked.formUnion(SiteMediaDevice.allCases)
             if let view = binding.view { stop(.camera, in: view); stop(.microphone, in: view) }
+            revokeLocation(in: binding)
         }
         save()
         for id in bindings.keys { presentNext(id) }
@@ -356,6 +412,7 @@ final class SiteMediaPermissions: ObservableObject {
                 cancelRequests(binding, context: rule.id)
                 binding.revoked.formUnion(SiteMediaDevice.allCases)
                 if let view = binding.view { stop(.camera, in: view); stop(.microphone, in: view) }
+                revokeLocation(in: binding)
             }
         }
         let ids = Set(removed.map(\.id))
@@ -373,7 +430,7 @@ final class SiteMediaPermissions: ObservableObject {
 
     func openSystemSettings(for device: SiteMediaDevice) {
         isOpeningSystemSettings = true
-        let pane = device == .camera ? "Privacy_Camera" : "Privacy_Microphone"
+        let pane = device == .camera ? "Privacy_Camera" : device == .location ? "Privacy_LocationServices" : "Privacy_Microphone"
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?" + pane) { NSWorkspace.shared.open(url) }
     }
 
@@ -400,7 +457,14 @@ final class SiteMediaPermissions: ObservableObject {
     }
     private func stop(_ device: SiteMediaDevice, in view: WKWebView) {
         if device == .camera { view.setCameraCaptureState(.none, completionHandler: nil) }
-        else { view.setMicrophoneCaptureState(.none, completionHandler: nil) }
+        else if device == .microphone { view.setMicrophoneCaptureState(.none, completionHandler: nil) }
+    }
+    private func revokeLocation(in binding: Binding) {
+        guard binding.locationGranted else { return }
+        binding.locationGranted = false
+        // There is no public API for stopping a page's active location watch.
+        // Reloading destroys the old document and its watches, preserving history.
+        binding.session?.reload()
     }
     private func save() {
         if persists { defaults.set(try? JSONEncoder().encode(rules), forKey: Self.storageKey) }

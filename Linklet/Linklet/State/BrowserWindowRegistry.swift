@@ -41,6 +41,7 @@ final class BrowserWindowRegistry: ObservableObject {
     private var webWindows: [UUID: WebPopupWindowController] = [:]
 
     var hasWindows: Bool { entries.values.contains { $0.window != nil } }
+    var activeSessions: [PreviewSession] { entries.values.compactMap(\.session) }
     var hasVisibleWindows: Bool { entries.values.contains { $0.window?.isVisible == true } }
     var lastVisibleFrame: NSRect? {
         order.reversed().compactMap { id -> NSRect? in

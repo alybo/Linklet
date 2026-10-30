@@ -177,6 +177,7 @@ final class PreviewSession: ObservableObject {
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
+        adBlockService.attach(to: webView.configuration.userContentController)
         siteData.mediaPermissions.attach(webView, session: self)
         PreviewPageStateBridge.shared.attach(webView, session: self)
         webView.pageZoom = pageZoom
@@ -190,7 +191,7 @@ final class PreviewSession: ObservableObject {
     }
 
     private func navigate(to url: URL, in webView: WKWebView) {
-        if !adBlockService.isEnabled {
+        if !adBlockService.hasActiveRules {
             webView.load(URLRequest(url: url))
             return
         }
@@ -209,6 +210,7 @@ final class PreviewSession: ObservableObject {
         startSessionIfNeeded()
         originalURL = parent.originalURL
         webView = view
+        adBlockService.attach(to: view.configuration.userContentController)
         siteData.mediaPermissions.attach(view, session: self)
         PreviewPageStateBridge.shared.attach(view, session: self)
         view.pageZoom = pageZoom
@@ -342,6 +344,22 @@ final class PreviewSession: ObservableObject {
         if pageFailure != nil { retryPageLoad(); return }
         errorMessage = nil
         webView?.reload()
+    }
+
+    func toggleAdGuard() {
+        guard isActive, !isWelcome, let view = webView, let url = view.url,
+              let host = AdBlockService.siteHost(url.absoluteString) else { return }
+        let generation = requestGeneration
+        let enabled = !adBlockService.isEnabled(for: url)
+        if enabled == adBlockService.isEnabled { adBlockService.removeSiteOverride(host) }
+        else { adBlockService.setSiteEnabled(enabled, host: host) }
+        Task { @MainActor [weak self, weak view] in
+            guard let self, let view else { return }
+            await adBlockService.waitForPolicyUpdate()
+            guard webView === view, isActive, requestGeneration == generation, view.url == url else { return }
+            if let error = adBlockService.errorMessage { errorMessage = error; return }
+            reload()
+        }
     }
 
     func changePageZoom(increase: Bool) {

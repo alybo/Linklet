@@ -6,6 +6,7 @@ import Carbon
 import ImageIO
 import ObjectiveC
 import Darwin
+import CoreLocation
 @testable import Linklet
 
 @MainActor
@@ -353,6 +354,49 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertEqual(library.edgeOpenDelay, 0.4)
         library.setEdgeOpenDelay(99)
         XCTAssertEqual(library.edgeOpenDelay, 2)
+    }
+
+    func testSidebarCanBeDisabledForFullscreenAcrossEveryEntryPoint() throws {
+        let suite = "SidebarFullscreen.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        let library = model.linkLibrary
+        library.setEnabled(true)
+        var options: NSApplication.PresentationOptions = []
+        let controller = SidebarWindowController(model: model, reduceMotion: { true }, presentationOptions: { options })
+        defer { controller.hide(animated: false); library.setEnabled(false) }
+        XCTAssertFalse(library.hidesInFullScreen, "The new restriction is opt-in")
+        library.setHidesInFullScreen(true)
+        XCTAssertTrue(LinkLibrary(defaults: defaults).hidesInFullScreen)
+        controller.toggle()
+        XCTAssertTrue(controller.isPresented)
+        options = [.fullScreen, .autoHideMenuBar, .autoHideDock]
+        controller.refreshFullScreenAvailability()
+        XCTAssertFalse(controller.isPresented)
+        XCTAssertFalse(controller.window!.isVisible)
+        controller.toggle()
+        controller.showDownloads()
+        let screen = try XCTUnwrap(NSScreen.main)
+        controller.showIndicator(on: screen)
+        let edge = NSPoint(x: screen.frame.minX, y: screen.visibleFrame.midY)
+        controller.pollMouse(at: edge, now: Date().addingTimeInterval(4))
+        controller.pollMouse(at: edge, now: Date().addingTimeInterval(7))
+        XCTAssertFalse(controller.isPresented)
+        XCTAssertNil(controller.indicatorWindow)
+        controller.editor.showFolder()
+        controller.refreshFullScreenAvailability()
+        XCTAssertFalse(controller.editor.isEditing)
+        XCTAssertFalse(controller.window!.isVisible, "A delayed inline editor cannot bypass fullscreen suppression")
+        // Hidden Dock/menu preferences by themselves do not mean fullscreen.
+        options = [.autoHideMenuBar, .autoHideDock]
+        controller.toggle()
+        XCTAssertTrue(controller.isPresented)
+        controller.hide(animated: false)
+        options = [.fullScreen]
+        library.setHidesInFullScreen(false)
+        controller.toggle()
+        XCTAssertTrue(controller.isPresented)
     }
 
     func testEveryCompletedSiteLoadRefreshesSharedIconIncludingReloads() async throws {
@@ -2145,6 +2189,20 @@ final class WebPopupTests: XCTestCase {
         let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
         for page in [source, popup.webView] {
             let window = try XCTUnwrap(page.window)
+            // Reproduce the native cursor rectangle retained by a hosting view
+            // or field editor above WebKit in the NSView hierarchy.
+            let originalContent = try XCTUnwrap(window.contentView)
+            let originalController = window.contentViewController
+            let cursorHost = CursorRectFixtureHost(frame: originalContent.frame)
+            window.contentView = cursorHost
+            originalContent.frame = cursorHost.bounds
+            originalContent.autoresizingMask = [.width, .height]
+            cursorHost.addSubview(originalContent)
+            window.resetCursorRects()
+            defer {
+                if let originalController { window.contentViewController = originalController }
+                else { window.contentView = originalContent }
+            }
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             window.makeFirstResponder(page)
@@ -2189,6 +2247,9 @@ final class WebPopupTests: XCTestCase {
             try await waitUntil { NSCursor.current == .arrow }
             let state = try await page.evaluateJavaScript("[document.getElementById('entry').value,window.released,document.getElementById('map').style.cursor]") as? [String]
             XCTAssertEqual(state, ["a", "yes", "grab"])
+            XCTAssertFalse(window.areCursorRectsEnabled, "Native hosting rectangles must yield to the page's CSS cursor")
+            try mouse(.mouseMoved, NSPoint(x: 200, y: -20))
+            XCTAssertTrue(window.areCursorRectsEnabled, "Address/find fields and window chrome regain native cursor rectangles")
         }
     }
 
@@ -2802,6 +2863,13 @@ private final class UploadTestPage {
     }
 }
 
+private final class CursorRectFixtureHost: NSView {
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .iBeam)
+    }
+}
+
 @MainActor
 private final class UploadTestPanel: NSOpenPanel {
     var selection: [URL] = []
@@ -3234,6 +3302,170 @@ private struct SidebarSizeProbe: NSViewRepresentable {
 
 @MainActor
 final class SiteMediaPermissionTests: XCTestCase {
+    @available(macOS 27.0, *)
+    func testNativeProviderDeliversPositionThroughRealWebKitAndStopsOnRevocation() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let fix = CLLocation(coordinate: CLLocationCoordinate2D(latitude: 37.3317, longitude: -122.0301),
+                             altitude: 0, horizontalAccuracy: 20, verticalAccuracy: -1, timestamp: Date())
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!) { configuration in
+            configuration.processPool = WKProcessPool()
+            XCTAssertTrue(NativeLocationProvider.install(in: configuration.processPool))
+            NativeLocationProvider.useTestLocation(fix, in: configuration.processPool)
+        }
+        defer { page.close() }
+        let pool = page.view.configuration.processPool
+        let service = page.session.siteData.mediaPermissions
+        service.systemStatus = { _ in .authorized }
+        service.requestSystemAccess = { _, _ in XCTFail("Synthetic location must not request physical location") }
+        service.presentAlert = { _, _, reply in reply(.alertFirstButtonReturn) }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        _ = try await page.view.evaluateJavaScript("window.geoResult='pending'; window.geoWatch=navigator.geolocation.watchPosition(p=>{window.geoPosition=[p.coords.latitude,p.coords.longitude,p.coords.accuracy,p.timestamp];window.geoResult='granted'},e=>window.geoResult='error:'+e.code,{timeout:5000,maximumAge:0,enableHighAccuracy:true});true")
+        try await waitUntil { ((try? await page.view.evaluateJavaScript("window.geoResult")) as? String) != "pending" }
+        let result = try await page.view.evaluateJavaScript("window.geoResult") as? String
+        XCTAssertEqual(result, "granted", "A successful permission callback alone does not provide coordinates on macOS")
+        guard result == "granted" else { return }
+        let positionValue = try await page.view.evaluateJavaScript("window.geoPosition") as? [Double]
+        let position = try XCTUnwrap(positionValue)
+        XCTAssertEqual(position[0], fix.coordinate.latitude, accuracy: 0.000001)
+        XCTAssertEqual(position[1], fix.coordinate.longitude, accuracy: 0.000001)
+        XCTAssertEqual(position[2], 20)
+        XCTAssertEqual(position[3], fix.timestamp.timeIntervalSince1970 * 1000, accuracy: 1)
+        XCTAssertTrue(NativeLocationProvider.isUpdating(in: pool))
+        let rule = try XCTUnwrap(service.rules.first)
+        service.setChoice(.deny, device: .location, ruleID: rule.id)
+        try await waitUntil { !NativeLocationProvider.isUpdating(in: pool) && !page.session.isLoading }
+        XCTAssertTrue(page.session.webView === page.view)
+        _ = try await page.view.evaluateJavaScript("window.geoResult='pending';navigator.geolocation.getCurrentPosition(()=>window.geoResult='unexpected',e=>window.geoResult=String(e.code),{timeout:5000});true")
+        try await waitUntil { ((try? await page.view.evaluateJavaScript("window.geoResult")) as? String) != "pending" }
+        let denied = try await page.view.evaluateJavaScript("window.geoResult") as? String
+        XCTAssertEqual(denied, "1")
+        XCTAssertFalse(NativeLocationProvider.isUpdating(in: pool))
+    }
+
+    func testLocationConsentIsIndependentAndRevocationReloadsSameWebView() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        let service = page.session.siteData.mediaPermissions
+        service.systemStatus = { _ in .notDetermined }
+        service.requestSystemAccess = { _, _ in XCTFail("WebKit, not Linklet, owns the Core Location system request") }
+        var alertCount = 0
+        service.presentAlert = { alert, _, reply in
+            alertCount += 1
+            XCTAssertTrue(alert.messageText.contains(L("your location")))
+            alert.suppressionButton?.state = .on
+            reply(.alertFirstButtonReturn)
+        }
+        let origin = try XCTUnwrap(MediaSiteOrigin(url: page.view.url!))
+        let context = SiteMediaRule(top: origin, requester: origin)
+        var result: WKPermissionDecision?
+        service.request(in: page.view, context: context, devices: [.location]) { result = $0 }
+        XCTAssertEqual(result, .grant)
+        XCTAssertEqual(service.rules.first?.location, .allow)
+        XCTAssertEqual(service.rules.first?.camera, .ask)
+        XCTAssertEqual(service.rules.first?.microphone, .ask)
+        XCTAssertTrue(service.hasPendingOrActiveCapture)
+        let rule = try XCTUnwrap(service.rules.first)
+        _ = try await page.view.evaluateJavaScript("window.locationDocumentToken = 'before-revoke'")
+        service.setChoice(.deny, device: .location, ruleID: rule.id)
+        try await waitUntil { ((try? await page.view.evaluateJavaScript("typeof window.locationDocumentToken")) as? String) == "undefined" && !page.session.isLoading }
+        XCTAssertTrue(page.session.webView === page.view)
+        XCTAssertEqual(page.session.originalURL, origin.url.appendingPathComponent("site"))
+        result = nil
+        service.request(in: page.view, context: context, devices: [.location]) { result = $0 }
+        XCTAssertEqual(result, .deny)
+        XCTAssertEqual(alertCount, 1)
+        page.close()
+        XCTAssertTrue(service.rules.isEmpty)
+    }
+
+    func testOldMediaRulesDecodeWithLocationStillAsking() throws {
+        let old = Data(#"[{"top":{"address":"https://example.org"},"requester":{"address":"https://example.org"},"camera":"allow","microphone":"deny"}]"#.utf8)
+        let rules = try JSONDecoder().decode([SiteMediaRule].self, from: old)
+        XCTAssertEqual(rules.first?.camera, .allow)
+        XCTAssertEqual(rules.first?.microphone, .deny)
+        XCTAssertEqual(rules.first?.location, .ask)
+        let decoded = try JSONDecoder().decode([SiteMediaRule].self, from: JSONEncoder().encode(rules))
+        XCTAssertEqual(decoded, rules)
+    }
+
+    @available(macOS 27.0, *)
+    func testRealWebKitGeolocationDenialUsesNativeSiteConsentWithoutCoordinates() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        let service = page.session.siteData.mediaPermissions
+        service.systemStatus = { _ in .authorized }
+        var prompts = 0
+        service.presentAlert = { _, _, reply in prompts += 1; reply(.alertSecondButtonReturn) }
+        _ = try await page.view.evaluateJavaScript("window.geoResult='pending'; navigator.geolocation.getCurrentPosition(()=>window.geoResult='unexpected-location',e=>window.geoResult=String(e.code),{timeout:5000});true")
+        try await waitUntil { ((try? await page.view.evaluateJavaScript("window.geoResult")) as? String) != "pending" }
+        let result = try await page.view.evaluateJavaScript("window.geoResult") as? String
+        XCTAssertEqual(result, "1")
+        XCTAssertEqual(prompts, 1, "The public macOS 27 geolocation delegate must request site consent")
+        XCTAssertNotNil(Bundle.main.object(forInfoDictionaryKey: "NSLocationUsageDescription"))
+    }
+
+    func testAdGuardMenuToggleReloadsWithoutReplacingViewOrHistory() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let original = URL(string: "http://127.0.0.1:\(port)/site")!
+        let page = UploadTestPage(url: original)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        XCTAssertTrue(page.session.submitAddress("http://127.0.0.1:\(port)/destination", engine: .google))
+        try await waitUntil { page.session.pageTitle == "Destination" && !page.session.isLoading }
+        let backList = page.view.backForwardList.backList.map(\.url)
+        let originalHandoff = page.session.originalURL
+        let navigationID = page.session.navigationID
+        let menu = NSMenu(); menu.addItem(withTitle: "Native download", action: nil, keyEquivalent: "")
+        page.coordinator.appendAdGuardItem(to: menu, in: page.view)
+        let item = try XCTUnwrap(menu.items.last)
+        XCTAssertEqual(item.title, L("Turn On AdGuard"))
+        XCTAssertEqual(menu.items.first?.title, "Native download")
+        _ = try await page.view.evaluateJavaScript("window.adGuardReloadToken = 'before'")
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item))
+        await page.session.adBlockService.waitForPolicyUpdate()
+        try await waitUntil { ((try? await page.view.evaluateJavaScript("typeof window.adGuardReloadToken")) as? String) == "undefined" && !page.session.isLoading }
+        XCTAssertNil(page.session.adBlockService.errorMessage)
+        XCTAssertTrue(page.session.webView === page.view)
+        XCTAssertEqual(page.session.navigationID, navigationID)
+        XCTAssertEqual(page.view.backForwardList.backList.map(\.url), backList)
+        XCTAssertEqual(page.session.originalURL, originalHandoff)
+        let updatedMenu = NSMenu(); page.coordinator.appendAdGuardItem(to: updatedMenu, in: page.view)
+        XCTAssertEqual(updatedMenu.items.last?.title, L("Turn Off AdGuard"))
+    }
+
+    func testNativeWebKitContextMenuContainsAdGuardAction() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        NSApp.activate(ignoringOtherApps: true)
+        page.window.makeKeyAndOrderFront(nil)
+        var titles: [String] = []
+        let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { notification in
+            guard let menu = notification.object as? NSMenu else { return }
+            titles = menu.items.map(\.title)
+            DispatchQueue.main.async { menu.cancelTracking() }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let location = page.view.convert(NSPoint(x: 200, y: 200), to: nil)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                   windowNumber: page.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseUp, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime + 0.01,
+                                                 windowNumber: page.window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
+        NSApp.postEvent(down, atStart: false); NSApp.postEvent(up, atStart: false)
+        try await waitUntil { !titles.isEmpty }
+        XCTAssertTrue(titles.contains(L("Turn On AdGuard")), "The actual WebKit native menu must invoke the customization delegate")
+    }
+
     func testConcurrentCameraDenialDoesNotCancelMicrophoneConsent() async throws {
         let server = try PopupHTTPFixture(); let port = try await server.start()
         defer { server.stop() }

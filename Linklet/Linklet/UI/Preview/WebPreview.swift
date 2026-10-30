@@ -46,6 +46,7 @@ struct WebPreview: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.stopCursorHandling()
         coordinator.cancelFileUpload()
         coordinator.cancelMediaPermissions(webView)
         webView.navigationDelegate = nil
@@ -66,12 +67,74 @@ struct WebPreview: NSViewRepresentable {
         var makeFileUploadPanel: () -> NSOpenPanel = { NSOpenPanel() }
         var openExternalURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
         private var fileUpload: FileUploadRequest?
+        private var cursorMonitor: Any?
+        private weak var cursorOwner: NSWindow?
+
+        /// Native hosting/field-editor cursor rectangles can cover WKWebView.
+        /// WebKit refuses CSS cursor updates while AppKit owns such a rectangle.
+        /// Yield rectangles only while the pointer hits this live web content;
+        /// native address/find fields and resize edges retain normal behavior.
+        private func updateCursorOwnership(in view: WKWebView, at location: NSPoint) {
+            guard let window = view.window, session?.webView === view, session?.isActive == true,
+                  let content = window.contentView, let hit = content.hitTest(content.convert(location, from: nil)),
+                  hit === view || hit.isDescendant(of: view) else { restoreCursorRects(); return }
+            if cursorOwner !== window {
+                restoreCursorRects()
+                if window.areCursorRectsEnabled {
+                    window.disableCursorRects()
+                    cursorOwner = window
+                }
+            }
+            window.acceptsMouseMovedEvents = true
+        }
+
+        private func restoreCursorRects() {
+            cursorOwner?.enableCursorRects()
+            cursorOwner = nil
+        }
+
+        func stopCursorHandling() {
+            if let cursorMonitor { NSEvent.removeMonitor(cursorMonitor) }
+            cursorMonitor = nil
+            restoreCursorRects()
+        }
 
         init(session: PreviewSession) {
             self.session = session
         }
 
+        deinit {
+            if let cursorMonitor { NSEvent.removeMonitor(cursorMonitor) }
+            cursorOwner?.enableCursorRects()
+        }
+
         func cancelMediaPermissions(_ view: WKWebView) { session?.siteData.mediaPermissions.detach(view) }
+
+        // WebKit's macOS menu-customization delegate is SPI. Preserve every
+        // native link/image/download command and append only our site action.
+        @objc(_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:)
+        func webView(_ view: WKWebView, getContextMenuFromProposedMenu menu: NSMenu,
+                     forElement element: AnyObject, userInfo: AnyObject?, completionHandler: @escaping (NSMenu) -> Void) {
+            appendAdGuardItem(to: menu, in: view)
+            completionHandler(menu)
+        }
+
+        func appendAdGuardItem(to menu: NSMenu, in view: WKWebView) {
+            guard let session, session.isActive, !session.isWelcome, session.webView === view,
+                  let url = view.url, URLPolicy.canPreview(url) else { return }
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            let item = NSMenuItem(title: L(session.adBlockService.isEnabled(for: url) ? "Turn Off AdGuard" : "Turn On AdGuard"),
+                                  action: #selector(toggleAdGuard(_:)), keyEquivalent: "")
+            item.target = self
+            // Never let an old open menu toggle a different document/site.
+            item.representedObject = url
+            menu.addItem(item)
+        }
+
+        @objc private func toggleAdGuard(_ item: NSMenuItem) {
+            guard let session, let url = item.representedObject as? URL, session.webView?.url == url else { return }
+            session.toggleAdGuard()
+        }
 
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
@@ -83,7 +146,29 @@ struct WebPreview: NSViewRepresentable {
                                                      type: type, reply: decisionHandler)
         }
 
+        @available(macOS 27.0, *)
+        func webView(_ webView: WKWebView, requestGeolocationPermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            guard let session, session.isActive, !session.isWelcome, session.webView === webView else {
+                decisionHandler(.deny); return
+            }
+            guard NativeLocationProvider.install(in: webView.configuration.processPool) else {
+                session.errorMessage = L("This WebKit version cannot provide location to websites.")
+                decisionHandler(.deny); return
+            }
+            session.siteData.mediaPermissions.requestLocation(in: webView, origin: origin, frame: frame, reply: decisionHandler)
+        }
+
         func startObserving(_ webView: WKWebView) {
+            if #available(macOS 27.0, *) { _ = NativeLocationProvider.install(in: webView.configuration.processPool) }
+            stopCursorHandling()
+            cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .mouseEntered, .mouseExited]) { [weak self, weak webView] event in
+                guard let self, let webView else { return event }
+                if event.window === webView.window {
+                    self.updateCursorOwnership(in: webView, at: event.locationInWindow)
+                } else { self.restoreCursorRects() }
+                return event
+            }
             observations = [
                 webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
                     self?.synchronize(webView)

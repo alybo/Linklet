@@ -784,6 +784,8 @@ struct SidebarSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle(L("Show sidebar reveal indicator"), isOn: Binding(get: { library.showsRevealIndicator }, set: library.setShowsRevealIndicator))
                     .disabled(!library.isEnabled)
+                Toggle(L("Hide in fullscreen apps"), isOn: Binding(get: { library.hidesInFullScreen }, set: library.setHidesInFullScreen))
+                    .disabled(!library.isEnabled)
                 if !library.showsRevealIndicator {
                     HStack {
                         Text(L("Delay before opening"))

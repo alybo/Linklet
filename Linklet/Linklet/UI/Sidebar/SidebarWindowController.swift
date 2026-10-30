@@ -49,6 +49,10 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     private var enabledObservation: AnyCancellable?
     private var appearanceObservation: AnyCancellable?
     private var focusObservation: AnyCancellable?
+    private var fullScreenPreferenceObservation: AnyCancellable?
+    private var presentationObservation: NSKeyValueObservation?
+    private var spaceObservation: AnyCancellable?
+    private let presentationOptions: () -> NSApplication.PresentationOptions
     private var edgeScreenID: ObjectIdentifier?
     private var edgeEnteredAt: Date?
     private var leftPanelAt: Date?
@@ -65,9 +69,11 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     static let revealShoulderDuration: TimeInterval = 0.20
     static let concealShoulderDuration: TimeInterval = 0.14
 
-    init(model: AppModel, reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
+    init(model: AppModel, reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
+         presentationOptions: @escaping () -> NSApplication.PresentationOptions = { NSApp.currentSystemPresentationOptions }) {
         library = model.linkLibrary
         self.reduceMotion = reduceMotion
+        self.presentationOptions = presentationOptions
         let panel = SidebarPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 700),
                                  styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isFloatingPanel = true
@@ -106,17 +112,33 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
             }
         editorObservation = editor.$presentation.sink { [weak self] presentation in
             guard presentation != nil, let self else { return }
+            guard !self.isBlockedByFullScreen else {
+                DispatchQueue.main.async { self.hide(animated: false) }
+                return
+            }
             self.library.cancelHistoryClear()
             // A form opened during the reveal must remain anchored while the user types.
             self.stopAnimation()
             self.reveal.progress = 1
             self.reveal.shoulderProgress = 1
+            // An inline editor explicitly orders the panel front. Keep logical
+            // visibility in sync even if edge/focus dismissal just ran.
+            self.isPresented = true
             self.window?.makeKeyAndOrderFront(nil)
         }
         hotKey.action = { [weak self] in self?.toggle() }
         enabledObservation = library.$isEnabled.sink { [weak self] enabled in
             self?.setMonitoring(enabled)
         }
+        fullScreenPreferenceObservation = library.$hidesInFullScreen.dropFirst().sink { [weak self] _ in
+            // Published sends before the new preference is assigned.
+            DispatchQueue.main.async { self?.refreshFullScreenAvailability() }
+        }
+        presentationObservation = NSApp.observe(\.currentSystemPresentationOptions) { [weak self] _, _ in
+            Task { @MainActor in self?.refreshFullScreenAvailability() }
+        }
+        spaceObservation = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
+            .receive(on: RunLoop.main).sink { [weak self] _ in self?.refreshFullScreenAvailability() }
     }
 
     deinit { timer?.invalidate(); animationTimer?.invalidate() }
@@ -124,12 +146,13 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func toggle() {
-        guard library.isEnabled else { return }
+        guard library.isEnabled, !isBlockedByFullScreen else { return }
         if isPresented { hide() }
         else if let screen = screenAtMouse() ?? NSScreen.main { present(on: screen, manual: true) }
     }
 
     func showDownloads() {
+        guard !isBlockedByFullScreen else { return }
         editor.cancel()
         if !library.expandedSections.contains(.downloads) { library.toggleSection(.downloads) }
         if let screen = screenAtMouse() ?? NSScreen.main { present(on: screen, manual: true) }
@@ -188,6 +211,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     private func pollMouse() { pollMouse(at: NSEvent.mouseLocation, now: Date()) }
 
     func pollMouse(at point: NSPoint, now: Date) {
+        if isBlockedByFullScreen { refreshFullScreenAvailability(); return }
         guard let window, now >= suppressedUntil else { return }
         if isPresented {
             if isResizing || editor.isEditing { leftPanelAt = nil; return }
@@ -271,7 +295,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func showIndicator(on screen: NSScreen) {
-        guard indicatorWindow == nil else { return }
+        guard indicatorWindow == nil, !isBlockedByFullScreen else { return }
         let frame = Self.indicatorFrame(screenFrame: screen.frame)
         let indicator = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         indicator.backgroundColor = .clear
@@ -298,7 +322,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func present(on screen: NSScreen, manual: Bool) {
-        guard let window else { return }
+        guard let window, !isBlockedByFullScreen else { return }
         exitDelay = manual ? 1 : 0.5
         library.resetRecentDisplayLimit()
         library.cancelHistoryClear()
@@ -322,6 +346,18 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         else { window.orderFrontRegardless() }
         if reduceMotion() { reveal.progress = 1; reveal.shoulderProgress = 1 }
         else { animate(to: 1, opening: true) }
+    }
+
+    private var isBlockedByFullScreen: Bool {
+        library.hidesInFullScreen && presentationOptions().contains(.fullScreen)
+    }
+
+    func refreshFullScreenAvailability() {
+        guard isBlockedByFullScreen else { return }
+        hide(animated: false)
+        edgeEnteredAt = nil
+        edgeScreenID = nil
+        leftPanelAt = nil
     }
 
     // A critically damped reveal settles quickly without bouncing past the screen edge.

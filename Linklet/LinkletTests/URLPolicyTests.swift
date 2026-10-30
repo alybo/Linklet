@@ -396,6 +396,60 @@ final class AdBlockTests: XCTestCase {
 
 @MainActor
 final class AdBlockWebKitTests: XCTestCase {
+    func testHostExceptionsWorkInSharedControllerAndWithDefaultOff() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "AdGuardExceptions.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
+        defaults.set(true, forKey: AdBlockService.enabledKey)
+        let fixture = "! Title: AdGuard test fixture\n! Version: 1\n##.linklet-test-ad\n" +
+            (1...120).map { "||ad\($0).example.org^" }.joined(separator: "\n")
+        let blocker = AdBlockService(defaults: defaults, cacheDirectory: directory, automaticUpdates: false, fetchFilters: { [fixture] })
+        blocker.checkForUpdates(); await blocker.waitForUpdate()
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        blocker.attach(to: configuration.userContentController)
+        let first = WKWebView(frame: .zero, configuration: configuration)
+        let second = WKWebView(frame: .zero, configuration: configuration)
+        XCTAssertTrue(first.configuration.userContentController === second.configuration.userContentController)
+        let firstDelegate = AdBlockPageDelegate(); let secondDelegate = AdBlockPageDelegate()
+        first.navigationDelegate = firstDelegate; second.navigationDelegate = secondDelegate
+        let html = "<div class='linklet-test-ad'>Ad</div>"
+        func display(_ view: WKWebView, _ delegate: AdBlockPageDelegate, host: String) async throws -> String? {
+            delegate.finished = expectation(description: "Page loaded: " + host)
+            view.loadHTMLString(html, baseURL: URL(string: "https://" + host + "/"))
+            await fulfillment(of: [delegate.finished!], timeout: 10)
+            return try await view.evaluateJavaScript("getComputedStyle(document.querySelector('.linklet-test-ad')).display") as? String
+        }
+        XCTAssertTrue(blocker.setSiteEnabled(false, host: "https://EXAMPLE.org/path"))
+        await blocker.waitForPolicyUpdate()
+        XCTAssertNil(blocker.errorMessage)
+        let exempt = try await display(first, firstDelegate, host: "example.org")
+        let protected = try await display(second, secondDelegate, host: "other.example.org")
+        XCTAssertEqual(exempt, "block")
+        XCTAssertEqual(protected, "none", "An exception must not disable the shared popup controller or a different hostname")
+        blocker.setEnabled(false)
+        blocker.setSiteEnabled(true, host: "other.example.org")
+        await blocker.waitForPolicyUpdate()
+        XCTAssertNil(blocker.errorMessage)
+        let defaultOff = try await display(first, firstDelegate, host: "example.org")
+        let enabledSite = try await display(second, secondDelegate, host: "other.example.org")
+        XCTAssertEqual(defaultOff, "block")
+        XCTAssertEqual(enabledSite, "none", "A site can enable AdGuard without enabling it globally")
+        let restored = AdBlockService(defaults: defaults, cacheDirectory: directory, automaticUpdates: false)
+        XCTAssertEqual(restored.siteOverrides, ["example.org": false, "other.example.org": true])
+        blocker.setSiteEnabled(false, host: "other.example.org")
+        blocker.setSiteEnabled(true, host: "other.example.org")
+        await blocker.waitForPolicyUpdate()
+        XCTAssertNil(blocker.errorMessage)
+        let rapidToggle = try await display(second, secondDelegate, host: "other.example.org")
+        XCTAssertEqual(rapidToggle, "none", "Fast toggles must install the last policy before refreshing")
+        XCTAssertNil(AdBlockService.siteHost("file:///tmp/test"))
+        XCTAssertNil(AdBlockService.siteHost("https://name:secret@example.org"))
+        XCTAssertNil(AdBlockService.siteHost("*.example.org"))
+        XCTAssertEqual(AdBlockService.siteHost("https://пример.рф/path"), "xn--e1afmkfd.xn--p1ai")
+    }
+
     func testUpdateBlocksElementAndToggleRestoresIt() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let suite = "LinkletAdBlockWebKitTests." + UUID().uuidString

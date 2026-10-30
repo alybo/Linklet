@@ -51,6 +51,7 @@ final class LinkLibrary: ObservableObject {
     @Published private(set) var isEnabled: Bool
     @Published private(set) var savesHistory: Bool
     @Published private(set) var showsRevealIndicator: Bool
+    @Published private(set) var hidesInFullScreen: Bool
     @Published private(set) var sidebarWidth: Double
     @Published private(set) var edgeOpenDelay: TimeInterval
     @Published private(set) var sidebarAppearance: SidebarAppearance
@@ -84,6 +85,7 @@ final class LinkLibrary: ObservableObject {
         isEnabled = defaults.bool(forKey: "sidebarEnabled")
         sidebarAppearance = defaults.string(forKey: "sidebarAppearance").flatMap(SidebarAppearance.init(rawValue:)) ?? .black
         showsRevealIndicator = defaults.object(forKey: "sidebarShowsRevealIndicator") as? Bool ?? false
+        hidesInFullScreen = defaults.bool(forKey: "sidebarHidesInFullScreen")
         let delay = defaults.object(forKey: "sidebarEdgeOpenDelay") as? Double ?? 0.4
         edgeOpenDelay = Self.clampedEdgeDelay(delay)
         let saves = defaults.bool(forKey: "sidebarSavesHistory")
@@ -133,6 +135,11 @@ final class LinkLibrary: ObservableObject {
     func setShowsRevealIndicator(_ enabled: Bool) {
         showsRevealIndicator = enabled
         defaults.set(enabled, forKey: "sidebarShowsRevealIndicator")
+    }
+
+    func setHidesInFullScreen(_ enabled: Bool) {
+        hidesInFullScreen = enabled
+        defaults.set(enabled, forKey: "sidebarHidesInFullScreen")
     }
 
     func setEdgeOpenDelay(_ delay: TimeInterval) {

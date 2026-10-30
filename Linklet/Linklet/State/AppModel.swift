@@ -392,10 +392,12 @@ final class AppModel: ObservableObject {
     func setAdBlockingEnabled(_ enabled: Bool) {
         isAdBlockingEnabled = enabled
         adBlockService.setEnabled(enabled)
-        for preview in allPreviewModels {
-            if !preview.previewSession.isWelcome, let url = preview.previewSession.currentURL {
-                preview.previewSession.load(url, preservingOriginalURL: true)
-            }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await adBlockService.waitForPolicyUpdate()
+            if let error = adBlockService.errorMessage { statusMessage = error; return }
+            // Keep the WKWebView, back/forward list, popup opener and original URL.
+            windowRegistry.activeSessions.forEach { $0.reload() }
         }
     }
 

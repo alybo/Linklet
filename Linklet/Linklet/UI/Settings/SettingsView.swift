@@ -111,23 +111,90 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Toggle(isOn: Binding(get: { model.isAdBlockingEnabled }, set: model.setAdBlockingEnabled)) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L("Block ads"))
-                        Text(L("AdGuard filter lists")).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
                 Picker(L("Language"), selection: Binding(get: { language.selection }, set: model.setLanguage)) {
                     Text(L("System language")).tag("system")
                     Text("Русский").tag("ru")
                     Text("English").tag("en")
                 }
             }
+            AdBlockSettingsView(model: model, blocker: model.adBlockService)
             Section {
                 Button(L("Welcome to Linklet"), action: model.showWelcome)
             }
         }
         .formStyle(.grouped).toggleStyle(.switch)
+    }
+}
+
+private struct AdBlockSettingsView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var blocker: AdBlockService
+    @State private var showingAddSite = false
+    @State private var address = ""
+    @State private var invalidAddress = false
+
+    var body: some View {
+        Section {
+            Toggle(isOn: Binding(get: { blocker.isEnabled }, set: model.setAdBlockingEnabled)) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L("Block ads"))
+                    Text(L("AdGuard filter lists")).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            DisclosureGroup(L("Exceptions (%d)", blocker.siteOverrides.count)) {
+                if blocker.siteOverrides.isEmpty {
+                    Text(L("No exceptions")).foregroundStyle(.secondary)
+                }
+                ForEach(blocker.siteOverrides.keys.sorted(), id: \.self) { host in
+                    HStack {
+                        Toggle(host, isOn: Binding(get: { blocker.siteOverrides[host] ?? blocker.isEnabled }, set: { enabled in
+                            blocker.setSiteEnabled(enabled, host: host); reload(host: host)
+                        }))
+                        Button { blocker.removeSiteOverride(host); reload(host: host) } label: {
+                            Image(systemName: "minus.circle")
+                        }.buttonStyle(.borderless).help(L("Remove exception"))
+                    }
+                }
+                Button(L("Add website…"), systemImage: "plus") {
+                    address = ""; invalidAddress = false; showingAddSite = true
+                }
+            }
+            if let error = blocker.errorMessage { Text(error).foregroundStyle(.red) }
+        } header: { Text(L("AdGuard")) } footer: {
+            Text(L("Exceptions override the default for this exact domain. Open pages refresh automatically when a rule changes."))
+        }
+        .sheet(isPresented: $showingAddSite) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(L("Add website")).font(.headline)
+                TextField(L("Website address"), text: $address, prompt: Text("example.com"))
+                    .onSubmit(addSite)
+                Text(L("AdGuard will be turned off for this domain.")).font(.callout).foregroundStyle(.secondary)
+                if invalidAddress { Text(L("Enter an HTTP(S) address or domain.")).foregroundStyle(.red) }
+                HStack {
+                    Spacer()
+                    Button(L("Cancel")) { showingAddSite = false }.keyboardShortcut(.cancelAction)
+                    Button(L("Add"), action: addSite).keyboardShortcut(.defaultAction)
+                }
+            }.padding(24).frame(width: 380)
+        }
+    }
+
+    private func addSite() {
+        guard let host = AdBlockService.siteHost(address), blocker.setSiteEnabled(false, host: host) else {
+            invalidAddress = true; return
+        }
+        showingAddSite = false
+        reload(host: host)
+    }
+
+    private func reload(host: String) {
+        Task { @MainActor in
+            await blocker.waitForPolicyUpdate()
+            guard blocker.errorMessage == nil else { return }
+            for session in model.windowRegistry.activeSessions {
+                if let url = session.webView?.url, AdBlockService.siteHost(url.absoluteString) == host { session.reload() }
+            }
+        }
     }
 }
 
@@ -376,7 +443,7 @@ private struct SiteMediaPermissionsSettings: View {
     @ObservedObject var permissions: SiteMediaPermissions
     var body: some View {
         Section {
-            ForEach(SiteMediaDevice.allCases, id: \.self) { device in
+            ForEach(SiteMediaDevice.availableDevices, id: \.self) { device in
                 LabeledContent(device.title) {
                     HStack {
                         Text(systemStatus(device)).foregroundStyle(.secondary)
@@ -387,12 +454,12 @@ private struct SiteMediaPermissionsSettings: View {
                 }
             }
             if permissions.rules.isEmpty {
-                Text(L("Websites appear here when they request camera or microphone access."))
+                Text(L("Websites appear here when they request camera, microphone or location access."))
                     .foregroundStyle(.secondary)
             }
             ForEach(permissions.rules) { rule in
                 DisclosureGroup {
-                    ForEach(SiteMediaDevice.allCases, id: \.self) { device in
+                    ForEach(SiteMediaDevice.availableDevices, id: \.self) { device in
                         Picker(device.title, selection: Binding(
                             get: { permissions.rules.first(where: { $0.id == rule.id })?[device] ?? .ask },
                             set: { permissions.setChoice($0, device: device, ruleID: rule.id) })) {
@@ -410,13 +477,16 @@ private struct SiteMediaPermissionsSettings: View {
                 }
             }
         } header: {
-            Text(L("Camera and microphone"))
+            Text(L("Website permissions"))
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
                 Text(L(permissions.persists
                     ? "Remembered permissions stay on this Mac until you reset them or delete website data."
                     : "In private mode, remembered permissions are removed when the last website window closes."))
                 Text(L("Blocking access stops active capture. Reload the website if it needs to ask again."))
+                if #available(macOS 27.0, *) {
+                    Text(L("Changing location access reloads the page to stop its location requests."))
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
