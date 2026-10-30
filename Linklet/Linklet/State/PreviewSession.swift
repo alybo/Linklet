@@ -2,6 +2,26 @@ import AppKit
 import Foundation
 import WebKit
 
+struct PageLoadFailure: Equatable {
+    enum Kind { case offline, timeout, unavailable, certificate, crashed, other }
+    let kind: Kind
+    let url: URL?
+    let detail: String
+    let resubmitsForm: Bool
+    let allowsRetry: Bool
+    var title: String { kind == .crashed ? L("The page stopped responding") : L("Couldn't open the page") }
+    var explanation: String {
+        switch kind {
+        case .offline: return L("Check your internet connection and try again.")
+        case .timeout: return L("The website took too long to respond. Try again.")
+        case .unavailable: return L("The website could not be reached. Check the address or try again later.")
+        case .certificate: return L("A secure connection to this website could not be established.")
+        case .crashed: return L("Restore this page to continue. Other windows are unaffected.")
+        case .other: return detail
+        }
+    }
+}
+
 /// Related private pages share cookies until the last page closes. Closing the
 /// opener must not erase the store still in use by another independent window.
 @MainActor
@@ -35,6 +55,8 @@ final class PreviewSession: ObservableObject {
     @Published private(set) var isPreparingNewPage = false
     @Published var addressText = ""
     @Published var errorMessage: String?
+    @Published private(set) var pageFailure: PageLoadFailure?
+    weak var history: LinkLibrary?
 
     @Published private(set) var isWelcome = false
     var onOpenSettings: (() -> Void)?
@@ -59,6 +81,16 @@ final class PreviewSession: ObservableObject {
     private var requestedURL: URL?
     private var requestGeneration = UUID()
     private var shouldRecordInitialTitle = false
+    private(set) var lastCommittedURL: URL?
+    private var lastCommittedTitle = ""
+    private var lastPosition: PagePosition?
+    private var navigationIsPending = false
+    private var attemptedRequest: URLRequest?
+    private var committedWasPOST = false
+    private var restoration: (url: URL, position: PagePosition)?
+    private var restorationStarted = false
+    private var restorationAcknowledged = false
+    private var historyRevision: Int?
 
     let adBlockService: AdBlockService
 
@@ -74,6 +106,8 @@ final class PreviewSession: ObservableObject {
     }
 
     func endSession(resetTemporaryData: Bool = true) {
+        finishHistoryEntry()
+        if let webView { PreviewPageStateBridge.shared.detach(webView) }
         pageFind.detach()
         requestGeneration = UUID()
         let wasActive = isActive
@@ -96,6 +130,16 @@ final class PreviewSession: ObservableObject {
         canGoForward = false
         isPreparingNewPage = false
         errorMessage = nil
+        pageFailure = nil
+        lastCommittedURL = nil
+        lastCommittedTitle = ""
+        lastPosition = nil
+        historyRevision = nil
+        navigationIsPending = false
+        attemptedRequest = nil
+        restoration = nil
+        restorationStarted = false
+        restorationAcknowledged = false
         navigationID = UUID()
         let oldStore = temporaryStore
         let clearsPrivateData = resetTemporaryData && !siteData.isEnabled
@@ -126,10 +170,13 @@ final class PreviewSession: ObservableObject {
         isPreparingNewPage = false
         synchronize(from: view)
         isLoading = false
+        navigationIsPending = false
+        pageFailure = nil
     }
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
+        PreviewPageStateBridge.shared.attach(webView, session: self)
         webView.pageZoom = pageZoom
         pageFind.attach(webView)
         if isWelcome {
@@ -160,17 +207,30 @@ final class PreviewSession: ObservableObject {
         startSessionIfNeeded()
         originalURL = parent.originalURL
         webView = view
+        PreviewPageStateBridge.shared.attach(view, session: self)
         view.pageZoom = pageZoom
         pageFind.attach(view)
         synchronize(from: view)
     }
 
-    func load(_ url: URL, preservingOriginalURL: Bool = false) {
+    func load(_ url: URL, preservingOriginalURL: Bool = false, restoring position: PagePosition? = nil) {
         guard URLPolicy.canPreview(url) else {
             errorMessage = L("Only HTTP and HTTPS links can be previewed.")
             return
         }
         requestGeneration = UUID()
+        finishHistoryEntry()
+        if let webView { PreviewPageStateBridge.shared.detach(webView) }
+        lastCommittedURL = nil
+        lastCommittedTitle = ""
+        lastPosition = nil
+        restoration = position.flatMap { $0.isValid ? (url, $0) : nil }
+        restorationStarted = false
+        restorationAcknowledged = false
+        navigationIsPending = true
+        attemptedRequest = URLRequest(url: url)
+        committedWasPOST = false
+        pageFailure = nil
         startSessionIfNeeded()
         isWelcome = false
         errorMessage = nil
@@ -193,6 +253,11 @@ final class PreviewSession: ObservableObject {
     }
 
     func showWelcome(isDefault: Bool) {
+        finishHistoryEntry()
+        if let webView { PreviewPageStateBridge.shared.detach(webView) }
+        lastCommittedURL = nil
+        restoration = nil
+        pageFailure = nil
         pageFind.detach()
         requestGeneration = UUID()
         startSessionIfNeeded()
@@ -204,6 +269,7 @@ final class PreviewSession: ObservableObject {
         currentURL = nil
         addressText = ""
         errorMessage = nil
+        pageFailure = nil
         pageTitle = "Linklet"
         canGoBack = false
         canGoForward = false
@@ -242,6 +308,8 @@ final class PreviewSession: ObservableObject {
               let url = SearchInput.destination(for: input, engine: engine) else { return false }
         requestGeneration = UUID()
         errorMessage = nil
+        pageFailure = nil
+        restoration = nil
         pendingURL = nil
         requestedURL = url
         currentURL = url
@@ -266,6 +334,7 @@ final class PreviewSession: ObservableObject {
     }
     func reload() {
         guard isActive, !isWelcome else { return }
+        if pageFailure != nil { retryPageLoad(); return }
         errorMessage = nil
         webView?.reload()
     }
@@ -292,10 +361,20 @@ final class PreviewSession: ObservableObject {
         requestedURL = nil
         isPreparingNewPage = false
         pageFind.navigationFinished()
+        navigationIsPending = false
+        synchronizeFromLoadedPage()
     }
 
     func pageDidFinish(in view: WKWebView) {
         guard webView === view else { return }
+        navigationIsPending = false
+        requestedURL = nil
+        if !isWelcome, lastCommittedURL != view.url { navigationDidCommit(in: view) }
+        synchronize(from: view)
+        if let restoration, restoration.url == view.url, !restorationStarted {
+            restorationStarted = true
+            PreviewPageStateBridge.shared.restore(restoration.position, in: view)
+        } else { PreviewPageStateBridge.shared.capture(in: view) }
         pageFind.navigationFinished()
         welcomeDidFinish()
         if !isWelcome, let url = view.url, URLPolicy.canPreview(url) { onSiteLoaded?(url) }
@@ -307,6 +386,16 @@ final class PreviewSession: ObservableObject {
     func navigationDidCommit(in webView: WKWebView) {
         guard self.webView === webView else { return }
         requestedURL = nil
+        pageFailure = nil
+        lastCommittedURL = webView.url
+        lastCommittedTitle = ""
+        lastPosition = .top
+        committedWasPOST = attemptedRequest?.httpMethod?.uppercased() == "POST"
+        if restoration?.url != webView.url { restoration = nil }
+        if !isWelcome, let url = webView.url {
+            history?.recordVisit(url, title: "")
+            historyRevision = history?.historyRevision
+        }
         isPreparingNewPage = false
         if !isWelcome, let url = webView.url { siteData.recordVisit(url) }
         synchronize(from: webView)
@@ -320,8 +409,127 @@ final class PreviewSession: ObservableObject {
         synchronize(from: webView)
     }
 
+    func prepareNavigation(_ request: URLRequest, in view: WKWebView) {
+        guard webView === view else { return }
+        attemptedRequest = request
+    }
+
+    func navigationDidStart(in view: WKWebView) {
+        guard webView === view else { return }
+        navigationIsPending = true
+        pageFailure = nil
+        pageFind.navigationStarted()
+        if let url = attemptedRequest?.url, URLPolicy.canPreview(url) {
+            requestedURL = url
+            currentURL = url
+            addressText = url.absoluteString
+        }
+        synchronize(from: view)
+    }
+
+    func navigationDidFail(in view: WKWebView, error: NSError) {
+        guard webView === view, isActive, !isWelcome else { return }
+        let url = error.userInfo[NSURLErrorFailingURLErrorKey] as? URL
+            ?? (error.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))
+            ?? requestedURL ?? attemptedRequest?.url ?? view.url ?? currentURL
+        let kind: PageLoadFailure.Kind
+        if error.domain == NSURLErrorDomain {
+            switch error.code {
+            case NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost: kind = .offline
+            case NSURLErrorTimedOut: kind = .timeout
+            case NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost, NSURLErrorDNSLookupFailed: kind = .unavailable
+            case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasBadDate,
+                 NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasUnknownRoot,
+                 NSURLErrorServerCertificateNotYetValid, NSURLErrorClientCertificateRejected,
+                 NSURLErrorClientCertificateRequired: kind = .certificate
+            default: kind = .other
+            }
+        } else if error.domain == WKErrorDomain && error.code == WKError.Code.webContentProcessTerminated.rawValue {
+            kind = .crashed
+        } else { kind = .other }
+        showPageFailure(kind: kind, url: url, detail: error.localizedDescription,
+                        wasPOST: attemptedRequest?.httpMethod?.uppercased() == "POST")
+    }
+
+    func webContentProcessDidTerminate(in view: WKWebView) {
+        guard webView === view, isActive, !isWelcome else { return }
+        showPageFailure(kind: .crashed, url: lastCommittedURL ?? requestedURL ?? currentURL,
+                        detail: "", wasPOST: lastCommittedURL == nil ? false : committedWasPOST)
+    }
+
+    private func showPageFailure(kind: PageLoadFailure.Kind, url: URL?, detail: String, wasPOST: Bool) {
+        requestedURL = nil
+        navigationIsPending = false
+        isPreparingNewPage = false
+        isLoading = false
+        pageFind.navigationStarted()
+        if let url, URLPolicy.canPreview(url) {
+            currentURL = url
+            addressText = url.absoluteString
+            if url != lastCommittedURL { pageTitle = "" }
+        }
+        pageFailure = PageLoadFailure(kind: kind, url: url, detail: detail, resubmitsForm: wasPOST,
+            allowsRetry: url.map(URLPolicy.canPreview) == true && (!wasPOST || url == lastCommittedURL))
+        if let window = webView?.window,
+           (window.firstResponder as? NSTextView)?.isFieldEditor != true {
+            window.makeFirstResponder(window.contentView)
+        }
+    }
+
+    var canReturnToLoadedPage: Bool {
+        pageFailure != nil && pageFailure?.kind != .crashed && lastCommittedURL != nil
+            && lastCommittedURL != pageFailure?.url
+    }
+
+    func returnToLoadedPage() {
+        guard canReturnToLoadedPage else { return }
+        pageFailure = nil
+        synchronizeFromLoadedPage()
+        pageFind.navigationFinished()
+    }
+
+    private func synchronizeFromLoadedPage() {
+        guard let webView else { return }
+        currentURL = webView.url
+        addressText = webView.url?.absoluteString ?? ""
+        synchronize(from: webView)
+    }
+
+    func retryPageLoad() {
+        guard let failure = pageFailure, failure.allowsRetry, let url = failure.url, let webView else { return }
+        let reloadsCurrent = url == webView.url && url == lastCommittedURL
+        pageFailure = nil
+        errorMessage = nil
+        isLoading = true
+        if reloadsCurrent { webView.reload() }
+        else {
+            requestedURL = url
+            attemptedRequest = URLRequest(url: url)
+            navigate(to: url, in: webView)
+        }
+    }
+
+    func receivePosition(_ position: PagePosition, for url: URL, in view: WKWebView, restoring: Bool) {
+        guard webView === view, position.isValid, url == lastCommittedURL, pageFailure == nil else { return }
+        if restoration != nil {
+            guard restorationStarted else { return }
+            if restoring { restorationAcknowledged = true; return }
+            guard restorationAcknowledged else { return }
+            restoration = nil
+        }
+        lastPosition = position
+        history?.updatePosition(position, for: url)
+    }
+
+    private func finishHistoryEntry() {
+        guard !isWelcome, let url = lastCommittedURL else { return }
+        history?.recordClosing(url, title: lastCommittedTitle, position: restoration?.position ?? lastPosition,
+                               revision: historyRevision)
+    }
+
     func synchronize(from webView: WKWebView) {
         guard self.webView === webView else { return }
+        if pageFailure != nil { return }
         if isWelcome {
             isLoading = webView.isLoading
             estimatedProgress = webView.estimatedProgress
@@ -345,6 +553,18 @@ final class PreviewSession: ObservableObject {
         if canAdoptWebViewURL, let nextURL {
             let nextAddress = nextURL.absoluteString
             if addressText != nextAddress { addressText = nextAddress }
+        }
+        if !isWelcome, !navigationIsPending, !nextIsLoading, requestedURL == nil,
+           let nextURL, URLPolicy.canPreview(nextURL), lastCommittedURL != nil, nextURL != lastCommittedURL {
+            lastCommittedURL = nextURL
+            lastPosition = nil
+            history?.recordVisit(nextURL, title: nextTitle)
+            historyRevision = history?.historyRevision
+            PreviewPageStateBridge.shared.capture(in: webView)
+        }
+        if let url = lastCommittedURL, url == nextURL, !isWelcome {
+            lastCommittedTitle = nextTitle
+            history?.updateTitle(nextTitle, for: url)
         }
     }
 }

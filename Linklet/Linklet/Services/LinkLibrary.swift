@@ -5,11 +5,19 @@ struct BookmarkFolder: Codable, Equatable, Identifiable {
     var name: String
 }
 
+struct PagePosition: Codable, Equatable {
+    let x: Double
+    let y: Double
+    static let top = PagePosition(x: 0, y: 0)
+    var isValid: Bool { x.isFinite && y.isFinite && abs(x) < 100_000_000 && y >= 0 && y < 100_000_000 }
+}
+
 struct RecentLink: Codable, Equatable, Identifiable {
     let id: UUID
     let address: String
     var title: String
     var openedAt: Date
+    var position: PagePosition? = nil
     var url: URL? { URL(string: address).flatMap { URLPolicy.canPreview($0) ? $0 : nil } }
 }
 
@@ -36,7 +44,7 @@ enum SidebarAppearance: String, CaseIterable, Identifiable {
     }
 }
 
-/// Explicit bookmarks persist. Recent incoming links stay in memory unless saving is enabled.
+/// Explicit bookmarks persist. Visited pages stay in memory unless saving is enabled.
 @MainActor
 final class LinkLibrary: ObservableObject {
     static let recentLimit = 200
@@ -60,6 +68,8 @@ final class LinkLibrary: ObservableObject {
     @Published private(set) var rootOrder: [UUID]
     private weak var settings: SearchSettings?
     private let defaults: UserDefaults
+    private var positionSave: Task<Void, Never>?
+    private(set) var historyRevision = 0
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -151,33 +161,75 @@ final class LinkLibrary: ObservableObject {
     }
 
     func setSavesHistory(_ enabled: Bool) {
+        positionSave?.cancel()
         savesHistory = enabled
         defaults.set(enabled, forKey: "sidebarSavesHistory")
         persistHistory()
     }
 
     func recordOpening(_ url: URL, now: Date = Date()) {
-        guard isEnabled, URLPolicy.canPreview(url) else { return }
+        recordVisit(url, title: "", now: now)
+    }
+
+    func recordVisit(_ url: URL, title: String, now: Date = Date()) {
+        guard URLPolicy.canPreview(url), url.host?.isEmpty == false else { return }
+        let previous = recentLinks.first { $0.address == url.absoluteString }
         recentLinks.removeAll { $0.address == url.absoluteString }
-        recentLinks.insert(RecentLink(id: UUID(), address: url.absoluteString,
-                                     title: url.host ?? url.absoluteString, openedAt: now), at: 0)
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        recentLinks.insert(RecentLink(id: previous?.id ?? UUID(), address: url.absoluteString,
+            title: title.isEmpty ? (previous?.title ?? url.host ?? url.absoluteString) : title,
+            openedAt: now, position: previous?.position), at: 0)
         recentLinks = Array(recentLinks.prefix(Self.recentLimit))
+        persistHistory()
+    }
+
+    func updatePosition(_ position: PagePosition, for url: URL) {
+        guard position.isValid, let index = recentLinks.firstIndex(where: { $0.address == url.absoluteString }),
+              recentLinks[index].position != position else { return }
+        recentLinks[index].position = position
+        // Scroll events update memory immediately; disk writes are coalesced.
+        positionSave?.cancel()
+        guard savesHistory else { return }
+        positionSave = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            self?.persistHistory()
+        }
+    }
+
+    func recordClosing(_ url: URL, title: String, position: PagePosition?, revision: Int? = nil) {
+        guard URLPolicy.canPreview(url), url.host?.isEmpty == false else { return }
+        // Clearing/removing history must not be undone by a later close/scroll.
+        // A still-open page evicted by the 200-item limit may rejoin on close.
+        guard recentLinks.contains(where: { $0.address == url.absoluteString })
+                || revision == historyRevision else { return }
+        recordVisit(url, title: title)
+        if let position, position.isValid { recentLinks[0].position = position }
+        positionSave?.cancel()
+        persistHistory()
+    }
+
+    func flushHistory() {
+        positionSave?.cancel()
         persistHistory()
     }
 
     func updateTitle(_ title: String, for url: URL) {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty, let index = recentLinks.firstIndex(where: { $0.address == url.absoluteString }) else { return }
+        guard !title.isEmpty, let index = recentLinks.firstIndex(where: { $0.address == url.absoluteString }),
+              recentLinks[index].title != title else { return }
         recentLinks[index].title = title
         persistHistory()
     }
 
     func removeRecent(_ link: RecentLink) {
+        historyRevision += 1
         recentLinks.removeAll { $0.id == link.id }
         persistHistory()
     }
 
     func clearHistory() {
+        historyRevision += 1
+        positionSave?.cancel()
         isHistoryClearPending = false
         recentLinks = []
         resetRecentDisplayLimit()

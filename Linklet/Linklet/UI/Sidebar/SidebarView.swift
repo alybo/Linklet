@@ -431,7 +431,7 @@ struct SidebarView: View {
     private var recentContents: some View {
         VStack(alignment: .leading, spacing: layout.rowGap) {
             ForEach(library.visibleRecentLinks) { link in
-                Button { if let url = link.url { open(url) } } label: {
+                Button { dismiss(); model.showRecentLink(link) } label: {
                     linkLabel(title: link.title, address: link.address)
                 }.buttonStyle(.plain)
                 .contextMenu {
@@ -816,7 +816,7 @@ struct SidebarSettingsView: View {
             }
             Section(L("Recent links")) {
                 Toggle(L("Save history between launches"), isOn: Binding(get: { library.savesHistory }, set: library.setSavesHistory))
-                Text(L("Only links opened in Linklet are listed. Page redirects and sign-in windows are excluded. Up to 200 links are kept; turning saving off removes history from disk."))
+                Text(L("Visited pages and their scroll positions appear here. The last page of a closed window moves to the top. Up to 200 links are kept; turning saving off removes history from disk."))
                     .font(.caption).foregroundStyle(.secondary)
                 Button(L("Clear history"), action: library.requestHistoryClear)
                     .disabled(library.recentLinks.isEmpty)

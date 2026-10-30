@@ -27,6 +27,7 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         }
         session.makePopup = parent.makePopup
         session.onSiteLoaded = parent.onSiteLoaded
+        session.history = parent.history
         webView = WKWebView(frame: .zero, configuration: configuration)
         coordinator = WebPreview.Coordinator(session: session)
         let width = min(max(features.width?.doubleValue ?? PreviewWindowAppearance.initialContentSize.width,

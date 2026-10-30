@@ -44,6 +44,7 @@ final class AppModel: ObservableObject {
     }
     @Published var isChoosingDataMode = false
     private var pendingPreviewURL: URL?
+    private var pendingPreviewPosition: PagePosition?
     private var resumeAfterSettingsURL: URL?
     private var previewRequestID = UUID()
     @Published private var manualTargetOrder: [String]
@@ -146,7 +147,7 @@ final class AppModel: ObservableObject {
             guard let settings = self?.searchSettings else { return }
             Task { await settings.ensureIcon(for: url, refresh: true) }
         }
-        previewSession.onPageFinished = { [weak self] url, title in self?.linkLibrary.updateTitle(title, for: url) }
+        previewSession.history = self.linkLibrary
         previewSession.makePopup = { [weak self] configuration, parent, features in
             WebPopupWindowController(configuration: configuration, parent: parent, features: features, model: self)
         }
@@ -256,14 +257,15 @@ final class AppModel: ObservableObject {
         showPreview(url: url)
     }
 
-    func showPreview(url: URL) {
+    func showPreview(url: URL, restoring position: PagePosition? = nil) {
         if opensLinksInNewWindows, siteData.hasChosenMode, hasVisiblePreviewWindow {
-            showPreviewInNewWindow(url: url)
+            showPreviewInNewWindow(url: url, restoring: position)
             return
         }
         searchWindowController.close()
         previewRequestID = UUID()
         pendingPreviewURL = url
+        pendingPreviewPosition = position
         resumeAfterSettingsURL = nil
         previewSession.endSession(resetTemporaryData: false)
         if !siteData.hasChosenMode {
@@ -272,7 +274,8 @@ final class AppModel: ObservableObject {
         } else {
             isChoosingDataMode = false
             pendingPreviewURL = nil
-            previewWindowController.show(url: url)
+            pendingPreviewPosition = nil
+            previewWindowController.show(url: url, restoring: position)
         }
     }
 
@@ -281,7 +284,14 @@ final class AppModel: ObservableObject {
         isChoosingDataMode = false
         siteData.selectModeForPreview(save)
         pendingPreviewURL = nil
-        previewWindowController.show(url: url)
+        let position = pendingPreviewPosition
+        pendingPreviewPosition = nil
+        previewWindowController.show(url: url, restoring: position)
+    }
+
+    func showRecentLink(_ link: RecentLink) {
+        guard let url = link.url else { return }
+        showPreview(url: url, restoring: link.position)
     }
 
     func openDataSettingsFromChoice() {
@@ -302,6 +312,7 @@ final class AppModel: ObservableObject {
     func previewDidEnd() {
         previewRequestID = UUID()
         pendingPreviewURL = nil
+        pendingPreviewPosition = nil
         isChoosingDataMode = false
         previewSession.endSession()
         if siteData.isEnabled { Task { await siteData.refresh() } }
@@ -519,7 +530,7 @@ final class AppModel: ObservableObject {
         windowRegistry.hasVisibleWindows
     }
 
-    private func showPreviewInNewWindow(url: URL) {
+    private func showPreviewInNewWindow(url: URL, restoring position: PagePosition? = nil) {
         let referenceFrame = windowRegistry.lastVisibleFrame
         let child = AppModel(
             defaults: defaults,
@@ -545,7 +556,7 @@ final class AppModel: ObservableObject {
         childPreviewModels.append(child)
         // This destination shares the registry with already visible pages. Present
         // it directly instead of routing it through the new-window decision again.
-        child.previewWindowController.show(url: url)
+        child.previewWindowController.show(url: url, restoring: position)
     }
 
     private func closeAllPreviewWindows() {

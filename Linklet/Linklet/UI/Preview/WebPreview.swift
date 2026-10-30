@@ -12,6 +12,7 @@ struct WebPreview: NSViewRepresentable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         PageFindHighlighter.shared.install(in: configuration.userContentController)
+        PreviewPageStateBridge.shared.install(in: configuration.userContentController)
         // Preserve WebKit's native Macintosh/engine tokens and add Safari's
         // browser identity. Generic WKWebView UA lacks these tokens, so sites
         // such as Google may fall back to an unsupported-browser/basic page.
@@ -53,6 +54,7 @@ struct WebPreview: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private weak var session: PreviewSession?
         private var observations: [NSKeyValueObservation] = []
+        private var activeNavigation: WKNavigation?
         var popupWindows: [UUID: WebPopupWindowController] {
             guard let session else { return [:] }
             return session.windowRegistry.webWindows(openedBy: session.windowID)
@@ -93,19 +95,22 @@ struct WebPreview: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation?) {
             cancelFileUpload()
+            activeNavigation = navigation
             Task { @MainActor [weak self] in
-                if self?.session?.webView === webView { self?.session?.pageFind.navigationStarted() }
-                self?.session?.synchronize(from: webView)
+                guard let self, self.isCurrent(navigation) else { return }
+                self.session?.navigationDidStart(in: webView)
             }
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation?) {
             Task { @MainActor [weak self] in
-                self?.session?.navigationDidCommit(in: webView)
+                guard let self, self.isCurrent(navigation) else { return }
+                self.session?.navigationDidCommit(in: webView)
             }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
+            guard isCurrent(navigation) else { return }
             synchronize(webView)
             session?.pageDidFinish(in: webView)
             if let session, session.webView === webView, !session.isWelcome, session.siteData.isEnabled {
@@ -118,7 +123,7 @@ struct WebPreview: NSViewRepresentable {
             didFail navigation: WKNavigation?,
             withError error: Error
         ) {
-            report(error, webView: webView)
+            report(error, webView: webView, navigation: navigation)
         }
 
         func webView(
@@ -126,7 +131,17 @@ struct WebPreview: NSViewRepresentable {
             didFailProvisionalNavigation navigation: WKNavigation?,
             withError error: Error
         ) {
-            report(error, webView: webView)
+            report(error, webView: webView, navigation: navigation)
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            cancelFileUpload()
+            session?.webContentProcessDidTerminate(in: webView)
+        }
+
+        private func isCurrent(_ navigation: WKNavigation?) -> Bool {
+            guard let navigation, let activeNavigation else { return true }
+            return navigation === activeNavigation
         }
 
         func webView(
@@ -267,6 +282,9 @@ struct WebPreview: NSViewRepresentable {
                URLPolicy.canPreview(url) || ["blob", "data"].contains(url.scheme?.lowercased() ?? "") {
                 decisionHandler(.download)
             } else if URLPolicy.canPreview(url) || url.scheme == "about" {
+                if navigationAction.targetFrame?.isMainFrame == true {
+                    session?.prepareNavigation(navigationAction.request, in: webView)
+                }
                 decisionHandler(.allow)
             } else if url.isFileURL {
                 // A drop outside a file input/drop zone must not open a local
@@ -289,10 +307,7 @@ struct WebPreview: NSViewRepresentable {
                 decisionHandler(.download)
                 return
             }
-            if navigationResponse.isForMainFrame,
-               let response = navigationResponse.response as? HTTPURLResponse, response.statusCode == 403 {
-                session?.errorMessage = L("This website refused access. If sign-in is blocked, continue in your chosen browser from the original site link.")
-            }
+            // HTTP error documents belong to the website; render their content.
             decisionHandler(.allow)
         }
 
@@ -324,16 +339,89 @@ struct WebPreview: NSViewRepresentable {
             }
         }
 
-        private func report(_ error: Error, webView: WKWebView) {
+        private func report(_ error: Error, webView: WKWebView, navigation: WKNavigation?) {
             let nsError = error as NSError
-            guard nsError.code != NSURLErrorCancelled else { return }
+            guard !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled),
+                  !(nsError.domain == "WebKitErrorDomain" && nsError.code == 102) else { return }
             Task { @MainActor [weak self] in
-                guard self?.session?.webView === webView else { return }
-                self?.session?.navigationDidFail(in: webView)
-                self?.session?.errorMessage = error.localizedDescription
+                guard let self, self.isCurrent(navigation), self.session?.webView === webView else { return }
+                self.session?.navigationDidFail(in: webView, error: nsError)
             }
         }
     }
+}
+
+/// Main-frame scroll state lives in an isolated world, without changing page
+/// history/selection or copying forms, cookies or DOM content into our history.
+@MainActor
+final class PreviewPageStateBridge: NSObject, WKScriptMessageHandler {
+    static let shared = PreviewPageStateBridge()
+    static let world = WKContentWorld.world(name: "Linklet.PagePosition")
+    private let installed = NSHashTable<WKUserContentController>.weakObjects()
+    private let owners = NSMapTable<WKWebView, PreviewSession>.weakToWeakObjects()
+
+    func install(in controller: WKUserContentController) {
+        guard !installed.contains(controller) else { return }
+        installed.add(controller)
+        controller.add(self, contentWorld: Self.world, name: "linkletPagePosition")
+        controller.addUserScript(WKUserScript(source: Self.script, injectionTime: .atDocumentStart,
+                                              forMainFrameOnly: true, in: Self.world))
+    }
+
+    func attach(_ view: WKWebView, session: PreviewSession) {
+        install(in: view.configuration.userContentController)
+        owners.setObject(session, forKey: view)
+    }
+    func detach(_ view: WKWebView) { owners.removeObject(forKey: view) }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let view = message.webView,
+              let session = owners.object(forKey: view), let data = message.body as? [String: Any],
+              let address = data["url"] as? String, let url = URL(string: address),
+              let x = data["x"] as? Double, let y = data["y"] as? Double else { return }
+        session.receivePosition(PagePosition(x: x, y: y), for: url, in: view,
+                                restoring: data["restoring"] as? Bool == true)
+    }
+
+    func capture(in view: WKWebView) {
+        view.callAsyncJavaScript("return globalThis.__linkletPagePosition?.send()", arguments: [:], in: nil, in: Self.world) { _ in }
+    }
+
+    func restore(_ position: PagePosition, in view: WKWebView) {
+        guard position.isValid else { return }
+        view.callAsyncJavaScript("globalThis.__linkletPagePosition?.restore(x,y)",
+                                 arguments: ["x": position.x, "y": position.y], in: nil, in: Self.world) { _ in }
+    }
+
+    private static let script = #"""
+    (() => {
+      if (globalThis.__linkletPagePosition) return;
+      let frame=0, restoring=false, timer=0, observer=null;
+      function send() {
+        frame=0;
+        webkit.messageHandlers.linkletPagePosition.postMessage({url:location.href,x:scrollX,y:scrollY,restoring});
+      }
+      function cancelRestore() {
+        if (!restoring) return;
+        restoring=false; clearInterval(timer); observer?.disconnect(); observer=null; send();
+      }
+      function restore(x,y) {
+        cancelRestore(); restoring=true; send();
+        const deadline=performance.now()+5000;
+        function attempt() {
+          scrollTo({left:x,top:y,behavior:'instant'});
+          if ((Math.abs(scrollX-x)<2 && Math.abs(scrollY-y)<2) || performance.now()>deadline) cancelRestore();
+        }
+        observer=new ResizeObserver(attempt); observer.observe(document.documentElement);
+        if(document.body) observer.observe(document.body);
+        timer=setInterval(attempt,100); requestAnimationFrame(attempt);
+      }
+      addEventListener('scroll',()=>{if(!frame) frame=requestAnimationFrame(send)}, {passive:true});
+      for(const event of ['wheel','pointerdown','touchstart','keydown']) addEventListener(event,cancelRestore,{passive:true,capture:true});
+      addEventListener('pageshow',send); addEventListener('pagehide',()=>{cancelRestore();send()});
+      globalThis.__linkletPagePosition={send,restore};
+    })();
+    """#
 }
 
 @MainActor

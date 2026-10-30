@@ -5,11 +5,12 @@ import Network
 import Carbon
 import ImageIO
 import ObjectiveC
+import Darwin
 @testable import Linklet
 
 @MainActor
 final class LinkLibraryTests: XCTestCase {
-    func testHistoryIsOptInBoundedAndKeepsOnlyIncomingLinks() throws {
+    func testHistoryIsOptInBoundedAndIndependentOfSidebar() throws {
         let suite = "LinkLibraryTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -18,7 +19,7 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertFalse(library.isEnabled)
         XCTAssertFalse(library.savesHistory)
         library.recordOpening(url)
-        XCTAssertTrue(library.recentLinks.isEmpty)
+        XCTAssertEqual(library.recentLinks.count, 1, "History does not depend on sidebar visibility")
         library.setEnabled(true)
         library.recordOpening(url)
         library.updateTitle("Example", for: url)
@@ -40,6 +41,40 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertTrue(LinkLibrary(defaults: defaults).recentLinks.isEmpty)
         library.clearHistory()
         XCTAssertTrue(library.recentLinks.isEmpty)
+    }
+
+    func testHistoryMigratesPositionsAndDoesNotUndoClearOrOptOut() async throws {
+        let suite = "HistoryPositions.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let url = URL(string: "https://example.com/article")!
+        defaults.set(true, forKey: "sidebarSavesHistory")
+        defaults.set(try JSONSerialization.data(withJSONObject: [["id": UUID().uuidString,
+            "address": url.absoluteString, "title": "Old history", "openedAt": 0]]), forKey: "recentLinks")
+        let library = LinkLibrary(defaults: defaults)
+        XCTAssertEqual(library.recentLinks.first?.title, "Old history")
+        XCTAssertNil(library.recentLinks.first?.position)
+        library.updatePosition(PagePosition(x: 0, y: 720), for: url)
+        library.recordClosing(url, title: "Article", position: PagePosition(x: 0, y: 720))
+        XCTAssertEqual(LinkLibrary(defaults: defaults).recentLinks.first?.position?.y, 720)
+        library.clearHistory()
+        library.recordClosing(URL(string: "about:blank")!, title: "Not a history page", position: .top,
+                              revision: library.historyRevision)
+        XCTAssertTrue(library.recentLinks.isEmpty)
+        library.updatePosition(PagePosition(x: 0, y: 800), for: url)
+        library.recordClosing(url, title: "Must stay cleared", position: .top)
+        XCTAssertTrue(library.recentLinks.isEmpty)
+        library.recordVisit(url, title: "New visit")
+        library.updatePosition(PagePosition(x: 0, y: 900), for: url)
+        library.flushHistory()
+        XCTAssertEqual(LinkLibrary(defaults: defaults).recentLinks.first?.position?.y, 900,
+                       "Quitting must flush positions before the scroll debounce expires")
+        library.updatePosition(PagePosition(x: 0, y: 950), for: url)
+        library.setSavesHistory(false)
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertNil(defaults.data(forKey: "recentLinks"))
+        XCTAssertEqual(library.recentLinks.first?.position?.y, 950)
+        XCTAssertTrue(LinkLibrary(defaults: defaults).recentLinks.isEmpty)
     }
 
     func testFoldersReuseFavoritesAndRemovingFolderKeepsBookmarks() throws {
@@ -1276,6 +1311,172 @@ final class LinkLibraryTests: XCTestCase {
 
 @MainActor
 final class WebPopupTests: XCTestCase {
+    func testHistoryTracksRedirectSPAAndReopensLastClosedPosition() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "VisitedHistory.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        defaults.set(true, forKey: "sidebarSavesHistory")
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in Data() })
+        let model = AppModel(defaults: defaults, searchSettings: settings, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let incoming = URL(string: "http://127.0.0.1:\(port)/history-start")!
+        let reader = URL(string: "http://127.0.0.1:\(port)/history-reader")!
+        model.showPreview(url: incoming)
+        let session = model.previewSession
+        try await waitUntil { session.pageTitle == "Reader" && !session.isLoading }
+        XCTAssertFalse(model.linkLibrary.isEnabled)
+        XCTAssertEqual(session.originalURL, incoming)
+        XCTAssertEqual(model.linkLibrary.recentLinks.map(\.address), [reader.absoluteString])
+        let view = try XCTUnwrap(session.webView)
+        let window = try XCTUnwrap(view.window)
+        _ = try await view.evaluateJavaScript("history.pushState(null,'','/history-reader?section=last#note');document.title='Reader — last';scrollTo(0,1250);true")
+        let final = URL(string: reader.absoluteString + "?section=last#note")!
+        try await waitUntil {
+            model.linkLibrary.recentLinks.first?.address == final.absoluteString &&
+            model.linkLibrary.recentLinks.first?.title == "Reader — last" &&
+            (model.linkLibrary.recentLinks.first?.position?.y ?? 0) >= 1249
+        }
+        _ = try await view.evaluateJavaScript("window.open('/destination','history-child');true")
+        try await waitUntil { model.linkLibrary.recentLinks.first?.title == "Destination" }
+        window.performClose(nil)
+        try await waitUntil { !session.isActive }
+        let closed = try XCTUnwrap(model.linkLibrary.recentLinks.first)
+        XCTAssertEqual(closed.address, final.absoluteString, "The last closed location moves above newer visits in other windows")
+        XCTAssertEqual(closed.position?.y ?? 0, 1250, accuracy: 2)
+        let persisted = try XCTUnwrap(LinkLibrary(defaults: defaults).recentLinks.first)
+        XCTAssertEqual(persisted.address, final.absoluteString)
+        XCTAssertEqual(persisted.position?.y ?? 0, 1250, accuracy: 2)
+        model.showRecentLink(closed)
+        try await waitUntil { session.currentURL == final && !session.isLoading && session.webView != nil }
+        let reopened = try XCTUnwrap(session.webView)
+        try await waitUntil { ((try? await reopened.evaluateJavaScript("scrollY")) as? Double ?? 0) >= 1249 }
+        XCTAssertEqual(session.originalURL, final)
+        XCTAssertNil(session.pageFailure)
+        XCTAssertNotNil(model.linkLibrary.recentLinks.first { $0.address == reader.absoluteString })
+        // Back/forward visits also use their real URL rather than the incoming URL.
+        _ = try await reopened.evaluateJavaScript("history.pushState(null,'','/history-reader?second');true")
+        try await waitUntil { model.linkLibrary.recentLinks.first?.address.hasSuffix("?second") == true }
+        session.goBack()
+        try await waitUntil { session.currentURL == final && model.linkLibrary.recentLinks.first?.address == final.absoluteString }
+    }
+
+    func testNetworkRetryAndRealWebContentRecoveryKeepWindowAndHistory() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "Recovery.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in Data() })
+        let model = AppModel(defaults: defaults, searchSettings: settings, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let original = URL(string: "http://127.0.0.1:\(port)/site")!
+        let target = URL(string: "http://127.0.0.1:\(port)/recovery")!
+        model.showPreview(url: original)
+        let session = model.previewSession
+        try await waitUntil { session.pageTitle == "Original site" && !session.isLoading }
+        let view = try XCTUnwrap(session.webView)
+        let window = try XCTUnwrap(view.window)
+        let navigationID = session.navigationID
+        _ = try await view.evaluateJavaScript("window.recoverySentinel='kept';true")
+        XCTAssertTrue(session.submitAddress(target.absoluteString, engine: .google))
+        try await waitUntil { session.pageFailure != nil && !session.isLoading }
+        XCTAssertEqual(session.pageFailure?.url, target)
+        XCTAssertEqual(session.currentURL, target)
+        XCTAssertEqual(session.originalURL, original)
+        XCTAssertFalse(model.linkLibrary.recentLinks.contains { $0.address == target.absoluteString })
+        XCTAssertTrue(session.canReturnToLoadedPage)
+        session.returnToLoadedPage()
+        let sentinel = try await view.evaluateJavaScript("window.recoverySentinel") as? String
+        XCTAssertEqual(sentinel, "kept", "Returning from a provisional error must keep the live page and its form state")
+        XCTAssertEqual(session.currentURL, original)
+        XCTAssertTrue(session.submitAddress(target.absoluteString, engine: .google))
+        try await waitUntil { session.pageFailure != nil }
+        window.contentView?.layoutSubtreeIfNeeded()
+        if let content = window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-page-error.png"))
+        }
+        server.enableRecovery()
+        let button = try XCTUnwrap(window.contentView.flatMap { accessibilityNode(in: $0, identifier: "preview-retry-page") })
+        XCTAssertEqual(button.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { session.pageFailure == nil && session.pageTitle == "Recovered" && !session.isLoading }
+        XCTAssertTrue(session.webView === view)
+        XCTAssertEqual(session.navigationID, navigationID)
+        XCTAssertEqual(session.originalURL, original)
+        XCTAssertEqual(model.linkLibrary.recentLinks.first?.address, target.absoluteString)
+        let other = UploadTestPage(url: original)
+        defer { other.close() }
+        try await waitUntil { other.session.pageTitle == "Original site" && !other.session.isLoading }
+        _ = try await other.view.evaluateJavaScript("window.independentSentinel='alive';true")
+        session.changePageZoom(increase: true)
+        // A client-requested WebKit termination suppresses the public crash
+        // callback. Kill only this fixture view's own WebContent PID instead.
+        // These runtime hooks exist only in the test bundle, not production.
+        let processID = NSSelectorFromString("_webProcessIdentifier")
+        guard view.responds(to: processID) else { throw XCTSkip("This WebKit lacks the test-only WebContent PID accessor") }
+        typealias ProcessIDGetter = @convention(c) (AnyObject, Selector) -> Int32
+        let getter = unsafeBitCast(view.method(for: processID), to: ProcessIDGetter.self)
+        let pid = getter(view, processID)
+        guard pid > 0, pid != getpid() else { throw XCTSkip("The fixture has no live WebContent process") }
+        XCTAssertEqual(Darwin.kill(pid, SIGKILL), 0)
+        try await waitUntil { session.pageFailure?.kind == .crashed }
+        XCTAssertTrue(window.isVisible)
+        XCTAssertNil(other.session.pageFailure)
+        let otherSentinel = try await other.view.evaluateJavaScript("window.independentSentinel") as? String
+        XCTAssertEqual(otherSentinel, "alive")
+        let requests = server.pageRequests.count
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(server.pageRequests.count, requests, "Do not automatically reload after a crash")
+        session.reload() // Same action as Cmd-R, with an explicit recovery request.
+        try await waitUntil { session.pageFailure == nil && session.pageTitle == "Recovered" && !session.isLoading }
+        XCTAssertTrue(session.webView === view)
+        XCTAssertEqual(view.pageZoom, 1.1, accuracy: 0.001)
+        XCTAssertEqual(session.originalURL, original)
+    }
+
+    func testCancellationHTTPDocumentsAndUnsafePOSTRetryAreHandledSeparately() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let original = URL(string: "http://127.0.0.1:\(port)/site")!
+        let page = UploadTestPage(url: original)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Original site" && !page.session.isLoading }
+        page.coordinator.webView(page.view, didFailProvisionalNavigation: nil,
+                                 withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(page.session.pageFailure)
+        XCTAssertTrue(page.session.submitAddress("http://127.0.0.1:\(port)/http-error", engine: .google))
+        try await waitUntil { page.session.pageTitle == "Access denied by website" && !page.session.isLoading }
+        XCTAssertNil(page.session.pageFailure)
+        XCTAssertNil(page.session.errorMessage, "HTTP error documents should render without a second modal error")
+        let target = URL(string: "http://127.0.0.1:\(port)/post-failure")!
+        var request = URLRequest(url: target)
+        request.httpMethod = "POST"
+        page.session.prepareNavigation(request, in: page.view)
+        page.coordinator.webView(page.view, didFailProvisionalNavigation: nil,
+            withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet,
+                               userInfo: [NSURLErrorFailingURLErrorKey: target]))
+        try await waitUntil { page.session.pageFailure != nil }
+        XCTAssertEqual(page.session.pageFailure?.kind, .offline)
+        XCTAssertFalse(page.session.pageFailure?.allowsRetry ?? true, "Never turn an uncommitted POST into an accidental GET or replay an unavailable body")
+        let before = server.pageRequests.count
+        page.session.retryPageLoad()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(server.pageRequests.count, before)
+        page.session.returnToLoadedPage()
+        page.coordinator.webView(page.view, didFailProvisionalNavigation: nil,
+            withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorServerCertificateUntrusted,
+                               userInfo: [NSURLErrorFailingURLErrorKey: target]))
+        try await waitUntil { page.session.pageFailure?.kind == .certificate }
+    }
+
     func testBookmarkStateAndAddressCopyFeedbackInIndependentWindows() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
@@ -2780,6 +2981,8 @@ private final class PopupHTTPFixture: @unchecked Sendable {
     private let conventionalIcon: Data?
     private var iconVersion = 1
     private var responsesNotModified = 0
+    private var recoveryEnabled = false
+    func enableRecovery() { lock.lock(); recoveryEnabled = true; lock.unlock() }
     private var iconDownloads = 0
     var notModifiedCount: Int { lock.lock(); defer { lock.unlock() }; return responsesNotModified }
     var downloadedIconCount: Int { lock.lock(); defer { lock.unlock() }; return iconDownloads }
@@ -2847,6 +3050,7 @@ private final class PopupHTTPFixture: @unchecked Sendable {
         receivedPageRequests.append(firstLine)
         let currentIcon = iconData
         let currentVersion = iconVersion
+        let canRecover = recoveryEnabled
         lock.unlock()
         if let currentIcon {
             let isIcon = firstLine.hasPrefix("GET /custom-icon.png ")
@@ -2871,7 +3075,25 @@ private final class PopupHTTPFixture: @unchecked Sendable {
         let status: String
         var extraHeaders = ""
         let html: String
-        if firstLine.hasPrefix("GET /photo.png ") {
+        if firstLine.hasPrefix("GET /recovery ") {
+            if !canRecover { connection.cancel(); return }
+            status = "200 OK"
+            html = "<title>Recovered</title><p>The website is available again.</p>"
+        } else if firstLine.hasPrefix("GET /history-start ") {
+            status = "302 Found"
+            extraHeaders = "Location: /history-reader\r\n"
+            html = ""
+        } else if firstLine.hasPrefix("GET /history-reader") {
+            status = "200 OK"
+            html = """
+            <!doctype html><meta charset="utf-8"><title>Reader</title>
+            <style>body{margin:0;font:18px system-ui}main{height:6000px;background:linear-gradient(white,#b5cef3)}p{margin:0;padding:24px}</style>
+            <main><p>History and scroll restoration fixture</p><div style="padding-top:1200px">Last reading position</div></main>
+            """
+        } else if firstLine.hasPrefix("GET /http-error ") {
+            status = "403 Forbidden"
+            html = "<title>Access denied by website</title><p>The website's own error document.</p>"
+        } else if firstLine.hasPrefix("GET /photo.png ") {
             let bytes = Self.picture
             var response = Data("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: \(bytes.count)\r\nConnection: close\r\n\r\n".utf8)
             response.append(bytes)

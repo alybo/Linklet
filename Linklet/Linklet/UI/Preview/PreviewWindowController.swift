@@ -145,10 +145,9 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         initialPositionReferenceFrame = frame
     }
 
-    func show(url: URL) {
+    func show(url: URL, restoring position: PagePosition? = nil) {
         present(initialURL: url) {
-            model.previewSession.load(url)
-            model.linkLibrary.recordOpening(url)
+            model.previewSession.load(url, restoring: position)
         }
     }
 

@@ -110,6 +110,8 @@ struct PreviewPageView: View {
                         WebPreview(session: session).id(session.navigationID)
                     }
                 }.background(Color(nsColor: .textBackgroundColor))
+                    .allowsHitTesting(session.pageFailure == nil)
+                    .accessibilityHidden(session.pageFailure != nil)
             } else {
                 Color(nsColor: .windowBackgroundColor)
             }
@@ -124,6 +126,11 @@ struct PreviewPageView: View {
                     .fill(Color(nsColor: .windowBackgroundColor))
                     .transition(.opacity)
             }
+            if let failure = session.pageFailure {
+                PreviewPageFailureView(session: session, failure: failure)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: .textBackgroundColor))
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: PreviewLayout.contentCornerRadius, style: .continuous))
         .overlay {
@@ -132,7 +139,7 @@ struct PreviewPageView: View {
                 .allowsHitTesting(false)
         }
         .overlay(alignment: .topTrailing) {
-            PreviewFindOverlay(controller: session.pageFind)
+            if session.pageFailure == nil { PreviewFindOverlay(controller: session.pageFind) }
         }
         .animation(.easeOut(duration: 0.13), value: session.isPreparingNewPage)
     }
@@ -147,6 +154,42 @@ struct PreviewPageView: View {
             return L("Preview")
         }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+}
+
+private struct PreviewPageFailureView: View {
+    @ObservedObject var session: PreviewSession
+    let failure: PageLoadFailure
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: failure.kind == .offline ? "wifi.slash" : (failure.kind == .crashed ? "arrow.clockwise.circle" : "exclamationmark.circle"))
+                .font(.system(size: 30, weight: .light)).foregroundStyle(.secondary)
+            Text(failure.title).font(.system(size: 18, weight: .semibold))
+            Text(failure.explanation).font(.system(size: 13)).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            if let url = failure.url {
+                Text(url.absoluteString).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+            }
+            if failure.resubmitsForm {
+                Text(L(failure.allowsRetry
+                    ? "Submitting again may repeat an action on this website."
+                    : "Return to the website to submit the form again."))
+                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+            HStack(spacing: 10) {
+                if session.canReturnToLoadedPage {
+                    Button(L("Return to page"), action: session.returnToLoadedPage)
+                }
+                if failure.allowsRetry {
+                    Button(L(failure.resubmitsForm ? "Retry submission" : (failure.kind == .crashed ? "Restore page" : "Try again")),
+                           action: session.retryPageLoad)
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("preview-retry-page")
+                }
+            }.padding(.top, 4)
+        }.frame(maxWidth: 360).padding(24)
+            .accessibilityElement(children: .contain)
     }
 }
 
