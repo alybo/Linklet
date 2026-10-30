@@ -176,6 +176,7 @@ struct SidebarMetrics {
     var footerIconSize: CGFloat { 11 + iconSize / 4 }
     var labelFont: Font { .system(size: labelSize, weight: .semibold) }
     var groupFont: Font { .system(size: max(10, labelSize - 1), weight: .semibold) }
+    var emptyFont: Font { .system(size: max(10, labelSize - 2), weight: .regular) }
     var sectionFont: Font { .system(size: max(10, labelSize - 2), weight: .bold) }
     var sectionIconSize: CGFloat { max(11, labelSize - 1) }
     var sectionHeaderHeight: CGFloat { max(24, labelSize + 8) }
@@ -342,7 +343,7 @@ struct SidebarView: View {
                 DownloadSidebarRow(item: item, manager: downloads, layout: layout)
             }
             if downloads.items.isEmpty {
-                Text(L("No downloads.")).font(layout.groupFont).foregroundStyle(.secondary)
+                emptyMessage("No downloads.")
             }
         }.padding(.top, layout.rowGap)
     }
@@ -358,8 +359,7 @@ struct SidebarView: View {
             }
             dropSlot(before: nil, folder: nil)
             if settings.favoriteSites.isEmpty && library.folders.isEmpty {
-                Text(L("Save links here or add the current page with the bookmark button."))
-                    .font(layout.groupFont).foregroundStyle(.secondary)
+                emptyMessage("Save links here or add the current page with the bookmark button.")
             }
         }
     }
@@ -401,7 +401,7 @@ struct SidebarView: View {
                     }
             }
             if windows.windows.isEmpty {
-                Text(L("No open windows.")).font(layout.groupFont).foregroundStyle(.secondary)
+                emptyMessage("No open windows.")
                     .accessibilityIdentifier("sidebar-open-empty")
             }
         }.padding(.top, layout.rowGap)
@@ -419,7 +419,7 @@ struct SidebarView: View {
                 }
             }
             if library.recentLinks.isEmpty {
-                Text(L("No recent links.")).font(layout.groupFont).foregroundStyle(.secondary)
+                emptyMessage("No recent links.")
             } else {
                 HStack(spacing: 12) {
                     if library.hasMoreRecentLinks { Button(L("Show more"), action: library.showMoreRecentLinks) }
@@ -430,6 +430,14 @@ struct SidebarView: View {
     }
 
     private func open(_ url: URL) { dismiss(); model.showPreview(url: url) }
+
+    private func emptyMessage(_ key: String) -> some View {
+        Text(L(key))
+            .font(layout.emptyFont)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, layout.iconSize + layout.iconGap)
+    }
 
     @State private var targetedDrop: UUID?
 
@@ -450,6 +458,7 @@ struct SidebarView: View {
                         Spacer(minLength: 0)
                         Image(systemName: expanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                            .frame(width: 20)
                     }.frame(height: layout.rowHeight).contentShape(Rectangle())
                 }.buttonStyle(.plain)
                 .background(targetedDrop == folder.id ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 8))
@@ -467,7 +476,7 @@ struct SidebarView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(sites) { bookmarkRow($0) }
                         dropSlot(before: nil, folder: folder.id).padding(.bottom, -layout.rowGap)
-                        if sites.isEmpty { Text(L("Empty folder")).font(layout.groupFont).foregroundStyle(.secondary).padding(.vertical, 6) }
+                        if sites.isEmpty { emptyMessage("Empty folder").padding(.vertical, 6) }
                     }.padding(.leading, 20)
                 }
             }
