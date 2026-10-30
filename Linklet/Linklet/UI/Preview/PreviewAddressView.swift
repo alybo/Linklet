@@ -81,7 +81,9 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     private var resignObserver: NSObjectProtocol?
     private var hoverArea: NSTrackingArea?
     private var isHovered = false
-    private static let copyButtonWidth: CGFloat = 26
+    private static let horizontalInset: CGFloat = 12
+    private static let copyButtonWidth: CGFloat = 14
+    private static let iconTextSpacing: CGFloat = 8
 
     static func compactAddress(for url: URL) -> String {
         guard var host = url.host, !host.isEmpty else { return url.absoluteString }
@@ -94,7 +96,8 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     static func compactWidth(for url: URL) -> CGFloat {
         let text = compactAddress(for: url) as NSString
         let font: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11)]
-        return min(180, max(60, ceil(text.size(withAttributes: font).width) + 16 + copyButtonWidth))
+        return min(180, max(60, ceil(text.size(withAttributes: font).width)
+                            + 2 * horizontalInset + copyButtonWidth + iconTextSpacing))
     }
 
     override init(frame frameRect: NSRect) {
@@ -161,9 +164,10 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
 
     override func layout() {
         super.layout()
-        copyButton.frame = NSRect(x: 0, y: 0, width: Self.copyButtonWidth, height: bounds.height)
-        addressButton.frame = NSRect(x: Self.copyButtonWidth, y: 0,
-                                     width: max(0, bounds.width - Self.copyButtonWidth), height: bounds.height)
+        copyButton.frame = NSRect(x: Self.horizontalInset, y: 0, width: Self.copyButtonWidth, height: bounds.height)
+        let textX = copyButton.frame.maxX + Self.iconTextSpacing
+        addressButton.frame = NSRect(x: textX, y: 0,
+                                     width: max(0, bounds.width - textX - Self.horizontalInset), height: bounds.height)
         // A borderless native field places its editor at the top of its frame.
         // Center the field's natural single-line height, so both glyphs and the
         // live insertion cursor share the center of the surrounding pill.
@@ -194,7 +198,14 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     override func mouseExited(with event: NSEvent) { isHovered = false; needsDisplay = true }
 
     override func mouseDown(with event: NSEvent) {
-        if !isExpanded { expandAddress() } else { super.mouseDown(with: event) }
+        guard !isExpanded else { super.mouseDown(with: event); return }
+        if isCopyPoint(convert(event.locationInWindow, from: nil)) { _ = copyCurrentAddress() }
+        else { expandAddress() }
+    }
+
+    private func isCopyPoint(_ point: NSPoint) -> Bool {
+        // Keep the outer padding clickable while the visible symbol is compact.
+        point.x < Self.horizontalInset + Self.copyButtonWidth + Self.iconTextSpacing / 2
     }
 
     override func viewDidMoveToWindow() {
@@ -271,7 +282,7 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
            bounds.contains(convert(event.locationInWindow, from: nil)),
            event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)) {
             let point = convert(event.locationInWindow, from: nil)
-            if copyButton.frame.contains(point) { _ = copyCurrentAddress() }
+            if isCopyPoint(point) { _ = copyCurrentAddress() }
             else { expandAddress() }
             return nil
         }
