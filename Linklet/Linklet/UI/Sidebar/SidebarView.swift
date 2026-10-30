@@ -176,6 +176,9 @@ struct SidebarMetrics {
     var footerIconSize: CGFloat { 11 + iconSize / 4 }
     var labelFont: Font { .system(size: labelSize, weight: .semibold) }
     var groupFont: Font { .system(size: max(10, labelSize - 1), weight: .semibold) }
+    var sectionFont: Font { .system(size: max(10, labelSize - 2), weight: .bold) }
+    var sectionIconSize: CGFloat { max(11, labelSize - 1) }
+    var sectionHeaderHeight: CGFloat { max(24, labelSize + 8) }
     var rowHeight: CGFloat { max(iconSize + 2, labelSize * 1.4) }
     var rowGap: CGFloat { 20 * labelSize / 13 }
     var iconGap: CGFloat { 8 }
@@ -235,7 +238,6 @@ struct SidebarView: View {
                 Text("Linklet").font(layout.labelFont)
                 Spacer()
             }.padding(16)
-            Divider().padding(.horizontal, SidebarLayout.inset)
             ScrollViewReader { proxy in
                 ScrollView {
                     if let presentation = editor.presentation {
@@ -255,7 +257,7 @@ struct SidebarView: View {
                         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
                         .padding(SidebarLayout.inset)
                     } else {
-                        LazyVStack(alignment: .leading, spacing: 2) {
+                        LazyVStack(alignment: .leading, spacing: layout.rowGap) {
                             ForEach(library.sectionOrder) { section in sidebarSection(section) }
                         }.padding(SidebarLayout.inset)
                     }
@@ -268,7 +270,6 @@ struct SidebarView: View {
             if library.isHistoryClearPending {
                 HistoryClearConfirmation(library: library).padding(.horizontal, SidebarLayout.inset).padding(.bottom, 12)
             }
-            Divider().padding(.horizontal, SidebarLayout.inset)
             HStack {
                 Button { dismiss(); model.showSettings(page: .sidebar) } label: {
                     Image(systemName: "gearshape").font(.system(size: layout.footerIconSize))
@@ -297,44 +298,23 @@ struct SidebarView: View {
 
     private func sidebarSection(_ section: SidebarSection) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Button { library.toggleSection(section) } label: {
-                    HStack(spacing: layout.iconGap) {
-                        Image(systemName: library.expandedSections.contains(section) ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 9, weight: .semibold)).frame(width: 10)
-                        Text(section.title)
-                            .font(layout.groupFont).foregroundStyle(SidebarLayout.groupColor)
-                        if section == .open, !windows.windows.isEmpty {
-                            Text("\(windows.windows.count)")
-                                .font(layout.groupFont).foregroundStyle(.secondary)
-                        }
-                        if section == .downloads, downloads.activeCount > 0 {
-                            Text("\(downloads.activeCount)").font(layout.groupFont).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                    }.frame(height: layout.rowHeight).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                    .accessibilityIdentifier("sidebar-section-\(section.rawValue)")
-                    .accessibilityValue(library.expandedSections.contains(section) ? L("Expanded") : L("Collapsed"))
-                if section == .bookmarks {
-                    Menu {
-                        Button(L("Add bookmark")) { editor.showBookmark() }
-                        Button(L("New folder")) { editor.showFolder() }
-                    } label: { Image(systemName: "plus").font(.system(size: 12)) }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help(L("Add bookmark or folder"))
-                }
-                if section == .downloads, downloads.items.contains(where: { !$0.isActive }) {
-                    Button { downloads.clearFinished() } label: {
-                        Image(systemName: "xmark").font(.system(size: 10))
-                    }.buttonStyle(.plain).help(L("Clear completed downloads"))
-                        .accessibilityLabel(L("Clear completed downloads"))
-                }
-            }
+            SidebarSectionHeader(section: section, layout: layout,
+                expanded: library.expandedSections.contains(section),
+                count: section == .open ? windows.windows.count : section == .downloads ? downloads.activeCount : 0,
+                toggle: { library.toggleSection(section) },
+                addBookmark: section == .bookmarks ? { editor.showBookmark() } : nil,
+                clearDownloads: section == .downloads && downloads.items.contains(where: { !$0.isActive })
+                    ? { downloads.clearFinished() } : nil)
             .onDrag {
                 draggedSection = section
                 return NSItemProvider(object: "linklet-sidebar-section:\(section.rawValue)" as NSString)
             }
             .contextMenu {
+                if section == .bookmarks {
+                    Button(L("Add bookmark")) { editor.showBookmark() }
+                    Button(L("New folder")) { editor.showFolder() }
+                    Divider()
+                }
                 Button(L("Move up")) { library.moveSection(section, before: library.sectionOrder.first) }
                     .disabled(library.sectionOrder.first == section)
                 Button(L("Move down")) { library.moveSection(section, before: nil) }
@@ -348,7 +328,6 @@ struct SidebarView: View {
                 case .downloads: downloadContents
                 }
             }
-            Divider().padding(.vertical, layout.rowGap)
         }
         // The whole section is a target, rather than only the thin header strip.
         .contentShape(Rectangle())
@@ -535,6 +514,72 @@ struct SidebarView: View {
             Text(title).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor).lineLimit(1)
             Spacer(minLength: 0)
         }.frame(height: layout.rowHeight).contentShape(Rectangle()).help(address)
+    }
+}
+
+/// Separate overlay button keeps Add from triggering the section disclosure.
+/// Opacity reserves both controls' space, so hover never shifts the heading.
+private struct SidebarSectionHeader: View {
+    let section: SidebarSection
+    let layout: SidebarMetrics
+    let expanded: Bool
+    let count: Int
+    let toggle: () -> Void
+    let addBookmark: (() -> Void)?
+    let clearDownloads: (() -> Void)?
+    @State private var isHovered = false
+    @FocusState private var focusedControl: Control?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private enum Control: Hashable { case disclosure, action }
+    private var showsControls: Bool { isHovered || focusedControl != nil }
+    private var hasAction: Bool { addBookmark != nil || clearDownloads != nil }
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: layout.iconGap) {
+                Image(systemName: section.symbol)
+                    .font(.system(size: layout.sectionIconSize, weight: .medium))
+                    .frame(width: layout.iconSize)
+                    .accessibilityHidden(true)
+                Text(section.title).font(layout.sectionFont).lineLimit(1)
+                if count > 0 { Text("\(count)").font(layout.sectionFont) }
+                Spacer(minLength: hasAction ? 28 : 0)
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 20, height: layout.sectionHeaderHeight)
+                    .opacity(showsControls ? 1 : 0)
+                    .accessibilityHidden(true)
+            }
+            .frame(height: layout.sectionHeaderHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(SidebarLayout.groupColor)
+        .focused($focusedControl, equals: .disclosure)
+        .accessibilityIdentifier("sidebar-section-\(section.rawValue)")
+        .accessibilityValue(expanded ? L("Expanded") : L("Collapsed"))
+        .overlay(alignment: .trailing) {
+            if let action = addBookmark ?? clearDownloads {
+                Button(action: action) {
+                    Image(systemName: addBookmark != nil ? "plus" : "xmark")
+                        .font(.system(size: addBookmark != nil ? 12 : 10, weight: .medium))
+                        .frame(width: 24, height: layout.sectionHeaderHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(SidebarLayout.groupColor)
+                .focused($focusedControl, equals: .action)
+                .help(L(addBookmark != nil ? "Add bookmark" : "Clear completed downloads"))
+                .accessibilityLabel(L(addBookmark != nil ? "Add bookmark" : "Clear completed downloads"))
+                .accessibilityIdentifier(addBookmark != nil ? "sidebar-add-bookmark" : "sidebar-clear-downloads")
+                .accessibilityHidden(false)
+                .opacity(showsControls ? 1 : 0)
+                .allowsHitTesting(showsControls)
+                .padding(.trailing, 24)
+            }
+        }
+        .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: showsControls)
     }
 }
 

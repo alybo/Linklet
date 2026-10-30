@@ -1355,6 +1355,57 @@ final class LinkLibraryTests: XCTestCase {
 
 @MainActor
 final class WebPopupTests: XCTestCase {
+    func testSidebarFavoritePlusOpensBookmarkFormWithoutTogglingSection() async throws {
+        let pointer = CGEvent(source: nil)?.location
+        defer { if let pointer { CGWarpMouseCursorPosition(pointer) } }
+        let suite = "SidebarFavoriteHeader.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in Data() })
+        let model = AppModel(defaults: defaults, searchSettings: settings, discoverTargets: { [] })
+        model.linkLibrary.setEnabled(true)
+        model.linkLibrary.setSidebarWidth(240)
+        let sidebar = SidebarWindowController(model: model, reduceMotion: { true })
+        defer { sidebar.hide(animated: false); model.linkLibrary.setEnabled(false) }
+        sidebar.toggle()
+        let window = try XCTUnwrap(sidebar.window)
+        let content = try XCTUnwrap(window.contentView)
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        func frame(_ node: NSObject) throws -> NSRect {
+            try XCTUnwrap(node.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        }
+        func mouse(_ type: NSEvent.EventType, at point: NSPoint) throws {
+            CGWarpMouseCursorPosition(CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - point.y))
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: window.convertPoint(fromScreen: point),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: type == .mouseMoved ? 0 : 1, pressure: type == .leftMouseDown ? 1 : 0))
+            NSApp.postEvent(event, atStart: true)
+            while let queued = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02), inMode: .default, dequeue: true) {
+                NSApp.sendEvent(queued)
+            }
+        }
+        for expanded in [true, false] {
+            if model.linkLibrary.expandedSections.contains(.bookmarks) != expanded { model.linkLibrary.toggleSection(.bookmarks) }
+            try await waitUntil { self.accessibilityNode(in: content, identifier: "sidebar-section-bookmarks") != nil }
+            let header = try XCTUnwrap(accessibilityNode(in: content, identifier: "sidebar-section-bookmarks"))
+            let headerFrame = try frame(header)
+            try mouse(.mouseMoved, at: NSPoint(x: headerFrame.midX, y: headerFrame.midY))
+            try await Task.sleep(for: .milliseconds(180))
+            let add = try XCTUnwrap(accessibilityNode(in: content, identifier: "sidebar-add-bookmark"))
+            let addFrame = try frame(add)
+            let point = NSPoint(x: addFrame.midX, y: addFrame.midY)
+            try mouse(.mouseMoved, at: point)
+            try mouse(.leftMouseDown, at: point)
+            try mouse(.leftMouseUp, at: point)
+            try await waitUntil { sidebar.editor.isEditing }
+            XCTAssertEqual(model.linkLibrary.expandedSections.contains(.bookmarks), expanded)
+            guard case .bookmark(nil, nil) = sidebar.editor.presentation?.target else {
+                XCTFail("The plus must open a new-bookmark form directly"); return
+            }
+            sidebar.editor.cancel()
+        }
+    }
+
     func testHistoryTracksRedirectSPAAndReopensLastClosedPosition() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()

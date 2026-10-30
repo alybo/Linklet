@@ -27,9 +27,17 @@ enum SidebarSection: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .open: return L("Open windows")
-        case .bookmarks: return L("Bookmarks")
+        case .bookmarks: return L("Favorites")
         case .recent: return L("Recent links")
         case .downloads: return L("Downloads")
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .open: return "rectangle.on.rectangle"
+        case .bookmarks: return "star"
+        case .recent: return "clock.arrow.circlepath"
+        case .downloads: return "arrow.down.circle"
         }
     }
 }

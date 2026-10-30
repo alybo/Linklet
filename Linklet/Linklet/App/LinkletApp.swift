@@ -124,6 +124,7 @@ final class AppLanguage: ObservableObject {
         "Close sidebar": "Закрыть боковую панель",
         "Search links": "Поиск ссылок",
         "Bookmarks": "Закладки",
+        "Favorites": "Избранное",
         "Add bookmark": "Добавить закладку",
         "Edit bookmark": "Изменить закладку",
         "New folder": "Новая папка",
