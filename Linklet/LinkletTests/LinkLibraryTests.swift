@@ -1632,6 +1632,23 @@ final class WebPopupTests: XCTestCase {
             try await waitUntil { window.isKeyWindow && NSApp.isActive }
             window.contentView?.layoutSubtreeIfNeeded()
             let address = try addressControl(in: window)
+            address.updateActions(hovered: false, bookmarked: false, editingBookmark: false)
+            try await waitUntil { address.copyButton.alphaValue == 0 && address.bookmarkButton.alphaValue == 0 }
+            XCTAssertEqual(address.copyButton.alphaValue, 0)
+            XCTAssertEqual(address.bookmarkButton.alphaValue, 0)
+            let restingFrame = address.frame
+            address.updateActions(hovered: true, bookmarked: false, editingBookmark: false)
+            try await waitUntil { address.copyButton.alphaValue == 1 && address.bookmarkButton.alphaValue == 1 }
+            window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertEqual(address.copyButton.alphaValue, 1)
+            XCTAssertEqual(address.bookmarkButton.alphaValue, 1)
+            XCTAssertEqual(address.frame, restingFrame, "Revealing actions must not move the address")
+            XCTAssertEqual(address.copyButton.frame.width, PreviewLayout.controlHeight)
+            XCTAssertEqual(address.copyButton.frame.height, PreviewLayout.controlHeight)
+            XCTAssertEqual(address.bookmarkButton.frame.size, address.copyButton.frame.size)
+            XCTAssertEqual(address.bookmarkButton.frame.minX - address.copyButton.frame.maxX, PreviewLayout.toolbarItemSpacing)
+            XCTAssertEqual(address.addressButton.frame.minX - address.bookmarkButton.frame.maxX,
+                           PreviewLayout.toolbarItemSpacing + PreviewLayout.toolbarContentInset)
             let view = try XCTUnwrap(session.webView)
             _ = try await view.evaluateJavaScript("history.replaceState(null,'','/site?copy=full#fragment');window.toolbarSentinel='kept';true")
             let current = URL(string: original.absoluteString + "?copy=full#fragment")!
@@ -1640,6 +1657,9 @@ final class WebPopupTests: XCTestCase {
             let pageFrame = view.frame
             let domain = address.addressButton.title
             func click(_ type: NSEvent.EventType, onIcon: Bool = true, modifiers: NSEvent.ModifierFlags = []) throws {
+                // Synthetic clicks do not move the system pointer into SwiftUI's
+                // toolbar tracking area; reveal the native controls explicitly.
+                address.updateActions(hovered: true, bookmarked: false, editingBookmark: false)
                 let target = onIcon ? address.copyButton.frame : address.addressButton.frame
                 let point = address.convert(NSPoint(x: target.midX, y: target.midY), to: nil)
                 let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers,
@@ -1906,7 +1926,7 @@ final class WebPopupTests: XCTestCase {
             let pageFrame = page.frame
             XCTAssertEqual(address.addressButton.title, "http://127.0.0.1:\(port)")
             XCTAssertFalse(address.isExpanded)
-            XCTAssertLessThanOrEqual(address.frame.width, 180)
+            XCTAssertLessThanOrEqual(address.addressButton.frame.width + 2 * PreviewLayout.toolbarContentInset, 180)
             _ = try await page.evaluateJavaScript("window.addressSentinel='kept';true")
             address.addressButton.performClick(nil)
             try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }

@@ -6,6 +6,10 @@ enum PreviewLayout {
     // Keep the native macOS control target, while drawing compact symbols inside it.
     static let topBarHeight: CGFloat = 36
     static let controlHeight: CGFloat = 28
+    static let toolbarItemSpacing: CGFloat = 8
+    static let toolbarCornerRadius: CGFloat = 8
+    static let toolbarHoverOpacity: CGFloat = 0.047
+    static let toolbarContentInset: CGFloat = 10
     static let contentInset: CGFloat = 6
     static let contentCornerRadius: CGFloat = 12
     static let windowControlSymbolSize: CGFloat = 14
@@ -37,6 +41,7 @@ struct PreviewPageView: View {
     var model: AppModel? = nil
     var existingWebView: WKWebView? = nil
     var isChoosingDataMode = false
+    @State private var isToolbarHovered = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,17 +81,20 @@ struct PreviewPageView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: PreviewLayout.toolbarItemSpacing) {
             PreviewWindowControls(session: session)
 
-            PreviewLocationView(session: session, title: siteTitle) { input in
-                session.submitAddress(input, engine: model?.searchSettings.engine ?? .google)
+            if let model {
+                PreviewBookmarkLocationView(session: session, title: siteTitle,
+                                            settings: model.searchSettings, library: model.linkLibrary,
+                                            isToolbarHovered: isToolbarHovered)
+            } else {
+                PreviewLocationView(session: session, title: siteTitle, isToolbarHovered: isToolbarHovered) { input in
+                    session.submitAddress(input, engine: .google)
+                }
             }
 
             if !session.isWelcome && session.isActive {
-                if let model {
-                    PreviewBookmarkToolbarView(session: session, settings: model.searchSettings, library: model.linkLibrary)
-                }
                 if let model {
                     PreviewOpenInToolbarView(model: model, session: session)
                 } else if let continueInBrowser = session.onContinueInBrowser {
@@ -98,6 +106,8 @@ struct PreviewPageView: View {
         .padding(.leading, 10)
         .padding(.trailing, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onHover { isToolbarHovered = $0 }
     }
 
     private var webContent: some View {
@@ -349,24 +359,23 @@ private struct WindowControlButton: View {
     }
 }
 
-private struct PreviewBookmarkToolbarView: View {
+private struct PreviewBookmarkLocationView: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var session: PreviewSession
+    let title: String
     @ObservedObject var settings: SearchSettings
     let library: LinkLibrary
+    let isToolbarHovered: Bool
     @State private var showsEditor = false
 
     private var saved: FavoriteSite? { settings.bookmark(for: session.currentURL) }
 
     var body: some View {
-        Button { showsEditor = true } label: {
-            Image(systemName: saved == nil ? "bookmark" : "bookmark.fill").frame(width: 28, height: 28)
-        }.buttonStyle(.plain)
-            .help(L(saved == nil ? "Add bookmark" : "Edit bookmark"))
-            .accessibilityLabel(L(saved == nil ? "Add bookmark" : "Edit bookmark"))
-            .accessibilityValue(L(saved == nil ? "Not bookmarked" : "Saved bookmark"))
-            .accessibilityIdentifier("preview-bookmark")
-            .disabled(session.currentURL.map(URLPolicy.canPreview) != true)
+        PreviewLocationView(session: session, title: title, isToolbarHovered: isToolbarHovered,
+                            isBookmarked: saved != nil, isBookmarkEditorPresented: showsEditor,
+                            editBookmark: { showsEditor = true }) { input in
+            session.submitAddress(input, engine: settings.engine)
+        }
             .sheet(isPresented: $showsEditor) {
                 BookmarkEditor(settings: settings, library: library, site: saved,
                                initialURL: session.currentURL, initialTitle: session.pageTitle)
@@ -379,8 +388,7 @@ struct PreviewOpenInToolbarView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var session: PreviewSession
     @State private var isPickerPresented = false
-    @State private var isPrimaryHovered = false
-    @State private var isChevronHovered = false
+    @State private var isHovered = false
 
     private var targets: [BrowserTarget] {
         model.previewOpenTargets
@@ -391,20 +399,12 @@ struct PreviewOpenInToolbarView: View {
             HStack(spacing: 0) {
                 primaryButton(for: preferredTarget)
 
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor))
-                    .frame(width: 1, height: 16)
-
                 pickerButton
             }
             .frame(height: PreviewLayout.controlHeight)
-            .background(Color.primary.opacity(0.075))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.055), lineWidth: 0.75)
-                    .allowsHitTesting(false)
-            }
+            .background(Color.primary.opacity(isHovered ? PreviewLayout.toolbarHoverOpacity : 0))
+            .clipShape(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius, style: .continuous))
+            .onHover { isHovered = $0 }
         } else {
             Button(action: model.refreshTargets) {
                 Label(model.targets.isEmpty ? L("Find browsers") : L("Choose browsers"), systemImage: "safari")
@@ -431,16 +431,14 @@ struct PreviewOpenInToolbarView: View {
                     .font(.system(size: 11.5, weight: .medium))
                     .lineLimit(1)
             }
-            .padding(.leading, 9)
+            .padding(.leading, PreviewLayout.toolbarContentInset)
             .padding(.trailing, 10)
             .frame(height: PreviewLayout.controlHeight)
-            .background(Color.primary.opacity(isPrimaryHovered ? 0.07 : 0))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .keyboardShortcut("1", modifiers: .command)
         .help(L("Open in %@", target.displayName) + " — ⌘1")
-        .onHover { isPrimaryHovered = $0 }
     }
 
     private var pickerButton: some View {
@@ -450,13 +448,11 @@ struct PreviewOpenInToolbarView: View {
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .semibold))
                 .frame(width: 27, height: PreviewLayout.controlHeight)
-                .background(Color.primary.opacity(isChevronHovered ? 0.07 : 0))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(targets.count < 2)
         .help(targets.count < 2 ? L("No other browsers") : L("Choose another browser"))
-        .onHover { isChevronHovered = $0 }
         .popover(isPresented: $isPickerPresented, arrowEdge: .top) {
             BrowserTargetPicker(
                 targets: Array(targets.dropFirst()),
