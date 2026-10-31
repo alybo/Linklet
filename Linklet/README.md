@@ -240,21 +240,38 @@ with a native visual-effect material on macOS 14–15.
 Web previews keep WebKit’s native desktop user agent and add Safari’s version
 and product tokens so websites can recognize the embedded desktop browser.
 
-## Global sidebar and sign-in windows (1.5)
+## Global sidebar and sign-in windows (1.6)
 
 Enable **Sidebar** in Settings to show a separate panel at the left edge of any
 screen. Hover there, press **Control–Option–B**, or use the Linklet menu. The panel
-contains bookmarks shared with Quick Search, collapsible folders, search and recent
-links. Clicking a link uses the normal Linklet preview flow. Add the current page
+contains bookmarks shared with Quick Search, collapsible folders, open windows,
+downloads and recent links. Clicking a link uses the normal Linklet preview flow. Add the current page
 with the bookmark button in its preview toolbar.
 
 The sidebar is off by default. Recent links remain in memory until Linklet quits;
 **Save history between launches** is a separate opt-in. Turning it off deletes
-stored history. Only incoming preview links are listed (up to 200); redirects and
-sign-in popups are excluded. Bookmarks and folders are saved locally.
+stored history. History follows redirects and in-page URL changes (up to 200 links)
+and reopens the last visited URL with its saved scroll position. Bookmarks, folders
+and their expanded/collapsed state are saved locally independently of history.
+Section headings and folders share disclosure arrows; hovering over an open-window
+row reveals its close button. Optional glass sidebar styling requires macOS 26+;
+a separate setting disables the sidebar over full-screen applications.
 
 Websites can open child windows without replacing the original page. They retain
-the opener and the parent's website-data store, including in private mode, and
-close with the parent preview. Independent previews retain separate private stores.
+the opener and the parent's website-data store, including in private mode. All
+windows move independently and use the same toolbar. Site-created windows outlive
+the parent preview; temporary website data clears after the last related window
+closes. Independent previews retain separate private stores.
 Providers that prohibit embedded WebKit sign-in, including some Google flows,
 require continuing in the chosen browser using the original site link.
+
+The domain opens an editable URL/search field (also ⌘L). Copy and bookmark actions
+appear to its left on toolbar hover. ⌘F opens the floating page-find panel with
+accent-colored highlights; ⌘R reloads the page and ⌘+, ⌘−, ⌘0 control page zoom.
+Downloads use WebKit requests and appear in the sidebar, including context-menu
+image/link downloads. Uploads use native file selection and page drag and drop.
+Camera, microphone and location require website consent and the corresponding
+macOS permission. Location uses Core Location. AdGuard can be toggled per hostname
+from the page context menu, reloading affected pages after the change.
+
+See [1.6 release notes](docs/releases/1.6.md) for the complete user-facing summary.
