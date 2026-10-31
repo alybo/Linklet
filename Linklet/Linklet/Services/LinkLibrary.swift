@@ -67,7 +67,12 @@ final class LinkLibrary: ObservableObject {
     @Published private(set) var folders: [BookmarkFolder]
     @Published private(set) var folderAssignments: [String: UUID]
     @Published private(set) var recentLinks: [RecentLink]
-    @Published var expandedFolderIDs: Set<UUID>
+    @Published private(set) var expandedFolderIDs: Set<UUID> {
+        didSet {
+            guard expandedFolderIDs != oldValue else { return }
+            defaults.set(expandedFolderIDs.map(\.uuidString).sorted(), forKey: "bookmarkExpandedFolderIDs")
+        }
+    }
     @Published private(set) var sectionOrder: [SidebarSection]
     @Published private(set) var expandedSections: Set<SidebarSection>
     @Published private(set) var recentDisplayLimit = 10
@@ -102,7 +107,13 @@ final class LinkLibrary: ObservableObject {
         rootOrder = Self.read([UUID].self, key: "bookmarkRootOrder", defaults: defaults) ?? []
         folders = savedFolders
         folderAssignments = Self.read([String: UUID].self, key: "bookmarkFolderAssignments", defaults: defaults) ?? [:]
-        expandedFolderIDs = Set(savedFolders.map(\.id))
+        let folderIDs = Set(savedFolders.map(\.id))
+        if let saved = defaults.stringArray(forKey: "bookmarkExpandedFolderIDs") {
+            expandedFolderIDs = Set(saved.compactMap(UUID.init(uuidString:))).intersection(folderIDs)
+        } else {
+            // Older profiles had no saved disclosure state and showed every folder.
+            expandedFolderIDs = folderIDs
+        }
         recentLinks = saves ? Array((Self.read([RecentLink].self, key: "recentLinks", defaults: defaults) ?? [])
             .filter { $0.url != nil }.prefix(Self.recentLimit)) : []
         if !saves { defaults.removeObject(forKey: "recentLinks") }
@@ -112,6 +123,12 @@ final class LinkLibrary: ObservableObject {
         if expandedSections.contains(section) { expandedSections.remove(section) }
         else { expandedSections.insert(section) }
         defaults.set(expandedSections.contains(section), forKey: "sidebarExpanded.\(section.rawValue)")
+    }
+
+    func toggleFolder(_ id: UUID) {
+        guard folders.contains(where: { $0.id == id }) else { return }
+        if expandedFolderIDs.contains(id) { expandedFolderIDs.remove(id) }
+        else { expandedFolderIDs.insert(id) }
     }
 
     func moveSection(_ section: SidebarSection, before destination: SidebarSection?) {

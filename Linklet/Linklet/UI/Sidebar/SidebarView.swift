@@ -367,38 +367,9 @@ struct SidebarView: View {
     private var openContents: some View {
         VStack(alignment: .leading, spacing: layout.rowGap) {
             ForEach(windows.windows) { window in
-                Button {
-                    dismiss()
-                    windows.activate(window.id)
-                } label: {
-                    HStack(spacing: layout.iconGap) {
-                        Group {
-                            if window.isLoading {
-                                ProgressView().controlSize(.small)
-                            } else if let url = window.url {
-                                SiteIcon(settings: settings, url: url, size: layout.iconSize)
-                            } else {
-                                Image(systemName: "globe")
-                            }
-                        }.frame(width: layout.iconSize, height: layout.iconSize)
-                        Text(window.title).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor)
-                            .lineLimit(1).truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if window.isMiniaturized {
-                            Image(systemName: "minus.rectangle").font(.system(size: 11))
-                                .foregroundStyle(.secondary).accessibilityLabel(L("Minimized"))
-                        } else if window.isKey {
-                            Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                                .accessibilityLabel(L("Active window"))
-                        }
-                    }.frame(height: layout.rowHeight)
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                    .help(window.url?.absoluteString ?? window.title)
-                    .accessibilityIdentifier("sidebar-window-\(window.id.uuidString)")
-                    .contextMenu {
-                        Button(L("Close window"), role: .destructive) { windows.close(window.id) }
-                    }
+                SidebarOpenWindowRow(window: window, settings: settings, layout: layout,
+                    activate: { dismiss(); windows.activate(window.id) },
+                    close: { windows.close(window.id) })
             }
             if windows.windows.isEmpty {
                 emptyMessage("No open windows.")
@@ -447,18 +418,13 @@ struct SidebarView: View {
         return VStack(alignment: .leading, spacing: 0) {
             Group {
                 dropSlot(before: folder.id, folder: nil)
-                Button {
-                    if expanded { library.expandedFolderIDs.remove(folder.id) }
-                    else { library.expandedFolderIDs.insert(folder.id) }
-                } label: {
+                Button { library.toggleFolder(folder.id) } label: {
                     HStack(spacing: layout.iconGap) {
                         Image(systemName: expanded ? "folder.fill" : "folder").font(.system(size: layout.iconSize))
                             .frame(width: layout.iconSize, height: layout.iconSize).foregroundStyle(SidebarLayout.linkColor)
                         Text(folder.name).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor).lineLimit(1)
                         Spacer(minLength: 0)
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                            .frame(width: 20)
+                        SidebarDisclosure(expanded: expanded)
                     }.frame(height: layout.rowHeight).contentShape(Rectangle())
                 }.buttonStyle(.plain)
                 .background(targetedDrop == folder.id ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 8))
@@ -526,6 +492,89 @@ struct SidebarView: View {
     }
 }
 
+/// Folders and section headings share both the symbol and its trailing column.
+private struct SidebarDisclosure: View {
+    static let columnWidth: CGFloat = 20
+    let expanded: Bool
+
+    var body: some View {
+        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(SidebarLayout.groupColor)
+            .frame(width: Self.columnWidth)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Closing is a separate target, so it never activates or reloads the page.
+private struct SidebarOpenWindowRow: View {
+    let window: BrowserWindowInfo
+    @ObservedObject var settings: SearchSettings
+    let layout: SidebarMetrics
+    let activate: () -> Void
+    let close: () -> Void
+    @State private var isHovered = false
+    @State private var isCloseHovered = false
+    @FocusState private var focusedControl: Control?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private enum Control: Hashable { case activate, close }
+    private var showsClose: Bool { isHovered || focusedControl != nil }
+
+    var body: some View {
+        Button(action: activate) {
+            HStack(spacing: layout.iconGap) {
+                Group {
+                    if window.isLoading {
+                        ProgressView().controlSize(.small)
+                    } else if let url = window.url {
+                        SiteIcon(settings: settings, url: url, size: layout.iconSize)
+                    } else {
+                        Image(systemName: "globe")
+                    }
+                }.frame(width: layout.iconSize, height: layout.iconSize)
+                Text(window.title).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if window.isMiniaturized {
+                        Image(systemName: "minus.rectangle").font(.system(size: 11))
+                            .foregroundStyle(.secondary).accessibilityLabel(L("Minimized"))
+                            .opacity(showsClose ? 0 : 1)
+                    } else { Color.clear }
+                }.frame(width: SidebarDisclosure.columnWidth)
+            }.frame(height: layout.rowHeight).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focused($focusedControl, equals: .activate)
+        .help(window.url?.absoluteString ?? window.title)
+        .accessibilityIdentifier("sidebar-window-\(window.id.uuidString)")
+        .contextMenu { Button(L("Close window"), role: .destructive, action: close) }
+        .overlay(alignment: .trailing) {
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(SidebarLayout.groupColor)
+                    .frame(width: SidebarDisclosure.columnWidth, height: layout.rowHeight)
+                    .background(isCloseHovered ? Color.white.opacity(0.08) : .clear,
+                                in: RoundedRectangle(cornerRadius: 4))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focused($focusedControl, equals: .close)
+            .help(L("Close window"))
+            .accessibilityLabel(L("Close window"))
+            .accessibilityHint(window.title)
+            .accessibilityIdentifier("sidebar-close-window-\(window.id.uuidString)")
+            .accessibilityHidden(false)
+            .opacity(showsClose ? 1 : 0)
+            .allowsHitTesting(showsClose)
+            .onHover { isCloseHovered = $0 }
+        }
+        .onHover { isHovered = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: showsClose)
+    }
+}
+
 /// Separate overlay button keeps Add from triggering the section disclosure.
 /// Opacity reserves both controls' space, so hover never shifts the heading.
 private struct SidebarSectionHeader: View {
@@ -553,9 +602,7 @@ private struct SidebarSectionHeader: View {
                 Text(section.title).font(layout.sectionFont).lineLimit(1)
                 if count > 0 { Text("\(count)").font(layout.sectionFont) }
                 Spacer(minLength: hasAction ? 28 : 0)
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .frame(width: 20, height: layout.sectionHeaderHeight)
+                SidebarDisclosure(expanded: expanded)
                     .opacity(showsControls ? 1 : 0)
                     .accessibilityHidden(true)
             }

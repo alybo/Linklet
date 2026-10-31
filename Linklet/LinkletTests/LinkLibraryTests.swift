@@ -99,6 +99,39 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertTrue(LinkLibrary(defaults: defaults).folders.isEmpty)
     }
 
+    func testFolderDisclosureMigratesAndPreservesAllClosedStateWithoutHistory() throws {
+        let suite = "FolderDisclosure.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = BookmarkFolder(id: UUID(), name: "Work")
+        let second = BookmarkFolder(id: UUID(), name: "Reference")
+        defaults.set(try JSONEncoder().encode([first, second]), forKey: "bookmarkFolders")
+        let library = LinkLibrary(defaults: defaults)
+        XCTAssertEqual(library.expandedFolderIDs, [first.id, second.id], "Older profiles keep their previous appearance")
+        library.toggleFolder(first.id)
+        XCTAssertEqual(LinkLibrary(defaults: defaults).expandedFolderIDs, [second.id])
+        library.toggleFolder(second.id)
+        let restored = LinkLibrary(defaults: defaults)
+        XCTAssertTrue(restored.expandedFolderIDs.isEmpty, "An empty saved set means all folders are closed")
+        let third = try XCTUnwrap(restored.addFolder(name: "New folder"))
+        XCTAssertEqual(LinkLibrary(defaults: defaults).expandedFolderIDs, [third.id])
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in Data() })
+        restored.bind(to: settings)
+        let site = try settings.addFavoriteSite(name: "Docs", address: "https://swift.org")
+        restored.moveBookmark(site, to: first.id)
+        XCTAssertEqual(LinkLibrary(defaults: defaults).expandedFolderIDs, [first.id, third.id],
+                       "Moving a bookmark into a folder reveals it and saves that state")
+        restored.removeFolder(third)
+        XCTAssertEqual(LinkLibrary(defaults: defaults).expandedFolderIDs, [first.id])
+        restored.toggleFolder(UUID())
+        XCTAssertEqual(LinkLibrary(defaults: defaults).expandedFolderIDs, [first.id])
+        defaults.set([first.id.uuidString, third.id.uuidString, "invalid"], forKey: "bookmarkExpandedFolderIDs")
+        XCTAssertEqual(LinkLibrary(defaults: defaults).expandedFolderIDs, [first.id], "Deleted and malformed IDs are ignored")
+        XCTAssertFalse(restored.savesHistory)
+        XCTAssertNil(defaults.object(forKey: "recentLinks"))
+        XCTAssertEqual(SearchSettings(defaults: defaults).favoriteSites.map(\.id), [site.id])
+    }
+
     func testMixedBookmarkOrderMigratesAndSurvivesMovesAndRelaunch() throws {
         let suite = "MixedBookmarks.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -2152,6 +2185,8 @@ final class WebPopupTests: XCTestCase {
     }
 
     func testSidebarOpenWindowsTracksLivePagesAndActivatesWithoutReloading() async throws {
+        let pointer = CGEvent(source: nil)?.location
+        defer { if let pointer { CGWarpMouseCursorPosition(pointer) } }
         let server = try PopupHTTPFixture()
         let port = try await server.start()
         defer { server.stop() }
@@ -2209,11 +2244,47 @@ final class WebPopupTests: XCTestCase {
         XCTAssertFalse(model.linkLibrary.expandedSections.contains(.open))
         XCTAssertEqual(section.value(forKey: "accessibilityPerformPress") as? Bool, true)
         try await waitUntil { self.accessibilityNode(in: content, identifier: popupID) != nil }
+        // Hover reveals a separate close target; it must not activate the source
+        // window or close its still-live child as a side effect.
+        let sourceRow = try XCTUnwrap(accessibilityNode(in: content, identifier: sourceID))
+        let sourceFrame = try XCTUnwrap(sourceRow.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        let panel = try XCTUnwrap(sidebar.window)
+        let screenTop = NSScreen.screens.first?.frame.maxY ?? 0
+        func movePointer(to point: NSPoint) throws {
+            CGWarpMouseCursorPosition(CGPoint(x: point.x, y: screenTop - point.y))
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: panel.convertPoint(fromScreen: point),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+            NSApp.postEvent(event, atStart: true)
+            while let queued = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02), inMode: .default, dequeue: true) {
+                NSApp.sendEvent(queued)
+            }
+        }
+        try movePointer(to: NSPoint(x: sourceFrame.midX, y: sourceFrame.midY))
+        try await Task.sleep(for: .milliseconds(180))
+        let close = try XCTUnwrap(accessibilityNode(in: content, identifier: "sidebar-close-window-\(model.previewSession.windowID.uuidString)"))
+        let closeFrame = try XCTUnwrap(close.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        let closePoint = NSPoint(x: closeFrame.midX, y: closeFrame.midY)
+        try movePointer(to: closePoint)
+        if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-sidebar-hover-close.png"))
+        }
+        for type in [NSEvent.EventType.leftMouseUp, .leftMouseDown] {
+            NSApp.postEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: panel.convertPoint(fromScreen: closePoint),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)), atStart: true)
+        }
+        while let queued = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02), inMode: .default, dequeue: true) {
+            NSApp.sendEvent(queued)
+        }
+        try await waitUntil { !model.previewSession.isActive && self.accessibilityNode(in: content, identifier: sourceID) == nil }
+        XCTAssertTrue(popup.session.isActive)
+        XCTAssertEqual(model.windowRegistry.windows.map(\.id), [popup.session.windowID])
+        XCTAssertEqual(server.pageRequests, before, "Closing a row must not issue any page request")
         // Site-controlled window.close must remove the visible row immediately.
         _ = try await popup.webView.evaluateJavaScript("window.close();true")
         try await waitUntil { self.accessibilityNode(in: content, identifier: popupID) == nil }
-        XCTAssertNotNil(accessibilityNode(in: content, identifier: sourceID))
-        model.windowRegistry.close(model.previewSession.windowID)
         try await waitUntil { self.accessibilityNode(in: content, identifier: "sidebar-open-empty") != nil }
         XCTAssertNil(accessibilityNode(in: content, identifier: sourceID))
         XCTAssertNil(defaults.data(forKey: "recentLinks"))
