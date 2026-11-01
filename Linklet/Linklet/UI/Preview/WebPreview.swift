@@ -258,8 +258,11 @@ struct WebPreview: NSViewRepresentable {
         }
 
         static func canCreatePopup(for url: URL?) -> Bool {
-            guard let url else { return true } // window.open() starts with about:blank.
-            return URLPolicy.canPreview(url) || url.absoluteString == "about:blank"
+            guard let url else { return true }
+            // WebKit represents window.open("", "_blank") as an empty URL.
+            // Payment flows keep that blank window's handle, then navigate it
+            // once their asynchronous checkout request returns.
+            return url.absoluteString.isEmpty || url.absoluteString == "about:blank" || URLPolicy.canPreview(url)
         }
 
         @discardableResult

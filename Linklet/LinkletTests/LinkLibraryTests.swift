@@ -1804,6 +1804,40 @@ final class WebPopupTests: XCTestCase {
         XCTAssertNil(session.webView)
     }
 
+    func testEmptyPaymentWindowCanBeNavigatedAsynchronously() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let session = PreviewSession()
+        let original = URL(string: "http://127.0.0.1:\(port)/site")!
+        session.load(original)
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600),
+                             configuration: WebPreview.configuration(websiteDataStore: session.websiteDataStore))
+        let coordinator = WebPreview.Coordinator(session: session)
+        view.uiDelegate = coordinator
+        view.navigationDelegate = coordinator
+        coordinator.startObserving(view)
+        session.attach(view)
+        defer { session.windowRegistry.closeAll(); session.endSession() }
+        try await waitUntil { (try? await view.evaluateJavaScript("window.result")) as? String == "pending" }
+
+        // Payment sites reserve an empty window before requesting a checkout URL.
+        // A missing handle prevents the request and leaves their UI waiting forever.
+        let opened = try await view.evaluateJavaScript("addEventListener('message',e=>{if(e.origin===location.origin)window.checkoutResult=e.data});window.checkout=window.open('', '_blank');Boolean(window.checkout)") as? Bool
+        XCTAssertEqual(opened, true)
+        let popup = try XCTUnwrap(coordinator.popupWindows.values.first)
+        _ = try await view.evaluateJavaScript("window.checkout.document.title='Preparing payment';setTimeout(()=>{window.checkout.document.location='/destination'},200);true")
+        try await waitUntil { popup.session.pageTitle == "Destination" }
+        XCTAssertTrue(popup.webView.configuration.websiteDataStore === view.configuration.websiteDataStore)
+        XCTAssertEqual(view.url, original)
+        XCTAssertEqual(session.originalURL, original)
+        XCTAssertEqual(view.title, "Original site")
+        XCTAssertFalse(view.canGoBack)
+        _ = try await popup.webView.evaluateJavaScript("window.opener.postMessage('checkout-ready','*');window.close()")
+        try await waitUntil { coordinator.popupWindows.isEmpty }
+        try await waitUntil { (try? await view.evaluateJavaScript("window.checkoutResult")) as? String == "checkout-ready" }
+    }
+
     func testTargetBlankLinkCreatesIndependentWindowAndPreservesSource() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
