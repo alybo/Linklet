@@ -12,7 +12,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         self.model = model
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.contentSize),
-            styleMask: [.titled, .closable], backing: .buffered, defer: false
+            styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false
         )
         window.title = model.settingsPage.title
         window.isReleasedWhenClosed = false
@@ -23,17 +23,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.contentViewController = hostingController
         // Installing a content controller adopts its view's size. Apply the window
         // bounds afterwards, so an initially empty Form cannot collapse the window.
-        window.contentMinSize = Self.contentSize
-        window.contentMaxSize = Self.contentSize
+        window.contentMinSize = NSSize(width: 760, height: 560)
         window.setContentSize(Self.contentSize)
         window.center()
+        window.setFrameAutosaveName("Linklet.Settings")
+        window.toolbarStyle = .unified
+        window.titlebarSeparatorStyle = .automatic
         super.init(window: window)
         window.delegate = self
         model.$settingsPage.sink { [weak window] page in window?.title = page.title }.store(in: &subscriptions)
     }
 
     func windowWillClose(_ notification: Notification) {
-        model?.settingsDidClose()
         model?.updateDockVisibilitySoon()
     }
 

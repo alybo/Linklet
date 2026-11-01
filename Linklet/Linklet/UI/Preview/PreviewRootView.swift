@@ -28,8 +28,7 @@ struct PreviewRootView: View {
     }
 
     var body: some View {
-        PreviewPageView(session: session, model: model, existingWebView: existingWebView,
-                        isChoosingDataMode: existingWebView == nil && model.isChoosingDataMode)
+        PreviewPageView(session: session, model: model, existingWebView: existingWebView)
     }
 }
 
@@ -40,7 +39,6 @@ struct PreviewPageView: View {
     @ObservedObject var session: PreviewSession
     var model: AppModel? = nil
     var existingWebView: WKWebView? = nil
-    var isChoosingDataMode = false
     @State private var isToolbarHovered = false
 
     var body: some View {
@@ -124,11 +122,6 @@ struct PreviewPageView: View {
                     .accessibilityHidden(session.pageFailure != nil)
             } else {
                 Color(nsColor: .windowBackgroundColor)
-            }
-
-            if isChoosingDataMode, let model {
-                SiteDataChoiceView(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if session.isPreparingNewPage {
@@ -290,7 +283,7 @@ private struct PreviewLoadingProgressStyle: ProgressViewStyle {
     }
 }
 
-private struct PreviewWindowMaterial: NSViewRepresentable {
+struct PreviewWindowMaterial: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .underWindowBackground
@@ -337,7 +330,7 @@ private struct PreviewWindowControls: View {
     }
 }
 
-private struct WindowControlButton: View {
+struct WindowControlButton: View {
     @ObservedObject private var language = AppLanguage.shared
     let imageName: String
     let help: String
@@ -537,61 +530,5 @@ private struct BrowserTargetPickerRow: View {
         .onHover { isHovered = $0 }
         .applyShortcut(shortcutNumber)
         .help(L("Open in %@", target.displayName))
-    }
-}
-
-
-private struct SiteDataChoiceView: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject private var language = AppLanguage.shared
-    @State private var savesData = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L("Keep website sign-ins?")).font(.title2.bold())
-                Text(L("Choose how Linklet handles website data."))
-                    .foregroundStyle(.secondary)
-            }
-            VStack(spacing: 12) {
-                option(false, title: "Without saving", detail: "For quick link previews. Website data is deleted when the window closes. You will need to sign in again the next time you open websites.")
-                option(true, title: "With saving", detail: "For websites you use regularly. Linklet remembers sign-ins and website preferences. Data stays on this Mac; you can delete it manually or set up automatic cleanup.")
-            }
-            Text(L("This choice applies to all websites in Linklet."))
-                .font(.callout).foregroundStyle(.secondary)
-            HStack {
-                Button(L("Settings…"), action: model.openDataSettingsFromChoice)
-                Spacer()
-                Button(L("Continue")) { model.completeDataChoice(save: savesData) }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(28)
-        .frame(maxWidth: 560)
-    }
-
-    private func option(_ value: Bool, title: String, detail: String) -> some View {
-        Button { savesData = value } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: savesData == value ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(savesData == value ? Color.accentColor : .secondary)
-                    .font(.system(size: 17))
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(L(title)).font(.headline)
-                    Text(L(detail)).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(16)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(savesData == value ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: 1))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(L(title))
-        .accessibilityValue(savesData == value ? L("Selected") : L("Not selected"))
-        .accessibilityHint(L(detail))
     }
 }

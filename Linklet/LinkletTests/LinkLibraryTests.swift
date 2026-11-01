@@ -669,7 +669,7 @@ final class LinkLibraryTests: XCTestCase {
         let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 800),
                                 styleMask: [.titled], backing: .buffered, defer: false)
         settings.isReleasedWhenClosed = false
-        settings.contentView = NSHostingView(rootView: SidebarSettingsView(library: model.linkLibrary, show: {}))
+        settings.contentView = NSHostingView(rootView: SidebarSettingsView(library: model.linkLibrary, show: {}, initiallyExpanded: true))
         defer { settings.close(); controller.hide(animated: false); model.linkLibrary.setEnabled(false) }
         settings.orderFront(nil)
         settings.contentView?.layoutSubtreeIfNeeded()
@@ -2280,6 +2280,8 @@ final class WebPopupTests: XCTestCase {
         }
         try await waitUntil { !model.previewSession.isActive && self.accessibilityNode(in: content, identifier: sourceID) == nil }
         XCTAssertTrue(popup.session.isActive)
+        XCTAssertTrue(sidebar.isPresented, "Closing a page from the sidebar must leave the sidebar open")
+        XCTAssertTrue(sidebar.window?.isVisible == true)
         XCTAssertEqual(model.windowRegistry.windows.map(\.id), [popup.session.windowID])
         XCTAssertEqual(server.pageRequests, before, "Closing a row must not issue any page request")
         // Site-controlled window.close must remove the visible row immediately.
@@ -2289,6 +2291,30 @@ final class WebPopupTests: XCTestCase {
         XCTAssertNil(accessibilityNode(in: content, identifier: sourceID))
         XCTAssertNil(defaults.data(forKey: "recentLinks"))
         XCTAssertTrue(LinkLibrary(defaults: defaults).recentLinks.isEmpty)
+    }
+
+    func testSidebarRemainsOpenAfterClosingItsLastPage() async throws {
+        let suite = "Linklet.SidebarLastClose.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.setPreviewWindowBehavior(.keepOpen)
+        model.linkLibrary.setEnabled(true)
+        let sidebar = SidebarWindowController(model: model, reduceMotion: { true })
+        defer {
+            sidebar.hide(animated: false)
+            model.closeAllWindows()
+            model.linkLibrary.setEnabled(false)
+            defaults.removePersistentDomain(forName: suite)
+        }
+        model.showPreview(url: URL(string: "http://127.0.0.1:9/last")!)
+        sidebar.toggle()
+        XCTAssertTrue(sidebar.isPresented)
+        sidebar.closePreview(model.previewSession.windowID)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(model.previewSession.isActive)
+        XCTAssertTrue(model.windowRegistry.windows.isEmpty)
+        XCTAssertTrue(sidebar.isPresented, "Closing the last page must not dismiss the sidebar")
+        XCTAssertTrue(sidebar.window?.isVisible == true)
     }
 
     private func accessibilityNode(in value: Any, identifier: String) -> NSObject? {

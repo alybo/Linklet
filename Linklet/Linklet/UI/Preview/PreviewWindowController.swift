@@ -101,10 +101,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
             .removeDuplicates()
             .sink { [weak panel] title in panel?.title = title }
             .store(in: &cancellables)
-        panel.onEscape = { [weak model, weak panel] in
-            if model?.isChoosingDataMode == true { model?.completeDataChoice(save: false) }
-            else { panel?.performClose(nil) }
-        }
+        panel.onEscape = { [weak panel] in panel?.performClose(nil) }
         let hostingController = NSHostingController(rootView: PreviewRootView(model: model))
         // AppKit owns the window size; the initially empty WebView must not shrink it.
         hostingController.sizingOptions = []
@@ -150,8 +147,6 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
             model.previewSession.load(url, restoring: position)
         }
     }
-
-    func showDataChoice(for url: URL) { present(initialURL: url) {} }
 
     func showWelcome() {
         present { model.previewSession.showWelcome(isDefault: model.isDefaultBrowser) }

@@ -28,32 +28,20 @@ private struct MenuBarView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        Button(L("Quick Search")) { model.toggleSearch() }
+        Button(L("Quick Search")) { model.openQuickSearch() }
         SidebarMenuItem(model: model, library: model.linkLibrary)
         Button(L("Downloads")) { model.showDownloads() }
 
-        Button(L("Welcome to Linklet")) {
-            model.showWelcome()
-        }
+        Divider()
 
         Button(L("Settings…")) {
             model.showSettings()
         }
         .keyboardShortcut(",")
 
+        Button(L("How to Use Linklet"), action: model.showWelcome)
+
         CheckForAppUpdatesButton(updates: model.appUpdates)
-
-        Divider()
-
-        Picker(L("Window behavior"), selection: Binding(
-            get: { model.previewWindowBehavior },
-            set: model.setPreviewWindowBehavior
-        )) {
-            ForEach(PreviewWindowBehavior.allCases) { behavior in
-                Text(behavior.title).tag(behavior)
-            }
-        }
-        .id(language.code)
 
         Divider()
 
@@ -106,6 +94,93 @@ final class AppLanguage: ObservableObject {
     }
     static let russian: [String: String] = 
 [
+        "Back": "Назад",
+        "Skip": "Пропустить",
+        "Windows & Sidebar": "Окна и панель",
+        "Search & Browsers": "Поиск и браузеры",
+        "Privacy": "Приватность",
+        "About Linklet": "О Linklet",
+        "Opening Links": "Открытие ссылок",
+        "Application": "Приложение",
+        "Launch at login": "Запускать при входе в macOS",
+        "Same as macOS": "Как в macOS",
+        "Getting Started": "Знакомство",
+        "How to Use Linklet": "Как пользоваться Linklet",
+        "Opening links, search, and the sidebar.": "Открытие ссылок, поиск и боковая панель.",
+        "Window mode": "Режим окон",
+        "Single window": "Одно окно",
+        "Multiple windows": "Несколько окон",
+        "Windows": "Окна",
+        "Each new link opens in a separate window.": "Каждая новая ссылка открывается в отдельном окне.",
+        "New links replace the page in a single window.": "Новые ссылки заменяют страницу в одном окне.",
+        "When switching between apps.": "При переключении между приложениями.",
+        "Default browser": "Браузер по умолчанию",
+        "Default": "По умолчанию",
+        "Make Default…": "Использовать по умолчанию…",
+        "Links open in Linklet.": "Ссылки открываются в Linklet.",
+        "Links will open in Linklet.": "Ссылки будут открываться в Linklet.",
+        "Enable sidebar": "Включить боковую панель",
+        "Open sidebar": "Открыть боковую панель",
+        "Hide in full screen": "Скрывать в полноэкранном режиме",
+        "Move the pointer to the left edge of the screen to see windows, bookmarks, and history.": "Наведите указатель на левый край экрана, чтобы открыть окна, закладки и историю.",
+        "Advanced settings": "Дополнительные настройки",
+        "Show sidebar indicator": "Показывать индикатор панели",
+        "Opening delay": "Задержка открытия",
+        "s": "с",
+        "History": "История",
+        "Save browsing history": "Сохранять историю посещений",
+        "History is kept on this Mac after you quit Linklet. Turning this off deletes saved history.": "История сохраняется на этом Mac после выхода из Linklet. При выключении сохранённая история удаляется.",
+        "History is kept until you quit Linklet. This setting does not affect website sign-ins.": "История хранится до выхода из Linklet. Эта настройка не влияет на вход в аккаунты.",
+        "Open Quick Search": "Открыть быстрый поиск",
+        "Set Shortcut…": "Задать сочетание…",
+        "Show bookmarks": "Показывать закладки",
+        "Web addresses open directly. Other text is sent to your search engine.": "Адрес откроется напрямую, остальной текст — как поисковый запрос.",
+        "Browser for sending links": "Браузер для отправки ссылок",
+        "Browsers in the Open in menu": "Браузеры в меню «Открыть в…»",
+        "Drag browsers to reorder when automatic sorting is off.": "Перетаскивайте браузеры для изменения порядка, когда автоматическая сортировка выключена.",
+        "Opening in Another Browser": "Открытие в другом браузере",
+        "The primary Open in button uses this browser. It opens the original link without transferring website data or page state.": "Основная кнопка «Открыть в…» использует этот браузер. Передаётся исходная ссылка, без данных и состояния страницы.",
+        "Stay signed in and keep website preferences.": "Оставаться в аккаунтах и сохранять настройки сайтов.",
+        "Website data is stored on this Mac. Turning this off deletes saved website data.": "Данные сайтов хранятся на этом Mac. При выключении сохранённые данные удаляются.",
+        "Without saving, website data is deleted when all related windows close. Hiding the window when switching apps also ends the preview.": "Без сохранения данные сайта удаляются после закрытия всех связанных окон. Скрытие окна при переключении приложений также завершает просмотр.",
+        "Automatically clear data": "Автоочистка данных",
+        "Time since the last visit to a website.": "Срок после последнего посещения сайта.",
+        "Ad Blocking": "Блокировка рекламы",
+        "Uses AdGuard filters. Change blocking for the current website in its page menu.": "Используются фильтры AdGuard. Для текущего сайта блокировку можно изменить в меню страницы.",
+        "Open links without losing context.": "Открывайте ссылки, не теряя контекст.",
+        "You can skip the introduction.": "Знакомство можно пропустить.",
+        "Links alongside your work": "Ссылки рядом с работой",
+        "Pages open in a compact window.": "Страница открывается в компактном окне.",
+        "Search and bookmarks": "Поиск и закладки",
+        "Search, save, and return to what matters.": "Ищите, сохраняйте и возвращайтесь к нужному.",
+        "Your other browsers, within reach": "Другой браузер — рядом",
+        "Open the original link in your chosen browser.": "Открывайте исходную ссылку в выбранном браузере.",
+        "Try it yourself": "Попробуйте сами",
+        "This is a Linklet window. Try the highlighted controls.": "Так выглядит окно Linklet. Нажмите на выделенные элементы.",
+        "Start using Linklet": "Начните пользоваться Linklet",
+        "You can change these settings later.": "Эти настройки можно изменить позже.",
+        "Website data is stored on this Mac. History has a separate setting.": "Данные сайтов хранятся на этом Mac. История настраивается отдельно.",
+        "Website data is temporary. History has a separate setting.": "Данные сайтов временные. История настраивается отдельно.",
+        "Find settings and this introduction in the Linklet menu bar icon.": "Настройки и знакомство доступны через значок Linklet в строке меню.",
+        "You're ready": "Можно начинать",
+        "Start with Quick Search or customize Linklet.": "Начните с быстрого поиска или настройте Linklet под себя.",
+        "To open links automatically, make Linklet your default browser in settings.": "Для автоматического открытия ссылок выберите Linklet браузером по умолчанию в настройках.",
+        "Try It": "Попробовать",
+        "Get Started": "Начать",
+        "Open Settings": "Открыть настройки",
+        "Sample page": "Учебная страница",
+        "Choose browser": "Выбрать браузер",
+        "Click the address control or press ⌘L.": "Нажмите на адрес или используйте ⌘L.",
+        "Enter a website address or a search query.": "Введите адрес сайта или поисковый запрос.",
+        "The other browser opens the original link. Sign-ins and page state are not transferred.": "В другом браузере откроется исходная ссылка. Вход в аккаунт и состояние страницы не переносятся.",
+        "Address and search": "Адрес и поиск",
+        "Click the address control to enter a link or search query.": "Нажмите на адрес, чтобы ввести ссылку или поисковый запрос.",
+        "Another browser": "Другой браузер",
+        "Click to open the original link in another browser.": "Нажмите, чтобы открыть исходную ссылку в другом браузере.",
+        "Your first page": "Ваша первая страница",
+        "Read, search, and save links. Keep browsing here or in another browser.": "Читайте, ищите и сохраняйте ссылки. Продолжить можно здесь или в другом браузере.",
+        "Hide": "Скрывать",
+        "Add": "Добавить",
         "Open the sidebar with ⌃⌥B or from the Linklet menu.": "Откройте панель сочетанием ⌃⌥B или из меню Linklet.",
         "The sidebar shortcut ⌃⌥B is unavailable. Use the Linklet menu or the screen edge.": "Сочетание ⌃⌥B недоступно. Используйте меню Linklet или край экрана.",
         "Open the original site link in your chosen browser. Sign-in starts again there.": "Открыть исходную ссылку сайта в выбранном браузере. Вход начнётся заново в нём.",
@@ -346,7 +421,8 @@ final class AppLanguage: ObservableObject {
         "Linklet Settings": "Настройки Linklet",
         "Hide preview": "Скрывать",
         "Keep open": "Оставлять открытым",
-        "Keep on top": "Поверх всех окон",
+
+        "Keep on top": "Поверх других окон",
         "The preview hides when you switch to another app.": "Окно скрывается при переходе в другое приложение.",
         "The preview stays open; other windows can appear in front of it.": "Окно остаётся открытым, но другие окна могут его перекрывать.",
         "The preview stays visible above other applications.": "Окно остаётся поверх других приложений.",

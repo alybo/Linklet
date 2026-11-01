@@ -12,7 +12,7 @@ enum PreviewWindowBehavior: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .hide: return L("Hide preview")
+        case .hide: return L("Hide")
         case .keepOpen: return L("Keep open")
         case .stayOnTop: return L("Keep on top")
         }
@@ -37,17 +37,15 @@ final class AppModel: ObservableObject {
         static let keepsPreviewVisibleWhenInactive = "keepsPreviewVisibleWhenInactive"
         static let keepsPreviewAboveOtherWindows = "keepsPreviewAboveOtherWindows"
         static let opensLinksInNewWindows = "opensLinksInNewWindows"
+        static let preferredTargetID = "preferredTargetID"
     }
 
     @Published var settingsPage: SettingsPage {
         didSet { defaults.set(settingsPage.rawValue, forKey: "settingsPage") }
     }
-    @Published var isChoosingDataMode = false
-    private var pendingPreviewURL: URL?
-    private var pendingPreviewPosition: PagePosition?
-    private var resumeAfterSettingsURL: URL?
-    private var previewRequestID = UUID()
+    @Published private(set) var isWelcomeVisible = false
     @Published private var manualTargetOrder: [String]
+    @Published private(set) var preferredTargetID: String?
     let searchSettings: SearchSettings
     let linkLibrary: LinkLibrary
     let siteData: SiteDataService
@@ -82,6 +80,7 @@ final class AppModel: ObservableObject {
     }
     private lazy var sidebarWindowController = SidebarWindowController(model: self)
     private lazy var settingsWindowController = SettingsWindowController(model: self)
+    private lazy var welcomeWindowController = WelcomeWindowController(model: self)
     private var childPreviewModels: [AppModel] = []
     private var onPreviewClosed: (() -> Void)?
     // Child preview models report Dock state to the coordinator that owns all windows.
@@ -103,8 +102,9 @@ final class AppModel: ObservableObject {
         self.searchSettings = searchSettings ?? SearchSettings(defaults: defaults)
         self.linkLibrary = linkLibrary ?? LinkLibrary(defaults: defaults)
         self.discoverTargets = discoverTargets ?? { BrowserDiscoveryService().discoverTargets() }
-        settingsPage = SettingsPage(rawValue: defaults.string(forKey: "settingsPage") ?? "") ?? .general
+        settingsPage = SettingsPage.restoring(defaults.string(forKey: "settingsPage"))
         manualTargetOrder = defaults.stringArray(forKey: "manualTargetOrder") ?? []
+        preferredTargetID = defaults.string(forKey: PreferenceKey.preferredTargetID)
         let data = siteData ?? SiteDataService(defaults: defaults)
         self.siteData = data
         self.windowGeometry = windowGeometry ?? WindowGeometryService(defaults: defaults)
@@ -198,7 +198,13 @@ final class AppModel: ObservableObject {
     }
 
     var preferredTarget: BrowserTarget? {
-        visibleTargets.first
+        visibleTargets.first { $0.id == preferredTargetID } ?? visibleTargets.first
+    }
+
+    func setPreferredTarget(_ id: String) {
+        guard visibleTargets.contains(where: { $0.id == id }) else { return }
+        allPreviewModels.forEach { $0.preferredTargetID = id }
+        defaults.set(id, forKey: PreferenceKey.preferredTargetID)
     }
 
     var previewWindowBehavior: PreviewWindowBehavior {
@@ -224,6 +230,11 @@ final class AppModel: ObservableObject {
             manualTargetOrder.append(contentsOf: newIDs)
             defaults.set(manualTargetOrder, forKey: "manualTargetOrder")
         }
+        // Preserve the effective browser when migrating from usage-based ordering.
+        // Future menu sorting must not silently change the primary action.
+        if preferredTargetID == nil, let target = visibleTargets.first {
+            setPreferredTarget(target.id)
+        }
         refreshDefaultBrowserStatus()
         isLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     }
@@ -244,6 +255,11 @@ final class AppModel: ObservableObject {
 
     func toggleSearch() { searchWindowController.toggle() }
 
+    func openQuickSearch() {
+        closeWelcome()
+        searchWindowController.present()
+    }
+
     func handleIncoming(urls: [URL]) {
         if let query = urls.compactMap(SearchRequest.query).first {
             showPreview(url: searchSettings.engine.searchURL(for: query))
@@ -258,34 +274,16 @@ final class AppModel: ObservableObject {
     }
 
     func showPreview(url: URL, restoring position: PagePosition? = nil) {
-        if opensLinksInNewWindows, siteData.hasChosenMode, hasVisiblePreviewWindow {
+        guard URLPolicy.canPreview(url) else { return }
+        closeWelcome()
+        // A first link opens immediately with temporary data; persistence remains opt-in.
+        if !siteData.hasChosenMode { siteData.markModeChosen() }
+        if opensLinksInNewWindows, hasVisiblePreviewWindow {
             showPreviewInNewWindow(url: url, restoring: position)
             return
         }
         searchWindowController.close()
-        previewRequestID = UUID()
-        pendingPreviewURL = url
-        pendingPreviewPosition = position
-        resumeAfterSettingsURL = nil
         previewSession.endSession(resetTemporaryData: false)
-        if !siteData.hasChosenMode {
-            isChoosingDataMode = true
-            previewWindowController.showDataChoice(for: url)
-        } else {
-            isChoosingDataMode = false
-            pendingPreviewURL = nil
-            pendingPreviewPosition = nil
-            previewWindowController.show(url: url, restoring: position)
-        }
-    }
-
-    func completeDataChoice(save: Bool) {
-        guard let url = pendingPreviewURL else { return }
-        isChoosingDataMode = false
-        siteData.selectModeForPreview(save)
-        pendingPreviewURL = nil
-        let position = pendingPreviewPosition
-        pendingPreviewPosition = nil
         previewWindowController.show(url: url, restoring: position)
     }
 
@@ -294,26 +292,7 @@ final class AppModel: ObservableObject {
         showPreview(url: url, restoring: link.position)
     }
 
-    func openDataSettingsFromChoice() {
-        let url = pendingPreviewURL
-        isChoosingDataMode = false
-        previewWindowController.close()
-        resumeAfterSettingsURL = url
-        showSettings(page: .sites)
-    }
-
-    func settingsDidClose() {
-        guard let url = resumeAfterSettingsURL else { return }
-        resumeAfterSettingsURL = nil
-        siteData.markModeChosen()
-        showPreview(url: url)
-    }
-
     func previewDidEnd() {
-        previewRequestID = UUID()
-        pendingPreviewURL = nil
-        pendingPreviewPosition = nil
-        isChoosingDataMode = false
         previewSession.endSession()
         if siteData.isEnabled { Task { await siteData.refresh() } }
         onPreviewClosed?()
@@ -449,19 +428,28 @@ final class AppModel: ObservableObject {
     }
 
     func showWelcomeIfNeeded() {
-        guard !defaults.bool(forKey: "hasShownWelcome") else { return }
-        // A link delivered during launch takes priority over onboarding.
-        guard previewSession.currentURL == nil, pendingPreviewURL == nil, resumeAfterSettingsURL == nil else { return }
+        guard !defaults.bool(forKey: "hasShownWelcome"), !windowRegistry.hasWindows,
+              previewSession.currentURL == nil else { return }
         showWelcome()
     }
 
     func showWelcome() {
-        closeAllPreviewWindows()
-        resumeAfterSettingsURL = nil
         refreshTargets()
-        previewSession.onOpenSettings = { [weak self] in self?.showSettings() }
-        previewWindowController.showWelcome()
+        isWelcomeVisible = true
+        welcomeWindowController.present()
         defaults.set(true, forKey: "hasShownWelcome")
+        updateDockVisibilitySoon()
+    }
+
+    func closeWelcome() {
+        guard isWelcomeVisible else { return }
+        welcomeWindowController.close()
+        welcomeDidClose()
+    }
+
+    func welcomeDidClose() {
+        isWelcomeVisible = false
+        updateDockVisibilitySoon()
     }
 
     func refreshDefaultBrowserStatus() {
@@ -474,6 +462,7 @@ final class AppModel: ObservableObject {
         statusMessage = nil
         allPreviewModels.forEach { $0.previewSession.errorMessage = nil }
         settingsWindowController.window?.title = settingsPage.title
+        if isWelcomeVisible { welcomeWindowController.window?.title = L("Welcome to Linklet") }
         for preview in allPreviewModels where preview.previewSession.isWelcome {
             preview.previewSession.showWelcome(isDefault: isDefaultBrowser)
         }
@@ -481,6 +470,7 @@ final class AppModel: ObservableObject {
     }
 
     func showSettings(page: SettingsPage? = nil) {
+        closeWelcome()
         searchWindowController.close()
         if let page { settingsPage = page }
         makeAppVisibleInDock()
@@ -509,8 +499,7 @@ final class AppModel: ObservableObject {
     }
 
     func closeAllWindows() {
-        // Do not resume the privacy setup flow after its Settings window closes.
-        resumeAfterSettingsURL = nil
+        closeWelcome()
         closeAllPreviewWindows()
         settingsWindowController.close()
         if sidebarActionHandler == nil { sidebarWindowController.hide() }
@@ -518,7 +507,7 @@ final class AppModel: ObservableObject {
     }
 
     var hasOpenWindows: Bool {
-        windowRegistry.hasWindows || settingsWindowController.window?.isVisible == true
+        windowRegistry.hasWindows || isWelcomeVisible || settingsWindowController.window?.isVisible == true
     }
 
     private func recordUsage(of target: BrowserTarget) {
@@ -578,6 +567,7 @@ final class AppModel: ObservableObject {
     }
 
     private func focusRemainingPreviewWindowSoon() {
+        guard !windowRegistry.isClosingFromSidebar else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, NSApp.isActive else { return }
             self.windowRegistry.activateLastWindow()

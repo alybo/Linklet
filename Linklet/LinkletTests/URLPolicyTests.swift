@@ -304,8 +304,10 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(AppLanguage.resolve("system", preferredLanguages: ["ru-RU"]), "ru")
         XCTAssertEqual(AppLanguage.resolve("system", preferredLanguages: ["de-DE"]), "en")
         AppLanguage.shared.set("ru")
+        XCTAssertEqual(L("Back"), "Назад")
+        XCTAssertEqual(L("Skip"), "Пропустить")
         XCTAssertEqual(L("Open in %@", "Safari"), "Открыть в Safari")
-        XCTAssertEqual(PreviewWindowBehavior.stayOnTop.title, "Поверх всех окон")
+        XCTAssertEqual(PreviewWindowBehavior.stayOnTop.title, "Поверх других окон")
         XCTAssertEqual(L("Favorite websites"), "Избранные сайты")
         XCTAssertEqual(L("Show favorites in Quick Search"), "Показывать избранное в быстром поиске")
         XCTAssertEqual(L("Add favorite website"), "Добавить избранный сайт")
@@ -533,10 +535,11 @@ final class SettingsLanguageTests: XCTestCase {
         AppLanguage.shared.set("ru")
         let model = AppModel(defaults: defaults)
         model.setPreviewWindowBehavior(.stayOnTop)
+        model.settingsPage = .windows
         window.contentView = NSHostingView(rootView: SettingsView(model: model))
         window.orderFront(nil)
         func segments(in view: NSView) -> NSSegmentedControl? {
-            if let control = view as? NSSegmentedControl { return control }
+            if let control = view as? NSSegmentedControl, control.segmentCount == 3 { return control }
             return view.subviews.lazy.compactMap { segments(in: $0) }.first
         }
         func labels() -> [String] {
@@ -544,16 +547,16 @@ final class SettingsLanguageTests: XCTestCase {
             return (0..<control.segmentCount).map { control.label(forSegment: $0) ?? "" }
         }
         for _ in 0..<30 {
-            if labels() == ["Скрывать", "Оставлять открытым", "Поверх всех окон"] { break }
+            if labels() == ["Скрывать", "Оставлять открытым", "Поверх других окон"] { break }
             try await Task.sleep(for: .milliseconds(100))
         }
-        XCTAssertEqual(labels(), ["Скрывать", "Оставлять открытым", "Поверх всех окон"])
+        XCTAssertEqual(labels(), ["Скрывать", "Оставлять открытым", "Поверх других окон"])
         AppLanguage.shared.set("en")
         for _ in 0..<30 {
-            if labels() == ["Hide preview", "Keep open", "Keep on top"] { break }
+            if labels() == ["Hide", "Keep open", "Keep on top"] { break }
             try await Task.sleep(for: .milliseconds(100))
         }
-        XCTAssertEqual(labels(), ["Hide preview", "Keep open", "Keep on top"])
+        XCTAssertEqual(labels(), ["Hide", "Keep open", "Keep on top"])
         XCTAssertEqual(model.previewWindowBehavior, .stayOnTop)
     }
 }

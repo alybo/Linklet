@@ -44,6 +44,8 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     let reveal = SidebarRevealState()
     private var editorObservation: AnyCancellable?
     private let library: LinkLibrary
+    private let windows: BrowserWindowRegistry
+    private var isClosingPreview = false
     private var timer: Timer?
     private let hotKey = SearchHotKey(identifier: 2)
     private var enabledObservation: AnyCancellable?
@@ -72,6 +74,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     init(model: AppModel, reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
          presentationOptions: @escaping () -> NSApplication.PresentationOptions = { NSApp.currentSystemPresentationOptions }) {
         library = model.linkLibrary
+        windows = model.windowRegistry
         self.reduceMotion = reduceMotion
         self.presentationOptions = presentationOptions
         let panel = SidebarPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 700),
@@ -93,7 +96,8 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
             panel?.keepsGlassAppearanceActive = appearance == .glass && SidebarAppearance.supportsGlass
         }
         let hosting = NSHostingController(rootView: SidebarPanelSurface(model: model, library: library,
-            reveal: reveal, editor: editor, dismiss: { [weak self] in self?.hide() }))
+            reveal: reveal, editor: editor, dismiss: { [weak self] in self?.hide() },
+            closeWindow: { [weak self] id in self?.closePreview(id) }))
         hosting.sizingOptions = []
         let resizeHandle = SidebarResizeView()
         resizeHandle.start = { [weak self] in self?.isResizing = true }
@@ -314,10 +318,25 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         indicator.setFrame(frame, display: true)
     }
 
+    func closePreview(_ id: UUID) {
+        let wasPresented = isPresented
+        isClosingPreview = wasPresented
+        windows.closeFromSidebar(id)
+        guard wasPresented else { return }
+        leftPanelAt = nil
+        // Closing a page can change the app's Dock/key-window state. Keep the
+        // sidebar focused through those callbacks, without reopening a dismissed panel.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.isPresented { self.window?.makeKeyAndOrderFront(nil) }
+            DispatchQueue.main.async { [weak self] in self?.isClosingPreview = false }
+        }
+    }
+
     func windowDidResignKey(_ notification: Notification) { dismissForFocusChange() }
 
     private func dismissForFocusChange() {
-        guard isPresented, !isResizing, !editor.isEditing, window?.attachedSheet == nil else { return }
+        guard isPresented, !isClosingPreview, !isResizing, !editor.isEditing, window?.attachedSheet == nil else { return }
         hide()
     }
 

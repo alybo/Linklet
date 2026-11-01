@@ -2,12 +2,20 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
+struct PreviewControlAnchors: PreferenceKey {
+    static var defaultValue: [String: Anchor<CGRect>] = [:]
+    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 /// Uses the existing title typography. Only the address expands; the window
 /// controls and the live WKWebView keep their identity and state.
 struct PreviewLocationView: View {
     @ObservedObject var session: PreviewSession
     let title: String
     var isToolbarHovered = false
+    var highlightsAddress = false
     var isBookmarked = false
     var isBookmarkEditorPresented = false
     var editBookmark: (() -> Void)? = nil
@@ -38,6 +46,15 @@ struct PreviewLocationView: View {
                        height: PreviewLayout.controlHeight)
                 .frame(maxWidth: showsFullAddress ? .infinity : nil)
                 .layoutPriority(1)
+                .overlay {
+                    if highlightsAddress {
+                        RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius)
+                            .stroke(Color.accentColor, lineWidth: 2).allowsHitTesting(false)
+                    }
+                }
+                .anchorPreference(key: PreviewControlAnchors.self, value: .bounds) {
+                    highlightsAddress ? ["address": $0] : [:]
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

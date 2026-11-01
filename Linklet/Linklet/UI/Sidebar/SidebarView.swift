@@ -160,10 +160,11 @@ struct SidebarPanelSurface: View {
     let reveal: SidebarRevealState
     let editor: SidebarEditorState
     let dismiss: () -> Void
+    var closeWindow: ((UUID) -> Void)? = nil
 
     var body: some View {
         SidebarRevealSurface(reveal: reveal, appearance: library.sidebarAppearance) {
-            SidebarView(model: model, dismiss: dismiss, editor: editor)
+            SidebarView(model: model, dismiss: dismiss, editor: editor, closeWindow: closeWindow)
         }
     }
 }
@@ -220,8 +221,9 @@ struct SidebarView: View {
     @ObservedObject private var downloads: DownloadManager
     let dismiss: () -> Void
     @ObservedObject var editor: SidebarEditorState
+    let closeWindow: ((UUID) -> Void)?
 
-    init(model: AppModel, dismiss: @escaping () -> Void, editor: SidebarEditorState) {
+    init(model: AppModel, dismiss: @escaping () -> Void, editor: SidebarEditorState, closeWindow: ((UUID) -> Void)? = nil) {
         self.model = model
         self.library = model.linkLibrary
         self.settings = model.searchSettings
@@ -229,6 +231,7 @@ struct SidebarView: View {
         self.downloads = model.downloads
         self.dismiss = dismiss
         self.editor = editor
+        self.closeWindow = closeWindow
     }
 
     var body: some View {
@@ -272,7 +275,7 @@ struct SidebarView: View {
                 HistoryClearConfirmation(library: library).padding(.horizontal, SidebarLayout.inset).padding(.bottom, 12)
             }
             HStack {
-                Button { dismiss(); model.showSettings(page: .sidebar) } label: {
+                Button { dismiss(); model.showSettings(page: .windows) } label: {
                     Image(systemName: "gearshape").font(.system(size: layout.footerIconSize))
                         .frame(width: 28, height: 28).contentShape(Rectangle())
                 }.help(L("Settings…")).accessibilityLabel(L("Settings…"))
@@ -369,7 +372,10 @@ struct SidebarView: View {
             ForEach(windows.windows) { window in
                 SidebarOpenWindowRow(window: window, settings: settings, layout: layout,
                     activate: { dismiss(); windows.activate(window.id) },
-                    close: { windows.close(window.id) })
+                    close: {
+                        if let closeWindow { closeWindow(window.id) }
+                        else { windows.closeFromSidebar(window.id) }
+                    })
             }
             if windows.windows.isEmpty {
                 emptyMessage("No open windows.")
@@ -500,7 +506,8 @@ private struct SidebarDisclosure: View {
     var body: some View {
         Image(systemName: expanded ? "chevron.down" : "chevron.right")
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(SidebarLayout.groupColor)
+            .foregroundStyle(SidebarLayout.controlColor)
+            .shadow(color: .black.opacity(0.4), radius: 1, y: 1)
             .frame(width: Self.columnWidth)
             .accessibilityHidden(true)
     }
@@ -553,7 +560,8 @@ private struct SidebarOpenWindowRow: View {
             Button(action: close) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(SidebarLayout.groupColor)
+                    .foregroundStyle(SidebarLayout.controlColor)
+                    .shadow(color: .black.opacity(0.4), radius: 1, y: 1)
                     .frame(width: SidebarDisclosure.columnWidth, height: layout.rowHeight)
                     .background(isCloseHovered ? Color.white.opacity(0.08) : .clear,
                                 in: RoundedRectangle(cornerRadius: 4))
@@ -623,7 +631,8 @@ private struct SidebarSectionHeader: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(SidebarLayout.groupColor)
+                .foregroundStyle(SidebarLayout.controlColor)
+                .shadow(color: .black.opacity(0.4), radius: 1, y: 1)
                 .focused($focusedControl, equals: .action)
                 .help(L(addBookmark != nil ? "Add bookmark" : "Clear completed downloads"))
                 .accessibilityLabel(L(addBookmark != nil ? "Add bookmark" : "Clear completed downloads"))
@@ -753,6 +762,7 @@ private enum SidebarLayout {
     static let inset: CGFloat = 16
     static let groupColor = Color(red: 141 / 255, green: 141 / 255, blue: 141 / 255)
     static let linkColor = Color.white
+    static let controlColor = Color.white
 }
 
 /// Native sibling of the hosting view: SwiftUI hit testing cannot cover this edge.
@@ -874,62 +884,79 @@ struct BookmarkEditor: View {
 }
 
 struct SidebarSettingsView: View {
+    @ObservedObject var library: LinkLibrary
+    let show: () -> Void
+    var initiallyExpanded = false
+    var body: some View {
+        Form { SidebarSettingsSections(library: library, show: show, initiallyExpanded: initiallyExpanded) }
+            .formStyle(.grouped).toggleStyle(.switch)
+    }
+}
+
+struct SidebarSettingsSections: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var library: LinkLibrary
     let show: () -> Void
+    @State private var showsAdvanced: Bool
+
+    init(library: LinkLibrary, show: @escaping () -> Void, initiallyExpanded: Bool = false) {
+        self.library = library
+        self.show = show
+        _showsAdvanced = State(initialValue: initiallyExpanded)
+    }
     var body: some View {
-        Form {
-            Section {
-                Toggle(L("Enable global sidebar"), isOn: Binding(get: { library.isEnabled }, set: library.setEnabled))
-                Text(L("Hover at the left edge of any screen to see open windows, bookmarks and recent links. Select an open window to return to it, or a saved link to open a preview."))
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle(L("Show sidebar reveal indicator"), isOn: Binding(get: { library.showsRevealIndicator }, set: library.setShowsRevealIndicator))
-                    .disabled(!library.isEnabled)
-                Toggle(L("Hide in fullscreen apps"), isOn: Binding(get: { library.hidesInFullScreen }, set: library.setHidesInFullScreen))
-                    .disabled(!library.isEnabled)
-                if !library.showsRevealIndicator {
-                    HStack {
-                        Text(L("Delay before opening"))
-                        Slider(value: Binding(get: { library.edgeOpenDelay }, set: library.setEdgeOpenDelay), in: 0.1...2, step: 0.1)
-                        Text(String(format: "%.1f s", library.edgeOpenDelay)).monospacedDigit().frame(width: 48)
-                    }.disabled(!library.isEnabled)
-                }
-                Button(L("Show sidebar"), action: show).disabled(!library.isEnabled)
-                Text(L("Open the sidebar with ⌃⌥B or from the Linklet menu."))
-                    .font(.caption).foregroundStyle(.secondary)
+        Section {
+            Toggle(L("Enable sidebar"), isOn: Binding(get: { library.isEnabled }, set: library.setEnabled))
+            if library.isEnabled {
+                LabeledContent(L("Open sidebar")) { Text("⌃⌥B").foregroundStyle(.secondary) }
+                Toggle(L("Hide in full screen"), isOn: Binding(get: { library.hidesInFullScreen }, set: library.setHidesInFullScreen))
+                Button(L("Show sidebar"), action: show)
             }
             if let error = library.shortcutError { Text(error).font(.caption).foregroundStyle(.red) }
-            Section(L("Sidebar appearance")) {
-                if SidebarAppearance.supportsGlass {
-                    Picker(L("Appearance"), selection: Binding(get: { library.sidebarAppearance }, set: { appearance in
-                        // AppKit's segmented picker can send its action while another
-                        // hosting view is updating. Publish to both hosts next turn.
-                        DispatchQueue.main.async { library.setSidebarAppearance(appearance) }
-                    })) {
-                        ForEach(SidebarAppearance.allCases) { appearance in Text(appearance.title).tag(appearance) }
-                    }.pickerStyle(.segmented).accessibilityIdentifier("sidebar-appearance-picker")
-                    Text(L("Test appearance: a full Liquid Glass panel, tinted black on the left and transparent on the right. The sidebar shape and row sizes stay the same."))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(L("Reduce Transparency uses the black appearance."))
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text(L("Liquid Glass requires macOS 26 or later. The black appearance is used on this Mac."))
-                        .font(.caption).foregroundStyle(.secondary)
+        } header: { Text(L("Sidebar")) } footer: {
+            if library.isEnabled {
+                Text(L("Move the pointer to the left edge of the screen to see windows, bookmarks, and history."))
+            }
+        }
+        if library.isEnabled {
+            Section {
+                DisclosureGroup(L("Advanced settings"), isExpanded: $showsAdvanced) {
+                    Toggle(L("Show sidebar indicator"), isOn: Binding(get: { library.showsRevealIndicator }, set: library.setShowsRevealIndicator))
+                    if !library.showsRevealIndicator {
+                        LabeledContent(L("Opening delay")) {
+                            Slider(value: Binding(get: { library.edgeOpenDelay }, set: library.setEdgeOpenDelay), in: 0.1...2, step: 0.1)
+                                .frame(maxWidth: 180)
+                            Text(library.edgeOpenDelay.formatted(.number.precision(.fractionLength(1))) + " " + L("s"))
+                                .monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    if SidebarAppearance.supportsGlass {
+                        Picker(L("Appearance"), selection: Binding(get: { library.sidebarAppearance }, set: { appearance in
+                            DispatchQueue.main.async { library.setSidebarAppearance(appearance) }
+                        })) {
+                            ForEach(SidebarAppearance.allCases) { Text($0.title).tag($0) }
+                        }.pickerStyle(.segmented).accessibilityIdentifier("sidebar-appearance-picker")
+                        Text(L("Reduce Transparency uses the black appearance.")).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
-            Section(L("Recent links")) {
-                Toggle(L("Save history between launches"), isOn: Binding(get: { library.savesHistory }, set: library.setSavesHistory))
-                Text(L("Visited pages and their scroll positions appear here. The last page of a closed window moves to the top. Up to 200 links are kept; turning saving off removes history from disk."))
-                    .font(.caption).foregroundStyle(.secondary)
-                Button(L("Clear history"), action: library.requestHistoryClear)
-                    .disabled(library.recentLinks.isEmpty)
-                if library.isHistoryClearPending { HistoryClearConfirmation(library: library) }
-            }
-            Section(L("Bookmarks")) {
-                Text(L("Bookmarks use the same saved links as Quick Search. Folders and bookmarks stay on this Mac and can be edited in the sidebar."))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }.formStyle(.grouped).toggleStyle(.switch)
+        }
+    }
+}
+
+struct HistorySettingsSection: View {
+    @ObservedObject private var language = AppLanguage.shared
+    @ObservedObject var library: LinkLibrary
+    var body: some View {
+        Section {
+            Toggle(L("Save browsing history"), isOn: Binding(get: { library.savesHistory }, set: library.setSavesHistory))
+            Button(L("Clear history"), action: library.requestHistoryClear).disabled(library.recentLinks.isEmpty)
+            if library.isHistoryClearPending { HistoryClearConfirmation(library: library) }
+        } header: { Text(L("History")) } footer: {
+            Text(L(library.savesHistory
+                ? "History is kept on this Mac after you quit Linklet. Turning this off deletes saved history."
+                : "History is kept until you quit Linklet. This setting does not affect website sign-ins."))
+        }
     }
 }
 

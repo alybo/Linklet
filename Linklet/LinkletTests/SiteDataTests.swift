@@ -179,53 +179,80 @@ final class SiteDataTests: XCTestCase {
         XCTAssertEqual(restored.visibleTargets.map(\.displayName), ["C", "A", "B"])
     }
 
-    func testFirstLinkWaitsForChoiceAndSettingsDoesNotApplyDraft() {
+    func testFirstLinkOpensImmediatelyWithTemporaryData() {
         let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
-        model.showPreview(url: URL(string: "https://example.org")!)
-        XCTAssertTrue(model.isChoosingDataMode)
-        XCTAssertNil(model.previewSession.currentURL)
-        model.openDataSettingsFromChoice()
-        XCTAssertEqual(model.settingsPage, .sites)
+        let url = URL(string: "http://127.0.0.1:9/original")!
+        model.showPreview(url: url)
+        defer { model.closeAllWindows() }
         XCTAssertFalse(data.isEnabled)
-        XCTAssertFalse(data.hasChosenMode)
-        // Closing the chooser without completing must leave it eligible for the next link.
-        model.previewDidEnd()
-        XCTAssertFalse(data.hasChosenMode)
-    }
-
-    func testSettingsReturnResumesOriginalLinkWithoutSecondChoice() async throws {
-        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
-        let url = URL(string: "http://127.0.0.1:9/original")!
-        model.showPreview(url: url)
-        model.openDataSettingsFromChoice()
-        await model.setSavesSiteData(true)
-        model.settingsDidClose()
-        XCTAssertTrue(data.isEnabled)
         XCTAssertTrue(data.hasChosenMode)
-        XCTAssertFalse(model.isChoosingDataMode)
-        XCTAssertEqual(model.previewSession.originalURL, url)
-        model.previewDidEnd()
-    }
-
-    func testChoosingPrivateModeStartsPreviewImmediately() async throws {
-        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
-        let url = URL(string: "http://127.0.0.1:9/original")!
-        model.showPreview(url: url)
-        model.completeDataChoice(save: false)
         XCTAssertTrue(model.previewSession.isActive)
         XCTAssertEqual(model.previewSession.originalURL, url)
-        model.previewDidEnd()
-        await data.refresh()
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertFalse(model.previewSession.isActive)
-        XCTAssertNil(model.previewSession.originalURL)
-        XCTAssertTrue(data.hasChosenMode)
+        XCTAssertFalse(model.isWelcomeVisible)
+        model.showWelcomeIfNeeded()
+        XCTAssertFalse(model.isWelcomeVisible, "An incoming link takes priority over first-run instructions")
+    }
+
+    func testReopeningWelcomePreservesPageAndIncomingLinkClosesWelcome() {
+        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
+        let original = URL(string: "http://127.0.0.1:9/original")!
+        model.setPreviewWindowBehavior(.keepOpen)
+        model.showPreview(url: original)
+        defer { model.closeAllWindows() }
+        model.showWelcome()
+        XCTAssertTrue(model.isWelcomeVisible)
+        XCTAssertTrue(model.previewSession.isActive)
+        XCTAssertEqual(model.previewSession.originalURL, original)
+        XCTAssertEqual(model.windowRegistry.activeSessions.count, 1, "Welcome must not enter the live-page registry")
+        let next = URL(string: "http://127.0.0.1:9/next")!
+        model.showPreview(url: next)
+        XCTAssertFalse(model.isWelcomeVisible)
+        XCTAssertEqual(model.previewSession.originalURL, next)
+        XCTAssertFalse(data.isEnabled, "Opening a link must not enable permanent storage")
+    }
+
+    func testFirstLinkPreservesAnExistingStoragePreference() {
+        defaults.set(true, forKey: SiteDataService.enabledKey)
+        let savedData = SiteDataService(defaults: defaults, persistentStore: store)
+        let model = AppModel(defaults: defaults, siteData: savedData, discoverTargets: { [] })
+        XCTAssertFalse(savedData.hasChosenMode)
+        model.showPreview(url: URL(string: "http://127.0.0.1:9/saved")!)
+        defer { model.closeAllWindows() }
+        XCTAssertTrue(savedData.isEnabled, "Removing the chooser must preserve an existing storage preference")
+        XCTAssertTrue(savedData.hasChosenMode)
+    }
+
+    func testSettingsNavigationMigratesOldSections() {
+        defaults.set("sidebar", forKey: "settingsPage")
+        XCTAssertEqual(AppModel(defaults: defaults, siteData: data).settingsPage, .windows)
+        defaults.set("browsers", forKey: "settingsPage")
+        XCTAssertEqual(AppModel(defaults: defaults, siteData: data).settingsPage, .search)
+        defaults.set("sites", forKey: "settingsPage")
+        XCTAssertEqual(AppModel(defaults: defaults, siteData: data).settingsPage, .sites)
+    }
+
+    func testExplicitBrowserChoiceSurvivesSortingHidingAndRestart() {
+        let browsers = ["A", "B", "C"].map { BrowserTarget.browser(name: $0, applicationURL: URL(fileURLWithPath: "/Applications/\($0).app")) }
+        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { browsers })
+        model.refreshTargets()
+        XCTAssertEqual(model.preferredTargetID, browsers.first?.id)
+        model.setPreferredTarget(browsers[2].id)
+        model.setSortTargetsByUsage(false)
+        XCTAssertEqual(model.preferredTarget?.id, browsers[2].id)
+        XCTAssertEqual(model.previewOpenTargets.first?.id, browsers[2].id)
+        model.setSortTargetsByUsage(true)
+        XCTAssertEqual(model.preferredTarget?.id, browsers[2].id)
+        model.setTargetVisible(browsers[2], isVisible: false)
+        XCTAssertNotEqual(model.preferredTarget?.id, browsers[2].id)
+        model.setTargetVisible(browsers[2], isVisible: true)
+        let restored = AppModel(defaults: defaults, siteData: data, discoverTargets: { browsers.reversed() })
+        restored.refreshTargets()
+        XCTAssertEqual(restored.preferredTarget?.id, browsers[2].id)
     }
 
     func testHidingPreviewEndsTemporarySession() async throws {
         let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
         model.showPreview(url: URL(string: "http://127.0.0.1:9/original")!)
-        model.completeDataChoice(save: false)
         let oldStore = model.previewSession.websiteDataStore
         await oldStore.httpCookieStore.setCookie(cookie("example.org"))
         model.previewApplicationDidHide()
@@ -240,10 +267,15 @@ final class SiteDataTests: XCTestCase {
         let controller = SettingsWindowController(model: model)
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
+        XCTAssertTrue(window.styleMask.contains(.resizable))
+        controller.showWindow(nil)
+        try await Task.sleep(for: .milliseconds(150))
+        window.setContentSize(NSSize(width: 920, height: 720))
+        let chosenSize = window.contentLayoutRect.size
         func assertSize(file: StaticString = #filePath, line: UInt = #line) {
-            let size = window.contentRect(forFrameRect: window.frame).size
-            XCTAssertEqual(size.width, 860, accuracy: 1, file: file, line: line)
-            XCTAssertEqual(size.height, 660, accuracy: 1, file: file, line: line)
+            let size = window.contentLayoutRect.size
+            XCTAssertEqual(size.width, chosenSize.width, accuracy: 1, file: file, line: line)
+            XCTAssertEqual(size.height, chosenSize.height, accuracy: 1, file: file, line: line)
         }
         assertSize()
         for page in SettingsPage.allCases {
@@ -251,7 +283,7 @@ final class SiteDataTests: XCTestCase {
             controller.showWindow(nil)
             try await Task.sleep(for: .milliseconds(150))
             assertSize()
-            XCTAssertEqual(window.contentView?.bounds.height ?? 0, 660, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(window.contentView?.bounds.height ?? 0, chosenSize.height)
         }
         window.close()
         controller.showWindow(nil)
@@ -277,7 +309,8 @@ final class SiteDataTests: XCTestCase {
             window.appearance = NSAppearance(named: appearance)
             for page in SettingsPage.allCases {
                 model.settingsPage = page
-                let host = NSHostingView(rootView: SettingsView(model: model))
+                let host = NSHostingView(rootView: SettingsView(model: model)
+                    .environment(\.colorScheme, appearance == .darkAqua ? .dark : .light))
                 host.sizingOptions = []
                 window.contentView = host
                 window.setContentSize(NSSize(width: 860, height: 660))
@@ -287,13 +320,17 @@ final class SiteDataTests: XCTestCase {
             }
         }
         window.appearance = NSAppearance(named: .aqua)
-        model.isChoosingDataMode = true
-        let previewHost = NSHostingView(rootView: PreviewRootView(model: model))
-        previewHost.sizingOptions = []
-        window.contentView = previewHost
-        window.setContentSize(NSSize(width: 900, height: 650))
-        try await Task.sleep(for: .milliseconds(250))
-        try snapshot(window, name: "site-data-choice")
+        for code in ["ru", "en"] {
+            AppLanguage.shared.set(code)
+            for step in WelcomeStep.allCases {
+                let welcomeHost = NSHostingView(rootView: WelcomeView(model: model, initialStep: step))
+                welcomeHost.sizingOptions = []
+                window.contentView = welcomeHost
+                window.setContentSize(NSSize(width: 760, height: 650))
+                try await Task.sleep(for: .milliseconds(150))
+                try snapshot(window, name: "welcome-\(step.rawValue)-\(code)")
+            }
+        }
         let supportHost = NSHostingView(rootView: SupportDevelopmentView()
             .frame(width: 480, height: 410)
             .background(Color(nsColor: .windowBackgroundColor)))

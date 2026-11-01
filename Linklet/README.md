@@ -8,8 +8,7 @@ continue in an installed browser or a specific Orion profile.
 
 - Registers as a handler for `http` and `https` links.
 - Opens links in a native, resizable macOS preview window.
-- Reuses the current preview window by default. An optional **Open links in new
-  windows** setting gives every incoming link its own preview; new windows cascade
+- Reuses the current preview window by default. The **Window mode → Multiple windows** setting gives every incoming link its own preview; new windows cascade
   from the previous one unless a saved position is available for the site.
 - Keeps a separate window frame for each exact website host and restores it on a
   later visit. Saved frames are clamped to a visible display when monitors or their
@@ -21,18 +20,25 @@ continue in an installed browser or a specific Orion profile.
 - Shows Back and Forward only when navigation in that direction is available,
   with trackpad gestures and Command-[ / Command-] shortcuts. Each new external
   link starts a fresh navigation history.
-- Provides current-URL copying and a frequency-ranked Open in action.
+- Provides current-URL copying and an explicit preferred browser for the Open in action.
+  Browser menu ordering can follow usage or a saved manual order.
 - Discovers installed browsers through Launch Services.
 - Discovers Orion profile proxy apps in the user's Applications folder.
 - Opens the original incoming URL in an explicitly selected target app, even
   after redirects or navigation within the preview.
 - Defaults to temporary website data, cleared when the preview closes or hides,
   including when switching apps in Hide mode. Each external link resets navigation history.
-- Offers an explicit first-link choice to save sign-ins and site preferences locally.
+- Opens the first link immediately with temporary data. A native, optional first-run
+  introduction offers explicit saving of sign-ins and site preferences locally.
   Settings can delete individual sites or all data, and expire sites after 7, 30,
   or 90 days without a top-level visit. Background requests do not renew visits.
-- Provides five settings pages and a persistent manual browser order when usage
-  sorting is disabled. About includes developer links and a support sheet.
+- Provides five native settings sections: General, Windows & Sidebar, Search & Browsers,
+  Privacy, and About Linklet. The settings window resizes, follows macOS appearance,
+  and supports Russian, English, and the system language. About includes developer
+  links and a support sheet.
+- Offers an offline native tutorial with the actual address control, highlighted
+  browser handoff, and final actions that open Quick Search and Settings.
+  Opening the introduction again leaves existing pages intact.
 - Offers three window behaviors when switching apps: hide (default on first launch), keep open, or keep on top. Saved preferences are preserved.
 - Can launch at login when enabled in Settings.
 - Closes the preview with `Escape` or the close button. Space is passed through

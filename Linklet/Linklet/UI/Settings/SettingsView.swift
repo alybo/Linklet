@@ -4,26 +4,39 @@ import UniformTypeIdentifiers
 import WebKit
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, search, sidebar, browsers, sites, about
+    case general, windows, search, sites, about
     var id: String { rawValue }
+    static func restoring(_ value: String?) -> Self {
+        switch value {
+        case "sidebar": return .windows
+        case "browsers": return .search
+        default: return value.flatMap(Self.init(rawValue:)) ?? .general
+        }
+    }
     var title: String {
         switch self {
         case .general: return L("General")
-        case .search: return L("Search")
-        case .sidebar: return L("Sidebar")
-        case .browsers: return L("Browsers")
-        case .sites: return L("Website data")
-        case .about: return L("About")
+        case .windows: return L("Windows & Sidebar")
+        case .search: return L("Search & Browsers")
+        case .sites: return L("Privacy")
+        case .about: return L("About Linklet")
         }
     }
     var symbol: String {
         switch self {
         case .general: return "gearshape"
+        case .windows: return "macwindow.on.rectangle"
         case .search: return "magnifyingglass"
-        case .sidebar: return "sidebar.left"
-        case .browsers: return "globe"
-        case .sites: return "externaldrive"
+        case .sites: return "hand.raised.fill"
         case .about: return "info.circle"
+        }
+    }
+    var color: Color {
+        switch self {
+        case .general: return .gray
+        case .windows, .search: return .blue
+        case .sites: return .purple
+        case .about: return .gray
         }
     }
 }
@@ -33,29 +46,25 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 0) {
+        NavigationSplitView {
             List(selection: Binding<SettingsPage?>(
                 get: { model.settingsPage },
                 set: { if let page = $0 { model.settingsPage = page } }
             )) {
-                ForEach(SettingsPage.allCases) { page in
-                    Label(page.title, systemImage: page.symbol).tag(page)
-                        .padding(.vertical, 4)
+                Section {
+                    ForEach(SettingsPage.allCases.filter { $0 != .about }) { page in navigationRow(page) }
                 }
+                Section { navigationRow(.about) }
             }
             .listStyle(.sidebar)
-            .frame(width: 190)
-            Divider()
-            VStack(alignment: .leading, spacing: 0) {
-                Text(model.settingsPage.title).font(.title2.bold())
-                    .padding(.horizontal, 24).padding(.vertical, 20)
-                Divider()
+            .navigationSplitViewColumnWidth(min: 200, ideal: 215, max: 260)
+        } detail: {
+            VStack(spacing: 0) {
                 Group {
                     switch model.settingsPage {
                     case .general: general
-                    case .search: SearchSettingsView(settings: model.searchSettings, showSearch: model.toggleSearch)
-                    case .sidebar: SidebarSettingsView(library: model.linkLibrary, show: model.toggleSidebar)
-                    case .browsers: BrowserSettingsView(model: model)
+                    case .windows: windows
+                    case .search: SearchSettingsView(settings: model.searchSettings, showSearch: model.openQuickSearch, browserModel: model)
                     case .sites: SiteDataSettingsView(model: model, data: model.siteData)
                     case .about: AboutSettingsView(model: model, updates: model.appUpdates)
                     }
@@ -64,65 +73,90 @@ struct SettingsView: View {
                 if let message = model.statusMessage {
                     Divider()
                     Text(message).font(.callout).foregroundStyle(.secondary)
-                        .padding(16).textSelection(.enabled)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .navigationTitle(model.settingsPage.title)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .navigationSplitViewStyle(.balanced)
+        .environment(\.locale, Locale(identifier: language.code))
         .onAppear(perform: model.refreshTargets)
+    }
+
+    private func navigationRow(_ page: SettingsPage) -> some View {
+        Label {
+            Text(page.title).foregroundStyle(model.settingsPage == page ? Color(nsColor: .alternateSelectedControlTextColor) : Color.primary)
+        } icon: {
+            Image(systemName: page.symbol).font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white).frame(width: 25, height: 25)
+                .background(page.color.gradient, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .tag(page).padding(.vertical, 3)
     }
 
     private var general: some View {
         Form {
-            Section {
-                Toggle(L("Launch Linklet when I sign in"), isOn: Binding(
+            Section(L("Opening Links")) { DefaultBrowserSetting(model: model) }
+            Section(L("Application")) {
+                Toggle(L("Launch at login"), isOn: Binding(
                     get: { model.isLaunchAtLoginEnabled }, set: model.setLaunchAtLogin))
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L("Default link handler"))
-                        Text(model.isDefaultBrowser ? L("Linklet handles web links on this Mac.") : L("Set Linklet as the default browser to preview external links."))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button(L("Make Linklet Default Browser"), action: model.makeDefaultBrowser)
-                        .disabled(model.isDefaultBrowser)
-                }
-            }
-            Section(L("Preview window")) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(L("When switching apps"))
-                    Picker(L("When switching apps"), selection: Binding(
-                        get: { model.previewWindowBehavior }, set: model.setPreviewWindowBehavior)) {
-                        ForEach(PreviewWindowBehavior.allCases) { Text($0.title).tag($0) }
-                    }
-                    .id(language.code)
-                    .pickerStyle(.segmented).labelsHidden()
-                    Text(model.previewWindowBehavior.detail).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Section {
-                Toggle(isOn: Binding(
-                    get: { model.opensLinksInNewWindows }, set: model.setOpensLinksInNewWindows
-                )) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L("Open links in new windows"))
-                        Text(L("Keep each incoming link in its own preview window."))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
                 Picker(L("Language"), selection: Binding(get: { language.selection }, set: model.setLanguage)) {
-                    Text(L("System language")).tag("system")
+                    Text(L("Same as macOS")).tag("system")
                     Text("Русский").tag("ru")
                     Text("English").tag("en")
                 }
             }
-            AdBlockSettingsView(model: model, blocker: model.adBlockService)
+            Section(L("Getting Started")) {
+                Button(action: model.showWelcome) {
+                    LabeledContent(L("How to Use Linklet")) { Image(systemName: "chevron.right").foregroundStyle(.tertiary) }
+                }.buttonStyle(.plain)
+                Text(L("Opening links, search, and the sidebar.")).font(.caption).foregroundStyle(.secondary)
+            }
+        }.formStyle(.grouped).toggleStyle(.switch)
+    }
+
+    private var windows: some View {
+        Form {
             Section {
-                Button(L("Welcome to Linklet"), action: model.showWelcome)
+                Picker(L("Window mode"), selection: Binding(
+                    get: { model.opensLinksInNewWindows }, set: model.setOpensLinksInNewWindows)) {
+                    Text(L("Single window")).tag(false)
+                    Text(L("Multiple windows")).tag(true)
+                }.pickerStyle(.segmented)
+                Text(L(model.opensLinksInNewWindows
+                    ? "Each new link opens in a separate window."
+                    : "New links replace the page in a single window."))
+                    .font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L("Window behavior"))
+                    Picker(L("Window behavior"), selection: Binding(
+                        get: { model.previewWindowBehavior }, set: model.setPreviewWindowBehavior)) {
+                        ForEach(PreviewWindowBehavior.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().id(language.code)
+                    .accessibilityIdentifier("settings-window-behavior")
+                    Text(L("When switching between apps.")).font(.caption).foregroundStyle(.secondary)
+                }
+            } header: { Text(L("Windows")) }
+            SidebarSettingsSections(library: model.linkLibrary, show: model.toggleSidebar)
+        }.formStyle(.grouped).toggleStyle(.switch)
+    }
+}
+
+struct DefaultBrowserSetting: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        LabeledContent {
+            Button(L(model.isDefaultBrowser ? "Default" : "Make Default…"), action: model.makeDefaultBrowser)
+                .disabled(model.isDefaultBrowser)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L("Default browser"))
+                Text(L(model.isDefaultBrowser ? "Links open in Linklet." : "Links will open in Linklet."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped).toggleStyle(.switch)
     }
 }
 
@@ -160,8 +194,8 @@ private struct AdBlockSettingsView: View {
                 }
             }
             if let error = blocker.errorMessage { Text(error).foregroundStyle(.red) }
-        } header: { Text(L("AdGuard")) } footer: {
-            Text(L("Exceptions override the default for this exact domain. Open pages refresh automatically when a rule changes."))
+        } header: { Text(L("Ad Blocking")) } footer: {
+            Text(L("Uses AdGuard filters. Change blocking for the current website in its page menu."))
         }
         .sheet(isPresented: $showingAddSite) {
             VStack(alignment: .leading, spacing: 16) {
@@ -198,71 +232,40 @@ private struct AdBlockSettingsView: View {
     }
 }
 
-private struct BrowserSettingsView: View {
+struct BrowserSettingsSections: View {
     @ObservedObject var model: AppModel
     @State private var draggedID: String?
     @State private var dropTargetID: String?
 
     var body: some View {
-        Form {
-            Section {
-                Toggle(isOn: Binding(get: { model.sortsTargetsByUsage }, set: model.setSortTargetsByUsage)) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L("Sort browsers by usage"))
-                        Text(L("The most-used browser becomes the primary Open in action; the others follow in the menu."))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .toggleStyle(.switch)
-                HStack {
-                    Button(L("Refresh"), action: model.refreshTargets)
-                    Spacer()
-                    Button(L("Reset usage"), action: model.resetTargetUsage)
-                        .disabled(model.targets.allSatisfy { model.targetUsageCount($0) == 0 })
+        Section {
+            if !model.visibleTargets.isEmpty {
+                Picker(L("Browser for sending links"), selection: Binding(
+                    get: { model.preferredTarget?.id ?? "" }, set: model.setPreferredTarget)) {
+                    ForEach(model.visibleTargets) { Text($0.displayName).tag($0.id) }
                 }
             }
-            Section {
+            DisclosureGroup(L("Browsers in the Open in menu")) {
                 if model.targets.isEmpty {
-                    Text(L("No compatible browsers or Orion profile apps were found."))
-                        .foregroundStyle(.secondary)
+                    Text(L("No compatible browsers or Orion profile apps were found.")).foregroundStyle(.secondary)
                 }
                 ForEach(model.orderedTargets) { target in
-                    if model.sortsTargetsByUsage {
-                        row(target)
-                    } else {
-                        row(target)
-                            .onDrag {
-                                draggedID = target.id
-                                return NSItemProvider(object: target.id as NSString)
-                            }
-                            .onDrop(of: [UTType.text], delegate: BrowserOrderDropDelegate(
-                                destination: target.id, model: model, draggedID: $draggedID, dropTargetID: $dropTargetID))
-                            .overlay(alignment: .top) {
-                                if dropTargetID == target.id {
-                                    Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
-                                }
-                            }
-                    }
-                }
-                if !model.sortsTargetsByUsage && !model.targets.isEmpty {
-                    Text(L("Drag to reorder. The first enabled browser is the primary action."))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 6)
+                    row(target)
+                        .onDrag { draggedID = target.id; return NSItemProvider(object: target.id as NSString) }
                         .onDrop(of: [UTType.text], delegate: BrowserOrderDropDelegate(
-                            destination: nil, model: model, draggedID: $draggedID, dropTargetID: $dropTargetID))
-                        .overlay(alignment: .top) {
-                            if dropTargetID == "end" {
-                                Rectangle().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
-                            }
-                        }
+                            destination: target.id, model: model, draggedID: $draggedID, dropTargetID: $dropTargetID))
                 }
-            } header: {
-                Text(L("Shown browsers"))
-            } footer: {
-                Text(L("Usage counts only links opened through Linklet."))
+                Button(L("Refresh"), action: model.refreshTargets)
             }
-        }.formStyle(.grouped)
+            DisclosureGroup(L("Advanced settings")) {
+                Toggle(L("Sort browsers by usage"), isOn: Binding(get: { model.sortsTargetsByUsage }, set: model.setSortTargetsByUsage))
+                Text(L("Drag browsers to reorder when automatic sorting is off.")).font(.caption).foregroundStyle(.secondary)
+                Button(L("Reset usage"), action: model.resetTargetUsage)
+                    .disabled(model.targets.allSatisfy { model.targetUsageCount($0) == 0 })
+            }
+        } header: { Text(L("Opening in Another Browser")) } footer: {
+            Text(L("The primary Open in button uses this browser. It opens the original link without transferring website data or page state."))
+        }
     }
 
     private func row(_ target: BrowserTarget) -> some View {
@@ -322,7 +325,7 @@ private struct BrowserOrderDropDelegate: DropDelegate {
     }
 }
 
-private struct SiteDataSettingsView: View {
+struct SiteDataSettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var data: SiteDataService
     @State private var search = ""
@@ -355,26 +358,30 @@ private struct SiteDataSettingsView: View {
                 })) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(L("Save website data"))
-                        Text(L("Keep sign-ins and website preferences between previews."))
+                        Text(L("Stay signed in and keep website preferences."))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .toggleStyle(.switch).disabled(data.isBusy)
-                Text(L("When saving is off, closing or hiding the preview deletes its data, including when switching apps."))
+                Text(L(data.isEnabled
+                    ? "Website data is stored on this Mac. Turning this off deletes saved website data."
+                    : "Without saving, website data is deleted when all related windows close. Hiding the window when switching apps also ends the preview."))
                     .font(.caption).foregroundStyle(.secondary)
             } footer: {
                 Text(L("Data is stored only in Linklet on this Mac, separately from your other browsers."))
             }
-            Section {
-                Picker(L("Delete data for websites not visited for"), selection: Binding(
+            if data.isEnabled { Section {
+                Picker(L("Automatically clear data"), selection: Binding(
                     get: { data.inactiveDays }, set: data.setInactiveDays)) {
                     Text(L("Never")).tag(0)
                     ForEach([7, 30, 90], id: \.self) { days in Text(L("%d days", days)).tag(days) }
                 }
                 .disabled(!data.isEnabled || data.isBusy)
             } footer: {
-                Text(L("Inactive website data is removed while Linklet is idle. Background requests do not count as visits."))
-            }
+                Text(L("Time since the last visit to a website."))
+            } }
+            HistorySettingsSection(library: model.linkLibrary)
+            AdBlockSettingsView(model: model, blocker: model.adBlockService)
             SiteMediaPermissionsSettings(permissions: data.mediaPermissions)
             Section(L("Stored websites")) {
                 if data.records.count > 5 || !search.isEmpty {

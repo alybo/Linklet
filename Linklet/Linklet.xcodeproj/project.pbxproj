@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        AJ10000000000000000000001 = {isa = PBXBuildFile; fileRef = AJ20000000000000000000001; };
         AH10000000000000000000001 = {isa = PBXBuildFile; fileRef = AH20000000000000000000001; };
         AG10000000000000000000002 = {isa = PBXBuildFile; fileRef = AG20000000000000000000002; };
         AG10000000000000000000001 = {isa = PBXBuildFile; fileRef = AG20000000000000000000001; };
@@ -69,6 +70,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        AJ20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
         AH20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Services/NativeLocationProvider.m; sourceTree = "<group>"; };
         AH20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Services/NativeLocationProvider.h; sourceTree = "<group>"; };
         AH20000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Linklet-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -296,6 +298,7 @@
 			sourceTree = "<group>";
 			children = (
 				A2000000000000000000000F /* SettingsView.swift */,
+                AJ20000000000000000000001,
 				A20000000000000000000016 /* SettingsWindowController.swift */,
 			);
 		};
@@ -448,6 +451,7 @@
 				A1000000000000000000000D /* PreviewRootView.swift in Sources */,
 				A1000000000000000000000E /* PreviewWindowController.swift in Sources */,
 				A1000000000000000000000F /* SettingsView.swift in Sources */,
+                AJ10000000000000000000001,
 				A10000000000000000000013 /* SettingsWindowController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -597,7 +601,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 22;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -606,7 +610,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.6;
+				MARKETING_VERSION = 1.7;
 				PRODUCT_BUNDLE_IDENTIFIER = Linklet;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -622,7 +626,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 22;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -631,7 +635,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.6;
+				MARKETING_VERSION = 1.7;
 				PRODUCT_BUNDLE_IDENTIFIER = Linklet;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

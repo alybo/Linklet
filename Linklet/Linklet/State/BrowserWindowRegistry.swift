@@ -37,6 +37,7 @@ final class BrowserWindowRegistry: ObservableObject {
     private var entries: [UUID: Entry] = [:]
     private var order: [UUID] = []
     private var refreshIsScheduled = false
+    private(set) var isClosingFromSidebar = false
     // Site-created windows outlive the coordinator/page that opened them.
     private var webWindows: [UUID: WebPopupWindowController] = [:]
 
@@ -99,6 +100,12 @@ final class BrowserWindowRegistry: ObservableObject {
 
     func close(_ id: UUID) {
         entries[id]?.window?.performClose(nil)
+    }
+
+    func closeFromSidebar(_ id: UUID) {
+        isClosingFromSidebar = true
+        defer { isClosingFromSidebar = false }
+        close(id)
     }
 
     func closeAll() {
