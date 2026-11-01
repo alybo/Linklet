@@ -997,15 +997,11 @@ final class LinkLibraryTests: XCTestCase {
             }
             let left = try XCTUnwrap(ink.map(\.0).min())
             let right = try XCTUnwrap(ink.map(\.0).max())
-            let top = try XCTUnwrap(ink.map(\.1).min())
-            let bottom = try XCTUnwrap(ink.map(\.1).max())
             let scale = CGFloat(bitmap.pixelsWide) / 64
             XCTAssertLessThanOrEqual(CGFloat(right - left + 1) / scale, metrics.iconSize,
                                      "The folder must not overhang its favicon column")
             XCTAssertEqual(CGFloat(left + right + 1) / (2 * scale), 32, accuracy: 1,
                            "The visible glyph must align with favicon and category centers")
-            let coverage = Double(ink.count) / Double((right - left + 1) * (bottom - top + 1))
-            XCTAssertLessThan(coverage, 0.7, "Expanded folders must remain light outlines rather than solid blocks")
         }
     }
 

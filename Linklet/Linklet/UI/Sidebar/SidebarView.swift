@@ -174,8 +174,6 @@ struct SidebarPanelSurface: View {
 struct SidebarMetrics {
     let labelSize: CGFloat
     let iconSize: CGFloat
-    // The kit uses text point size for the folder glyph, not its 16/20/24pt cell.
-    var folderSymbolSize: CGFloat { labelSize }
     var footerIconSize: CGFloat { 11 + iconSize / 4 }
     var labelFont: Font { .system(size: labelSize, weight: .semibold) }
     var groupFont: Font { .system(size: max(10, labelSize - 1), weight: .semibold) }
@@ -311,6 +309,7 @@ struct SidebarView: View {
                 addBookmark: section == .bookmarks ? { editor.showBookmark() } : nil,
                 clearDownloads: section == .downloads && downloads.items.contains(where: { !$0.isActive })
                     ? { downloads.clearFinished() } : nil)
+            .padding(.leading, -8)
             .onDrag {
                 draggedSection = section
                 return NSItemProvider(object: "linklet-sidebar-section:\(section.rawValue)" as NSString)
@@ -428,7 +427,7 @@ struct SidebarView: View {
                 dropSlot(before: folder.id, folder: nil)
                 Button { library.toggleFolder(folder.id) } label: {
                     HStack(spacing: layout.iconGap) {
-                        SidebarFolderSymbol(layout: layout)
+                        SidebarFolderSymbol(layout: layout, expanded: expanded)
                         Text(folder.name).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor).lineLimit(1)
                         Spacer(minLength: 0)
                         SidebarDisclosure(expanded: expanded)
@@ -499,13 +498,14 @@ struct SidebarView: View {
     }
 }
 
-/// Keep the optical glyph inside the same column as favicons and section icons.
-/// Using the icon-cell width as a font size made the old folder overhang left.
+/// Fit both folder states into the favicon square without font-metric overhang.
 struct SidebarFolderSymbol: View {
     let layout: SidebarMetrics
+    var expanded = false
     var body: some View {
-        Image(systemName: "folder")
-            .font(.system(size: layout.folderSymbolSize, weight: .regular))
+        Image(systemName: expanded ? "folder.fill" : "folder")
+            .resizable()
+            .scaledToFit()
             .symbolRenderingMode(.monochrome)
             .foregroundStyle(SidebarLayout.linkColor.opacity(0.9))
             .frame(width: layout.iconSize, height: layout.iconSize, alignment: .center)
