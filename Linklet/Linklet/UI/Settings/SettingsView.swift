@@ -39,15 +39,6 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .about: return .gray
         }
     }
-    var summary: String {
-        switch self {
-        case .general: return L("Opening links, launch, and language.")
-        case .windows: return L("Choose how windows and the sidebar work.")
-        case .search: return L("Quick Search and opening links in other browsers.")
-        case .sites: return L("Website data, history, blocking, and permissions.")
-        case .about: return L("Version, updates, and support.")
-        }
-    }
 
 }
 
@@ -60,10 +51,37 @@ struct SettingsView: NSViewControllerRepresentable {
     func updateNSViewController(_ controller: SettingsSplitViewController, context: Context) {}
 }
 
+// Apple macOS 27 UI Kit: Forms examples and Sidebars/{Small,Medium,Large}.
+// Provenance and component measurements: docs/MACOS-27-DESIGN-REFERENCE.md.
+enum SettingsDesignMetrics {
+    static let formInset: CGFloat = 20
+    static let labelSpacing: CGFloat = 2
+    static let sidebarWidth: CGFloat = 256
+    static let sidebarSelectionInset: CGFloat = 10
+    // The plain native List adds 8 pt; the resulting icon origin is 28 pt.
+    static let sidebarContentInset: CGFloat = 20
+    static let selectionRadius: CGFloat = 8
+}
+
+struct SettingsNavigationMetrics {
+    let rowHeight: CGFloat
+    let iconSize: CGFloat
+    let labelSize: CGFloat
+    init(_ size: SidebarRowSize) {
+        switch size {
+        case .small: rowHeight = 24; iconSize = 16; labelSize = 11
+        case .large: rowHeight = 40; iconSize = 24; labelSize = 15
+        default: rowHeight = 32; iconSize = 20; labelSize = 13
+        }
+    }
+}
+
 struct SettingsSidebarView: View {
     @ObservedObject private var language = AppLanguage.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.sidebarRowSize) private var rowSize
     @ObservedObject var model: AppModel
+    private var metrics: SettingsNavigationMetrics { SettingsNavigationMetrics(rowSize) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,6 +96,7 @@ struct SettingsSidebarView: View {
                 Section { navigationRow(.about) }
             }
             .listStyle(.plain)
+            .environment(\.defaultMinListRowHeight, metrics.rowHeight)
             .scrollContentBackground(.hidden)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -86,22 +105,26 @@ struct SettingsSidebarView: View {
     }
 
     private func navigationRow(_ page: SettingsPage) -> some View {
-        Label {
-            Text(page.title).font(.system(size: 15))
+        HStack(spacing: 4) {
+            SettingsSectionIcon(page: page, size: metrics.iconSize)
+            Text(page.title).font(.system(size: metrics.labelSize))
                 .foregroundStyle(model.settingsPage == page || colorScheme == .dark ? Color.white : Color.black)
-        } icon: {
-            SettingsSectionIcon(page: page, size: 25)
+            Spacer(minLength: 0)
         }
-        .tag(page).padding(.vertical, 4)
-        .listRowInsets(EdgeInsets(top: 4, leading: 18, bottom: 4, trailing: 14))
+        .frame(height: metrics.rowHeight)
+        .contentShape(Rectangle())
+        .tag(page)
+        .listRowInsets(EdgeInsets(top: 0, leading: SettingsDesignMetrics.sidebarContentInset, bottom: 0, trailing: 14))
         .listRowSeparator(.hidden)
         .listRowBackground(ZStack {
             Color(nsColor: .underPageBackgroundColor)
             if model.settingsPage == page {
-                RoundedRectangle(cornerRadius: 8).fill(Color.accentColor).padding(.horizontal, 10)
+                RoundedRectangle(cornerRadius: SettingsDesignMetrics.selectionRadius).fill(Color.accentColor)
+                    .padding(.horizontal, SettingsDesignMetrics.sidebarSelectionInset)
             }
         })
     }
+
 }
 
 struct SettingsSectionIcon: View {
@@ -110,22 +133,7 @@ struct SettingsSectionIcon: View {
     var body: some View {
         Image(systemName: page.symbol).font(.system(size: size * 0.54, weight: .medium))
             .foregroundStyle(.white).frame(width: size, height: size)
-            .background(page.color.gradient, in: RoundedRectangle(cornerRadius: size * 0.23))
-    }
-}
-
-struct SettingsPageHeader: View {
-    let page: SettingsPage
-    var body: some View {
-        Section {
-            VStack(spacing: 9) {
-                SettingsSectionIcon(page: page, size: 48).padding(.bottom, 4)
-                Text(page.title).font(.title2.bold())
-                Text(page.summary).font(.callout).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity).padding(.vertical, 18)
-        }
+            .background(page.color.gradient, in: RoundedRectangle(cornerRadius: size / 4))
     }
 }
 
@@ -159,7 +167,6 @@ struct SettingsDetailView: View {
 
     private var general: some View {
         Form {
-            SettingsPageHeader(page: .general)
             Section { DefaultBrowserSetting(model: model) }
             Section(L("Application")) {
                 Toggle(L("Launch at login"), isOn: Binding(
@@ -173,7 +180,7 @@ struct SettingsDetailView: View {
             Section(L("Getting Started")) {
                 Button(action: model.showWelcome) {
                     HStack {
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: SettingsDesignMetrics.labelSpacing) {
                             Text(L("How to Use Linklet"))
                             Text(L("Opening links, search, and the sidebar.")).font(.caption).foregroundStyle(.secondary)
                         }
@@ -187,7 +194,6 @@ struct SettingsDetailView: View {
 
     private var windows: some View {
         Form {
-            SettingsPageHeader(page: .windows)
             Section {
                 Picker(L("Window mode"), selection: Binding(
                     get: { model.opensLinksInNewWindows }, set: model.setOpensLinksInNewWindows)) {
@@ -224,7 +230,7 @@ struct DefaultBrowserSetting: View {
                 Button(L("Make Default…"), action: model.makeDefaultBrowser)
             }
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: SettingsDesignMetrics.labelSpacing) {
                 Text(L("Default browser"))
                 Text(L(model.isDefaultBrowser ? "Links open in Linklet." : "Links will open in Linklet."))
                     .font(.caption).foregroundStyle(.secondary)
@@ -243,7 +249,7 @@ private struct AdBlockSettingsView: View {
     var body: some View {
         Section {
             Toggle(isOn: Binding(get: { blocker.isEnabled }, set: model.setAdBlockingEnabled)) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: SettingsDesignMetrics.labelSpacing) {
                     Text(L("Block ads"))
                     Text(L("AdGuard filter lists")).font(.caption).foregroundStyle(.secondary)
                 }
@@ -410,11 +416,10 @@ struct SiteDataSettingsView: View {
             WebsiteDataSettingsView(model: model, data: data, close: { showsWebsiteData = false })
         } else {
             Form {
-                SettingsPageHeader(page: .sites)
                 Section {
                     Button { showsWebsiteData = true } label: {
                         HStack {
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: SettingsDesignMetrics.labelSpacing) {
                                 Text(L("Website Data"))
                                 Text(L(data.isEnabled ? "Website data is saved." : "Website data is temporary."))
                                     .font(.caption).foregroundStyle(.secondary)
@@ -466,19 +471,19 @@ struct WebsiteDataSettingsView: View {
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
                 Text(L("Website Data")).font(.headline)
                 Spacer()
-            }.padding(20)
+            }.padding(SettingsDesignMetrics.formInset)
             List {
                 Section {
                     Toggle(isOn: Binding(get: { data.isEnabled }, set: { enabled in
                         if !enabled { confirmation = .disable }
                         else { setSavingEnabled() }
                     })) {
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: SettingsDesignMetrics.labelSpacing) {
                             Text(L("Save website data"))
                             Text(L("Stay signed in and keep website preferences."))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                    }.toggleStyle(.switch).disabled(isBusy)
+                    }.toggleStyle(.switch).controlSize(.mini).disabled(isBusy)
                     Text(L(data.isEnabled
                         ? "Website data is stored on this Mac. Turning this off deletes saved website data."
                         : "Without saving, website data is deleted when all related windows close. Hiding the window when switching apps also ends the preview."))
@@ -497,7 +502,7 @@ struct WebsiteDataSettingsView: View {
                     }
                     ForEach(filtered, id: \.displayName) { record in
                         HStack {
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: SettingsDesignMetrics.labelSpacing) {
                                 Text(record.displayName).textSelection(.enabled)
                                 Text(types(for: record)).font(.caption).foregroundStyle(.secondary)
                                 if let visit = data.lastVisit(for: record.displayName) {
@@ -518,7 +523,7 @@ struct WebsiteDataSettingsView: View {
                 Spacer()
                 Button(L("Refresh")) { Task { await data.refresh() } }.disabled(isBusy)
                 Button(L("Delete all data…")) { confirmation = .all }.disabled(isBusy || data.records.isEmpty)
-            }.padding(16)
+            }.padding(SettingsDesignMetrics.formInset)
         }
         .task { await data.refresh() }
         .alert(confirmation?.title ?? "", isPresented: Binding(
@@ -598,7 +603,7 @@ private struct SiteMediaPermissionsSettings: View {
         } header: {
             Text(L("Website permissions"))
         } footer: {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: SettingsDesignMetrics.labelSpacing) {
                 Text(L(permissions.persists
                     ? "Remembered permissions stay on this Mac until you reset them or delete website data."
                     : "In private mode, remembered permissions are removed when the last website window closes."))
@@ -657,7 +662,7 @@ private struct AboutSettingsView: View {
                 } label: { Text(L("Updates")) }
                 .padding(.top, 24)
             }
-            .frame(maxWidth: 520).padding(28).frame(maxWidth: .infinity)
+            .frame(maxWidth: 500).padding(SettingsDesignMetrics.formInset).frame(maxWidth: .infinity)
         }
         .sheet(isPresented: $showingThanks) { SupportDevelopmentView() }
     }

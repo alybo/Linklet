@@ -59,9 +59,9 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
         let detail = NSHostingController(rootView: SettingsDetailView(model: model))
         detail.sizingOptions = []
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
-        sidebarItem.minimumThickness = 250
-        sidebarItem.maximumThickness = 280
-        sidebarItem.preferredThicknessFraction = 0.29
+        sidebarItem.minimumThickness = SettingsDesignMetrics.sidebarWidth
+        sidebarItem.maximumThickness = SettingsDesignMetrics.sidebarWidth
+        sidebarItem.preferredThicknessFraction = SettingsDesignMetrics.sidebarWidth / 900
         sidebarItem.canCollapse = false
         sidebarItem.canCollapseFromWindowResize = false
         sidebarItem.titlebarSeparatorStyle = .none

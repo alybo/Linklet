@@ -11,7 +11,6 @@ struct SearchSettingsView: View {
 
     var body: some View {
         Form {
-            SettingsPageHeader(page: .search)
             Section {
                 Picker(L("Search engine"), selection: Binding(get: { settings.engine }, set: settings.setEngine)) {
                     ForEach(SearchEngine.allCases) { Text($0.title).tag($0) }

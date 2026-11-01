@@ -174,6 +174,8 @@ struct SidebarPanelSurface: View {
 struct SidebarMetrics {
     let labelSize: CGFloat
     let iconSize: CGFloat
+    // The kit uses text point size for the folder glyph, not its 16/20/24pt cell.
+    var folderSymbolSize: CGFloat { labelSize }
     var footerIconSize: CGFloat { 11 + iconSize / 4 }
     var labelFont: Font { .system(size: labelSize, weight: .semibold) }
     var groupFont: Font { .system(size: max(10, labelSize - 1), weight: .semibold) }
@@ -426,8 +428,7 @@ struct SidebarView: View {
                 dropSlot(before: folder.id, folder: nil)
                 Button { library.toggleFolder(folder.id) } label: {
                     HStack(spacing: layout.iconGap) {
-                        Image(systemName: expanded ? "folder.fill" : "folder").font(.system(size: layout.iconSize))
-                            .frame(width: layout.iconSize, height: layout.iconSize).foregroundStyle(SidebarLayout.linkColor)
+                        SidebarFolderSymbol(layout: layout)
                         Text(folder.name).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor).lineLimit(1)
                         Spacer(minLength: 0)
                         SidebarDisclosure(expanded: expanded)
@@ -495,6 +496,19 @@ struct SidebarView: View {
             Text(title).font(layout.labelFont).foregroundStyle(SidebarLayout.linkColor).lineLimit(1)
             Spacer(minLength: 0)
         }.frame(height: layout.rowHeight).contentShape(Rectangle()).help(address)
+    }
+}
+
+/// Keep the optical glyph inside the same column as favicons and section icons.
+/// Using the icon-cell width as a font size made the old folder overhang left.
+struct SidebarFolderSymbol: View {
+    let layout: SidebarMetrics
+    var body: some View {
+        Image(systemName: "folder")
+            .font(.system(size: layout.folderSymbolSize, weight: .regular))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(SidebarLayout.linkColor.opacity(0.9))
+            .frame(width: layout.iconSize, height: layout.iconSize, alignment: .center)
     }
 }
 

@@ -975,6 +975,40 @@ final class LinkLibraryTests: XCTestCase {
         }
     }
 
+    func testFolderGlyphFitsAndIsCenteredInsideTheSharedIconColumn() async throws {
+        for size: SidebarRowSize in [.small, .medium, .large] {
+            let metrics = SidebarMetrics(rowSize: size)
+            let host = NSHostingView(rootView: SidebarFolderSymbol(layout: metrics)
+                .frame(width: 64, height: 64).background(Color.black))
+            host.sizingOptions = []
+            host.frame = NSRect(x: 0, y: 0, width: 64, height: 64)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(30))
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            var ink: [(Int, Int)] = []
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                       color.redComponent > 0.25, color.greenComponent > 0.25, color.blueComponent > 0.25 {
+                        ink.append((x, y))
+                    }
+                }
+            }
+            let left = try XCTUnwrap(ink.map(\.0).min())
+            let right = try XCTUnwrap(ink.map(\.0).max())
+            let top = try XCTUnwrap(ink.map(\.1).min())
+            let bottom = try XCTUnwrap(ink.map(\.1).max())
+            let scale = CGFloat(bitmap.pixelsWide) / 64
+            XCTAssertLessThanOrEqual(CGFloat(right - left + 1) / scale, metrics.iconSize,
+                                     "The folder must not overhang its favicon column")
+            XCTAssertEqual(CGFloat(left + right + 1) / (2 * scale), 32, accuracy: 1,
+                           "The visible glyph must align with favicon and category centers")
+            let coverage = Double(ink.count) / Double((right - left + 1) * (bottom - top + 1))
+            XCTAssertLessThan(coverage, 0.7, "Expanded folders must remain light outlines rather than solid blocks")
+        }
+    }
+
     func testSidebarEnvironmentMatchesSystemPreferenceAndUpdates() async throws {
         var observed: SidebarRowSize?
         let probe = SidebarSizeProbe { observed = $0 }
