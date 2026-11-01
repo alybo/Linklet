@@ -17,6 +17,7 @@ struct BrowserWindowInfo: Identifiable, Equatable {
 @MainActor
 final class BrowserWindowRegistry: ObservableObject {
     @Published private(set) var windows: [BrowserWindowInfo] = []
+    private(set) var lastActiveWindowID: UUID?
     let downloads: DownloadManager
 
     init(downloads: DownloadManager? = nil) { self.downloads = downloads ?? DownloadManager() }
@@ -80,6 +81,7 @@ final class BrowserWindowRegistry: ObservableObject {
     }
 
     func unregister(_ id: UUID) {
+        if lastActiveWindowID == id { lastActiveWindowID = nil }
         entries.removeValue(forKey: id)
         order.removeAll { $0 == id }
         // Keep the controller alive until all willClose observers and its delegate
@@ -92,6 +94,7 @@ final class BrowserWindowRegistry: ObservableObject {
 
     func activate(_ id: UUID) {
         guard let window = entries[id]?.window else { return }
+        lastActiveWindowID = id
         if window.isMiniaturized { window.deminiaturize(nil) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -133,6 +136,7 @@ final class BrowserWindowRegistry: ObservableObject {
                 url: session.currentURL, isLoading: session.isLoading,
                 isKey: window.isKeyWindow, isMiniaturized: window.isMiniaturized)
         }
+        if let active = next.first(where: \.isKey) { lastActiveWindowID = active.id }
         if next != windows { windows = next }
     }
 

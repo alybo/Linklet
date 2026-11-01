@@ -246,6 +246,9 @@ final class AppModel: ObservableObject {
     }
 
     func startSidebar() { _ = sidebarWindowController }
+    var isSidebarPresented: Bool { sidebarWindowController.isPresented }
+    func showSidebar() { sidebarWindowController.show() }
+    func hideSidebar() { sidebarWindowController.hide() }
     func toggleSidebar() {
         if let sidebarActionHandler { sidebarActionHandler() }
         else { sidebarWindowController.toggle() }

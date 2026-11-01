@@ -3,9 +3,11 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
+    private var menuBarController: LinkletMenuBarController?
     private var isStoppingDownloads = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        menuBarController = LinkletMenuBarController(model: model)
         model.startSearchShortcut()
         model.startSidebar()
         model.refreshTargets()

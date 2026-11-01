@@ -155,6 +155,12 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         else if let screen = screenAtMouse() ?? NSScreen.main { present(on: screen, manual: true) }
     }
 
+    func show() {
+        guard library.isEnabled, !isBlockedByFullScreen,
+              let screen = screenAtMouse() ?? NSScreen.main else { return }
+        present(on: screen, manual: true)
+    }
+
     func showDownloads() {
         guard !isBlockedByFullScreen else { return }
         editor.cancel()

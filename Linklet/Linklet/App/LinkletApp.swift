@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import SwiftUI
 
 @main
@@ -6,14 +7,8 @@ struct LinkletApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarView(model: appDelegate.model)
-        } label: {
-            Image("MenuBarIcon")
-                .renderingMode(.template)
-                .accessibilityLabel("Linklet")
-        }
-        .menuBarExtraStyle(.menu)
+        // AppKit owns the status menu; the settings command uses our single window.
+        Settings { EmptyView() }
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button(L("Settings…")) { appDelegate.model.showSettings() }
@@ -23,42 +18,138 @@ struct LinkletApp: App {
     }
 }
 
-private struct MenuBarView: View {
-    @ObservedObject private var language = AppLanguage.shared
-    @ObservedObject var model: AppModel
+@MainActor
+final class LinkletMenuBarController: NSObject, NSMenuDelegate {
+    let menu = NSMenu(title: "Linklet")
+    private let model: AppModel
+    private let readClipboard: () -> String?
+    private var statusItem: NSStatusItem?
 
-    var body: some View {
-        Button(L("Quick Search")) { model.openQuickSearch() }
-        SidebarMenuItem(model: model, library: model.linkLibrary)
-        Button(L("Downloads")) { model.showDownloads() }
-
-        Divider()
-
-        Button(L("Settings…")) {
-            model.showSettings()
+    init(model: AppModel, attachesToStatusBar: Bool = true,
+         readClipboard: @escaping () -> String? = {
+             NSPasteboard.general.string(forType: .URL) ?? NSPasteboard.general.string(forType: .string)
+         }) {
+        self.model = model
+        self.readClipboard = readClipboard
+        super.init()
+        menu.autoenablesItems = false
+        menu.delegate = self
+        buildMenu(clipboard: nil)
+        if attachesToStatusBar {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            let image = NSImage(named: "MenuBarIcon")?.copy() as? NSImage
+            image?.isTemplate = true
+            image?.size = NSSize(width: 18, height: 18)
+            item.button?.image = image
+            item.button?.setAccessibilityLabel("Linklet")
+            item.button?.toolTip = "Linklet"
+            item.menu = menu
+            statusItem = item
         }
-        .keyboardShortcut(",")
+    }
 
-        Button(L("How to Use Linklet"), action: model.showWelcome)
+    // Read the pasteboard only when the user opens this menu, never on a timer.
+    func menuWillOpen(_ menu: NSMenu) { refreshMenu() }
+    func refreshMenu() {
+        model.windowRegistry.refresh()
+        buildMenu(clipboard: Self.clipboardURL(readClipboard()))
+    }
 
-        CheckForAppUpdatesButton(updates: model.appUpdates)
+    static func clipboardURL(_ text: String?) -> URL? {
+        guard let text, let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              URLPolicy.canPreview(url), let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
 
-        Divider()
-
-        Button(L("Quit Linklet")) {
-            NSApp.terminate(nil)
+    private func buildMenu(clipboard: URL?) {
+        menu.removeAllItems()
+        let search = item("Quick Search", symbol: "magnifyingglass", action: #selector(quickSearch), id: "search")
+        if let shortcut = model.searchSettings.shortcut {
+            search.keyEquivalent = shortcut.keyLabel == "Space" ? " " : shortcut.keyLabel.lowercased()
+            var mask: NSEvent.ModifierFlags = []
+            for (carbon, flag) in [(cmdKey, NSEvent.ModifierFlags.command), (controlKey, .control), (optionKey, .option), (shiftKey, .shift)] {
+                if shortcut.modifiers & UInt32(carbon) != 0 { mask.insert(flag) }
+            }
+            search.keyEquivalentModifierMask = mask
         }
-        .keyboardShortcut("q")
+        menu.addItem(search)
+        let paste = item("Open Link from Clipboard", symbol: "doc.on.clipboard", action: #selector(openClipboard(_:)), id: "clipboard")
+        paste.representedObject = clipboard
+        paste.isEnabled = clipboard != nil
+        menu.addItem(paste)
+        menu.addItem(.separator())
+        if model.linkLibrary.isEnabled {
+            let sidebar = item(model.isSidebarPresented ? "Hide sidebar" : "Show sidebar", symbol: "sidebar.left",
+                               action: #selector(sidebar(_:)), id: "sidebar")
+            sidebar.representedObject = model.isSidebarPresented
+            menu.addItem(sidebar)
+        }
+        let windows = item("Open Windows", symbol: "macwindow.on.rectangle", id: "windows")
+        let windowMenu = NSMenu(title: windows.title)
+        windowMenu.autoenablesItems = false
+        for window in model.windowRegistry.windows {
+            let title = window.title.count > 70 ? String(window.title.prefix(70)) + "…" : window.title
+            let entry = NSMenuItem(title: title, action: #selector(activateWindow(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = window.id
+            entry.state = window.id == model.windowRegistry.lastActiveWindowID ? .on : .off
+            windowMenu.addItem(entry)
+        }
+        windows.submenu = windowMenu
+        windows.isEnabled = !windowMenu.items.isEmpty
+        menu.addItem(windows)
+        let downloads = item("Downloads", symbol: "arrow.down.circle", action: #selector(showDownloads), id: "downloads")
+        if model.downloads.activeCount > 0 { downloads.title = L("Downloads (%d)", model.downloads.activeCount) }
+        menu.addItem(downloads)
+        menu.addItem(.separator())
+        let settings = item("Settings…", symbol: "gearshape", action: #selector(settings), id: "settings")
+        settings.keyEquivalent = ","
+        menu.addItem(settings)
+        if model.appUpdates.availableVersion != nil { menu.addItem(updateItem()) }
+        let help = item("Help", symbol: "questionmark.circle", id: "help")
+        let helpMenu = NSMenu(title: help.title)
+        helpMenu.autoenablesItems = false
+        helpMenu.addItem(item("How to Use Linklet", action: #selector(welcome), id: "welcome"))
+        helpMenu.addItem(item("About Linklet", action: #selector(about), id: "about"))
+        if model.appUpdates.availableVersion == nil { helpMenu.addItem(updateItem()) }
+        help.submenu = helpMenu
+        menu.addItem(help)
+        menu.addItem(.separator())
+        let quit = item("Quit Linklet", action: #selector(quit), id: "quit")
+        quit.keyEquivalent = "q"
+        menu.addItem(quit)
     }
-}
 
-private struct SidebarMenuItem: View {
-    @ObservedObject private var language = AppLanguage.shared
-    @ObservedObject var model: AppModel
-    @ObservedObject var library: LinkLibrary
-    var body: some View {
-        if library.isEnabled { Button(L("Show sidebar"), action: model.toggleSidebar) }
+    private func item(_ key: String, symbol: String? = nil, action: Selector? = nil, id: String) -> NSMenuItem {
+        let item = NSMenuItem(title: L(key), action: action, keyEquivalent: "")
+        item.target = self
+        item.identifier = NSUserInterfaceItemIdentifier("Linklet.Menu." + id)
+        if let symbol { item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+        return item
     }
+    private func updateItem() -> NSMenuItem {
+        let result = item("Check for Updates…", action: #selector(updates), id: "updates")
+        if let version = model.appUpdates.availableVersion { result.title = L("Update to %@…", version) }
+        result.isEnabled = model.appUpdates.canCheckForUpdates
+        return result
+    }
+    @objc private func quickSearch() { model.openQuickSearch() }
+    @objc private func openClipboard(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL, URLPolicy.canPreview(url) { model.handleIncoming(urls: [url]) }
+    }
+    @objc private func sidebar(_ sender: NSMenuItem) {
+        if sender.representedObject as? Bool == true { model.hideSidebar() }
+        else { model.showSidebar() }
+    }
+    @objc private func activateWindow(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? UUID { model.windowRegistry.activate(id) }
+    }
+    @objc private func showDownloads() { model.showDownloads() }
+    @objc private func settings() { model.showSettings() }
+    @objc private func welcome() { model.showWelcome() }
+    @objc private func about() { model.showSettings(page: .about) }
+    @objc private func updates() { model.appUpdates.checkForUpdates() }
+    @objc private func quit() { NSApp.terminate(nil) }
 }
 
 struct CheckForAppUpdatesButton: View {
@@ -94,6 +185,20 @@ final class AppLanguage: ObservableObject {
     }
     static let russian: [String: String] = 
 [
+        "Forward": "Вперёд",
+        "Navigation": "Навигация",
+        "Search settings": "Поиск настроек",
+        "No matching settings": "Настройки не найдены",
+        "Opening links, launch, and language.": "Открытие ссылок, запуск и язык приложения.",
+        "Choose how windows and the sidebar work.": "Настройте окна и боковую панель.",
+        "Quick Search and opening links in other browsers.": "Быстрый поиск и открытие ссылок в других браузерах.",
+        "Website data, history, blocking, and permissions.": "Данные сайтов, история, блокировка и разрешения.",
+        "Version, updates, and support.": "Версия, обновления и поддержка.",
+        "Open Link from Clipboard": "Открыть ссылку из буфера",
+        "Open Windows": "Открытые окна",
+        "Hide sidebar": "Скрыть боковую панель",
+        "Downloads (%d)": "Загрузки (%d)",
+        "Help": "Справка",
         "Back": "Назад",
         "Skip": "Пропустить",
         "Windows & Sidebar": "Окна и панель",

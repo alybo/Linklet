@@ -39,65 +39,137 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .about: return .gray
         }
     }
+    var summary: String {
+        switch self {
+        case .general: return L("Opening links, launch, and language.")
+        case .windows: return L("Choose how windows and the sidebar work.")
+        case .search: return L("Quick Search and opening links in other browsers.")
+        case .sites: return L("Website data, history, blocking, and permissions.")
+        case .about: return L("Version, updates, and support.")
+        }
+    }
+    func matches(_ query: String) -> Bool {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        let keys: [String]
+        switch self {
+        case .general: keys = ["Default browser", "Launch at login", "Language", "How to Use Linklet"]
+        case .windows: keys = ["Window mode", "Window behavior", "Sidebar", "Hide in full screen", "Appearance"]
+        case .search: keys = ["Quick Search", "Search engine", "Open Quick Search", "Bookmarks", "Browser for sending links"]
+        case .sites: keys = ["Save website data", "Automatically clear data", "History", "Block ads", "Website permissions", "Camera", "Microphone", "Location"]
+        case .about: keys = ["Version", "Updates", "Support development", "Contact the author"]
+        }
+        return ([title, summary] + keys.flatMap { [$0, L($0)] }).contains { $0.localizedStandardContains(query) }
+    }
 }
 
-struct SettingsView: View {
+/// Kept as a SwiftUI entry point for previews and embedded settings tests.
+struct SettingsView: NSViewControllerRepresentable {
+    let model: AppModel
+    func makeNSViewController(context: Context) -> SettingsSplitViewController {
+        SettingsSplitViewController(model: model)
+    }
+    func updateNSViewController(_ controller: SettingsSplitViewController, context: Context) {}
+}
+
+struct SettingsSidebarView: View {
     @ObservedObject private var language = AppLanguage.shared
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: AppModel
+    @State private var search = ""
+
+    private var pages: [SettingsPage] { SettingsPage.allCases.filter { $0.matches(search) } }
 
     var body: some View {
-        NavigationSplitView {
+        VStack(spacing: 0) {
+            SettingsSearchField(text: $search)
+                .frame(height: 28).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
             List(selection: Binding<SettingsPage?>(
                 get: { model.settingsPage },
                 set: { if let page = $0 { model.settingsPage = page } }
             )) {
                 Section {
-                    ForEach(SettingsPage.allCases.filter { $0 != .about }) { page in navigationRow(page) }
+                    ForEach(pages.filter { $0 != .about }) { navigationRow($0) }
                 }
-                Section { navigationRow(.about) }
+                if pages.contains(.about) { Section { navigationRow(.about) } }
+                if pages.isEmpty { Text(L("No matching settings")).foregroundStyle(.secondary) }
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 200, ideal: 215, max: 260)
-        } detail: {
-            VStack(spacing: 0) {
-                Group {
-                    switch model.settingsPage {
-                    case .general: general
-                    case .windows: windows
-                    case .search: SearchSettingsView(settings: model.searchSettings, showSearch: model.openQuickSearch, browserModel: model)
-                    case .sites: SiteDataSettingsView(model: model, data: model.siteData)
-                    case .about: AboutSettingsView(model: model, updates: model.appUpdates)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if let message = model.statusMessage {
-                    Divider()
-                    Text(message).font(.callout).foregroundStyle(.secondary)
-                        .padding(12).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                }
-            }
-            .background(Color(nsColor: .windowBackgroundColor))
-            .navigationTitle(model.settingsPage.title)
+            .scrollContentBackground(.hidden)
         }
-        .navigationSplitViewStyle(.balanced)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .underPageBackgroundColor).ignoresSafeArea())
         .environment(\.locale, Locale(identifier: language.code))
-        .onAppear(perform: model.refreshTargets)
     }
 
     private func navigationRow(_ page: SettingsPage) -> some View {
         Label {
-            Text(page.title).foregroundStyle(model.settingsPage == page ? Color(nsColor: .alternateSelectedControlTextColor) : Color.primary)
+            Text(page.title).foregroundStyle(model.settingsPage == page || colorScheme == .dark ? Color.white : Color.black)
         } icon: {
-            Image(systemName: page.symbol).font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white).frame(width: 25, height: 25)
-                .background(page.color.gradient, in: RoundedRectangle(cornerRadius: 6))
+            SettingsSectionIcon(page: page, size: 25)
         }
-        .tag(page).padding(.vertical, 3)
+        .tag(page).padding(.vertical, 4)
+        .listRowBackground(model.settingsPage == page
+            ? RoundedRectangle(cornerRadius: 8).fill(Color.accentColor).padding(.horizontal, 10) : nil)
+    }
+}
+
+struct SettingsSectionIcon: View {
+    let page: SettingsPage
+    let size: CGFloat
+    var body: some View {
+        Image(systemName: page.symbol).font(.system(size: size * 0.54, weight: .medium))
+            .foregroundStyle(.white).frame(width: size, height: size)
+            .background(page.color.gradient, in: RoundedRectangle(cornerRadius: size * 0.23))
+    }
+}
+
+struct SettingsPageHeader: View {
+    let page: SettingsPage
+    var body: some View {
+        Section {
+            VStack(spacing: 9) {
+                SettingsSectionIcon(page: page, size: 48).padding(.bottom, 4)
+                Text(page.title).font(.title2.bold())
+                Text(page.summary).font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 18)
+        }
+    }
+}
+
+struct SettingsDetailView: View {
+    @ObservedObject private var language = AppLanguage.shared
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                switch model.settingsPage {
+                case .general: general
+                case .windows: windows
+                case .search: SearchSettingsView(settings: model.searchSettings, showSearch: model.openQuickSearch, browserModel: model)
+                case .sites: SiteDataSettingsView(model: model, data: model.siteData)
+                case .about: AboutSettingsView(model: model, updates: model.appUpdates)
+                }
+            }
+            .frame(maxWidth: 760, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            if let message = model.statusMessage {
+                Divider()
+                Text(message).font(.callout).foregroundStyle(.secondary)
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .environment(\.locale, Locale(identifier: language.code))
     }
 
     private var general: some View {
         Form {
-            Section(L("Opening Links")) { DefaultBrowserSetting(model: model) }
+            SettingsPageHeader(page: .general)
+            Section { DefaultBrowserSetting(model: model) }
             Section(L("Application")) {
                 Toggle(L("Launch at login"), isOn: Binding(
                     get: { model.isLaunchAtLoginEnabled }, set: model.setLaunchAtLogin))
@@ -109,15 +181,22 @@ struct SettingsView: View {
             }
             Section(L("Getting Started")) {
                 Button(action: model.showWelcome) {
-                    LabeledContent(L("How to Use Linklet")) { Image(systemName: "chevron.right").foregroundStyle(.tertiary) }
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(L("How to Use Linklet"))
+                            Text(L("Opening links, search, and the sidebar.")).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                    }.contentShape(Rectangle())
                 }.buttonStyle(.plain)
-                Text(L("Opening links, search, and the sidebar.")).font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).toggleStyle(.switch)
     }
 
     private var windows: some View {
         Form {
+            SettingsPageHeader(page: .windows)
             Section {
                 Picker(L("Window mode"), selection: Binding(
                     get: { model.opensLinksInNewWindows }, set: model.setOpensLinksInNewWindows)) {
@@ -139,7 +218,7 @@ struct SettingsView: View {
                     Text(L("When switching between apps.")).font(.caption).foregroundStyle(.secondary)
                 }
             } header: { Text(L("Windows")) }
-            SidebarSettingsSections(library: model.linkLibrary, show: model.toggleSidebar)
+            SidebarSettingsSections(library: model.linkLibrary, show: model.showSidebar)
         }.formStyle(.grouped).toggleStyle(.switch)
     }
 }
@@ -148,8 +227,11 @@ struct DefaultBrowserSetting: View {
     @ObservedObject var model: AppModel
     var body: some View {
         LabeledContent {
-            Button(L(model.isDefaultBrowser ? "Default" : "Make Default…"), action: model.makeDefaultBrowser)
-                .disabled(model.isDefaultBrowser)
+            if model.isDefaultBrowser {
+                Label(L("Default"), systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
+            } else {
+                Button(L("Make Default…"), action: model.makeDefaultBrowser)
+            }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text(L("Default browser"))
@@ -351,6 +433,7 @@ struct SiteDataSettingsView: View {
 
     var body: some View {
         Form {
+            SettingsPageHeader(page: .sites)
             Section {
                 Toggle(isOn: Binding(get: { data.isEnabled }, set: { enabled in
                     if !enabled { confirmation = .disable }

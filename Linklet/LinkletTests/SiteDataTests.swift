@@ -292,6 +292,106 @@ final class SiteDataTests: XCTestCase {
         try snapshot(window, name: "settings-real-window")
     }
 
+    func testNativeSettingsToolbarTracksSidebarAndNavigationHistory() async throws {
+        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
+        let controller = SettingsWindowController(model: model)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        controller.showWindow(nil)
+        try await Task.sleep(for: .milliseconds(200))
+        let split = try XCTUnwrap(window.contentViewController as? SettingsSplitViewController)
+        XCTAssertFalse(split.splitViewItems[0].canCollapse)
+        let sidebarView = split.splitViewItems[0].viewController.view
+        XCTAssertGreaterThanOrEqual(sidebarView.frame.width, 250)
+        let toolbar = try XCTUnwrap(window.toolbar)
+        let divider = try XCTUnwrap(toolbar.items.compactMap { $0 as? NSTrackingSeparatorToolbarItem }.first)
+        XCTAssertTrue(divider.splitView === split.splitView)
+        XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier == .toggleSidebar })
+        let heading = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "Linklet.Settings.Heading" }?.view as? NSTextField)
+        XCTAssertGreaterThan(heading.convert(.zero, to: nil).x, sidebarView.convert(sidebarView.bounds, to: nil).maxX)
+        model.settingsPage = .search
+        model.settingsPage = .windows
+        split.navigate(back: true)
+        XCTAssertEqual(model.settingsPage, .search)
+        split.navigate(back: false)
+        XCTAssertEqual(model.settingsPage, .windows)
+        model.settingsPage = .sites
+        split.navigate(back: true)
+        XCTAssertEqual(model.settingsPage, .windows)
+        XCTAssertEqual(heading.stringValue, model.settingsPage.title)
+    }
+
+    func testMenuRefreshesClipboardOnlyOnOpenAndKeepsHelpGrouped() throws {
+        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
+        model.linkLibrary.setEnabled(true)
+        defer { model.hideSidebar(); model.linkLibrary.setEnabled(false) }
+        var clipboard = "https://example.org/checkout"
+        var reads = 0
+        let controller = LinkletMenuBarController(model: model, attachesToStatusBar: false) {
+            reads += 1
+            return clipboard
+        }
+        XCTAssertEqual(reads, 0)
+        controller.refreshMenu()
+        XCTAssertEqual(reads, 1)
+        func item(_ name: String) throws -> NSMenuItem {
+            try XCTUnwrap(controller.menu.items.first { $0.identifier?.rawValue == "Linklet.Menu." + name })
+        }
+        XCTAssertTrue(try item("clipboard").isEnabled)
+        XCTAssertEqual(try item("clipboard").representedObject as? URL, URL(string: clipboard))
+        XCTAssertFalse(try item("windows").isEnabled)
+        XCTAssertEqual(try item("search").keyEquivalent, " ")
+        let help = try XCTUnwrap(try item("help").submenu)
+        XCTAssertEqual(help.items.map { $0.identifier?.rawValue }, ["Linklet.Menu.welcome", "Linklet.Menu.about", "Linklet.Menu.updates"])
+        clipboard = "javascript:alert(1)"
+        controller.refreshMenu()
+        XCTAssertEqual(reads, 2)
+        XCTAssertFalse(try item("clipboard").isEnabled)
+        XCTAssertNil(try item("clipboard").representedObject)
+        for value in ["file:///tmp/private", "text to search", "https:", "linklet://search?q=test"] {
+            XCTAssertNil(LinkletMenuBarController.clipboardURL(value))
+        }
+    }
+
+    func testSettingsSearchFindsParametersInBothLanguages() {
+        let previous = AppLanguage.shared.selection
+        defer { AppLanguage.shared.set(previous) }
+        AppLanguage.shared.set("ru")
+        XCTAssertEqual(SettingsPage.allCases.filter { $0.matches("язык") }, [.general])
+        XCTAssertEqual(SettingsPage.allCases.filter { $0.matches("микрофон") }, [.sites])
+        AppLanguage.shared.set("en")
+        XCTAssertEqual(SettingsPage.allCases.filter { $0.matches("search engine") }, [.search])
+        XCTAssertTrue(SettingsPage.allCases.allSatisfy { $0.matches("  ") })
+    }
+
+    func testMenuActivatesExistingWindowWithoutChangingItsOriginalLink() throws {
+        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
+        let session = model.previewSession
+        let original = URL(string: "https://example.org/original")!
+        session.load(original)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 440),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close(); session.endSession() }
+        model.windowRegistry.register(window, session: session)
+        let controller = LinkletMenuBarController(model: model, attachesToStatusBar: false, readClipboard: { nil })
+        controller.refreshMenu()
+        let root = try XCTUnwrap(controller.menu.items.first { $0.identifier?.rawValue == "Linklet.Menu.windows" })
+        XCTAssertTrue(root.isEnabled)
+        let submenu = try XCTUnwrap(root.submenu)
+        XCTAssertEqual(submenu.items.count, 1)
+        XCTAssertEqual(submenu.items[0].representedObject as? UUID, session.windowID)
+        submenu.performActionForItem(at: 0)
+        XCTAssertEqual(model.windowRegistry.lastActiveWindowID, session.windowID)
+        XCTAssertEqual(session.originalURL, original)
+        XCTAssertNil(session.webView, "Activating a menu item must not create or reload a WebKit page")
+        controller.refreshMenu()
+        XCTAssertEqual(controller.menu.items.first { $0.identifier?.rawValue == "Linklet.Menu.windows" }?.submenu?.items.first?.state, .on)
+        window.close()
+        controller.refreshMenu()
+        XCTAssertFalse(try XCTUnwrap(controller.menu.items.first { $0.identifier?.rawValue == "Linklet.Menu.windows" }).isEnabled)
+    }
+
     func testSettingsAndOnboardingSnapshots() async throws {
         let previousLanguage = AppLanguage.shared.selection
         defer { AppLanguage.shared.set(previousLanguage) }
@@ -302,23 +402,26 @@ final class SiteDataTests: XCTestCase {
         await store.httpCookieStore.setCookie(cookie("example.org"))
         data.recordVisit(URL(string: "https://example.org")!)
         await data.refresh()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 660), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.close() }
+        let settingsController = SettingsWindowController(model: model)
+        let settingsWindow = try XCTUnwrap(settingsController.window)
+        defer { settingsWindow.close() }
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            window.appearance = NSAppearance(named: appearance)
+            settingsWindow.appearance = NSAppearance(named: appearance)
             for page in SettingsPage.allCases {
                 model.settingsPage = page
-                let host = NSHostingView(rootView: SettingsView(model: model)
-                    .environment(\.colorScheme, appearance == .darkAqua ? .dark : .light))
-                host.sizingOptions = []
-                window.contentView = host
-                window.setContentSize(NSSize(width: 860, height: 660))
-                window.orderFront(nil)
+                settingsWindow.setContentSize(NSSize(width: 900, height: 720))
+                settingsController.showWindow(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                settingsWindow.makeKeyAndOrderFront(nil)
+                settingsWindow.makeFirstResponder(nil)
                 try await Task.sleep(for: .milliseconds(250))
-                try snapshot(window, name: "settings-\(page.rawValue)-\(appearance.rawValue)")
+                try snapshot(settingsWindow, name: "settings-\(page.rawValue)-\(appearance.rawValue)")
             }
         }
+        settingsWindow.close()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 650), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
         window.appearance = NSAppearance(named: .aqua)
         for code in ["ru", "en"] {
             AppLanguage.shared.set(code)
@@ -343,7 +446,7 @@ final class SiteDataTests: XCTestCase {
     }
 
     private func snapshot(_ window: NSWindow, name: String) throws {
-        let view = try XCTUnwrap(window.contentView)
+        let view = try XCTUnwrap(window.contentView?.superview ?? window.contentView)
         view.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
