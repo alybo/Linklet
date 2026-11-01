@@ -48,7 +48,7 @@ final class LinkletMenuBarController: NSObject, NSMenuDelegate {
     static func statusImage() -> NSImage? {
         let image = NSImage(named: "MenuBarIcon")?.copy() as? NSImage
         image?.isTemplate = true
-        // Preserve the asset's original 14×14 point size, as MenuBarExtra did.
+        image?.size = NSSize(width: 16, height: 16)
         return image
     }
 

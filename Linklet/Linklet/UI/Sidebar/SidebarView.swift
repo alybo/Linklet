@@ -241,7 +241,7 @@ struct SidebarView: View {
                     .frame(width: layout.iconSize, height: layout.iconSize)
                 Text("Linklet").font(layout.labelFont)
                 Spacer()
-            }.padding(16)
+            }.padding(16).padding(.leading, -8)
             ScrollViewReader { proxy in
                 ScrollView {
                     if let presentation = editor.presentation {
@@ -325,7 +325,7 @@ struct SidebarView: View {
                 Button(L("Move down")) { library.moveSection(section, before: nil) }
                     .disabled(library.sectionOrder.last == section)
             }
-            if library.expandedSections.contains(section) {
+            SidebarCollapsibleContent(expanded: library.expandedSections.contains(section)) {
                 switch section {
                 case .open: openContents
                 case .bookmarks: bookmarkContents
@@ -444,7 +444,7 @@ struct SidebarView: View {
                     Button(L("Move down")) { library.moveItem(folder.id, offset: 1) }
                     Button(L("Remove folder; keep bookmarks"), role: .destructive) { library.removeFolder(folder) }
                 }
-                if expanded {
+                SidebarCollapsibleContent(expanded: expanded) {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(sites) { bookmarkRow($0) }
                         dropSlot(before: nil, folder: folder.id).padding(.bottom, -layout.rowGap)
@@ -498,17 +498,118 @@ struct SidebarView: View {
     }
 }
 
-/// Fit both folder states into the favicon square without font-metric overhang.
+/// A tabbed back and a separate front flap stay inside the favicon square.
 struct SidebarFolderSymbol: View {
     let layout: SidebarMetrics
     var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        Image(systemName: expanded ? "folder.fill" : "folder")
-            .resizable()
-            .scaledToFit()
-            .symbolRenderingMode(.monochrome)
-            .foregroundStyle(SidebarLayout.linkColor.opacity(0.9))
-            .frame(width: layout.iconSize, height: layout.iconSize, alignment: .center)
+        ZStack {
+            SidebarFolderBack()
+                .fill(Color.white.opacity(0.16))
+                .overlay { SidebarFolderBack().stroke(Color.white.opacity(0.85), lineWidth: layout.iconSize / 18) }
+                .rotationEffect(.degrees(expanded ? -9 : 0), anchor: .bottomLeading)
+                .offset(x: expanded ? layout.iconSize * 0.07 : 0)
+            SidebarFolderFront(progress: expanded ? 1 : 0)
+                .fill(Color.black.opacity(0.94))
+                .overlay {
+                    SidebarFolderFront(progress: expanded ? 1 : 0)
+                        .stroke(Color.white.opacity(0.95), lineWidth: layout.iconSize / 18)
+                }
+        }
+        .frame(width: layout.iconSize, height: layout.iconSize)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.26), value: expanded)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct SidebarFolderBack: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: 0.09, y: 0.81))
+        path.addLine(to: CGPoint(x: 0.09, y: 0.24))
+        path.addQuadCurve(to: CGPoint(x: 0.16, y: 0.17), control: CGPoint(x: 0.09, y: 0.17))
+        path.addLine(to: CGPoint(x: 0.36, y: 0.17))
+        path.addLine(to: CGPoint(x: 0.47, y: 0.28))
+        path.addLine(to: CGPoint(x: 0.84, y: 0.28))
+        path.addQuadCurve(to: CGPoint(x: 0.91, y: 0.35), control: CGPoint(x: 0.91, y: 0.28))
+        path.addLine(to: CGPoint(x: 0.91, y: 0.81))
+        path.addQuadCurve(to: CGPoint(x: 0.84, y: 0.88), control: CGPoint(x: 0.91, y: 0.88))
+        path.addLine(to: CGPoint(x: 0.16, y: 0.88))
+        path.addQuadCurve(to: CGPoint(x: 0.09, y: 0.81), control: CGPoint(x: 0.09, y: 0.88))
+        path.closeSubpath()
+        return path.applying(CGAffineTransform(scaleX: rect.width, y: rect.height)
+            .concatenating(CGAffineTransform(translationX: rect.minX, y: rect.minY)))
+    }
+}
+
+private struct SidebarFolderFront: Shape {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        // The top edge leans forward while the bottom remains seated.
+        let left: CGFloat = 0.09 + 0.22 * progress
+        let right: CGFloat = 0.91 + 0.05 * progress
+        let bottomLeft: CGFloat = 0.09 + 0.10 * progress
+        let bottomRight: CGFloat = 0.91 - 0.09 * progress
+        let top: CGFloat = 0.39 - 0.01 * progress
+        let radius: CGFloat = 0.055
+        var path = Path()
+        path.move(to: CGPoint(x: left + radius, y: top))
+        path.addLine(to: CGPoint(x: right - radius, y: top))
+        path.addQuadCurve(to: CGPoint(x: right, y: top + radius), control: CGPoint(x: right + 0.01, y: top))
+        path.addLine(to: CGPoint(x: bottomRight, y: 0.82))
+        path.addQuadCurve(to: CGPoint(x: bottomRight - radius, y: 0.88), control: CGPoint(x: bottomRight, y: 0.88))
+        path.addLine(to: CGPoint(x: bottomLeft + radius, y: 0.88))
+        path.addQuadCurve(to: CGPoint(x: bottomLeft, y: 0.82), control: CGPoint(x: bottomLeft, y: 0.88))
+        path.addLine(to: CGPoint(x: left, y: top + radius))
+        path.addQuadCurve(to: CGPoint(x: left + radius, y: top), control: CGPoint(x: left, y: top))
+        path.closeSubpath()
+        return path.applying(CGAffineTransform(scaleX: rect.width, y: rect.height)
+            .concatenating(CGAffineTransform(translationX: rect.minX, y: rect.minY)))
+    }
+}
+
+/// Retain content during collapse so height and opacity animate in both directions.
+private struct SidebarCollapsibleContent<Content: View>: View {
+    let expanded: Bool
+    @ViewBuilder let content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        SidebarExpansionLayout(progress: expanded ? 1 : 0) {
+            VStack(alignment: .leading, spacing: 0) { content }
+        }
+        .clipped()
+        .opacity(expanded ? 1 : 0)
+        .allowsHitTesting(expanded)
+        .accessibilityHidden(!expanded)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.26), value: expanded)
+    }
+}
+
+private struct SidebarExpansionLayout: Layout {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
+        return CGSize(width: size.width, height: size.height * progress)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        let size = child.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        child.place(at: bounds.origin, anchor: .topLeading,
+                    proposal: ProposedViewSize(width: bounds.width, height: size.height))
     }
 }
 
@@ -516,13 +617,16 @@ struct SidebarFolderSymbol: View {
 private struct SidebarDisclosure: View {
     static let columnWidth: CGFloat = 20
     let expanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+        Image(systemName: "chevron.right")
             .font(.system(size: 10, weight: .semibold))
+            .rotationEffect(.degrees(expanded ? 90 : 0))
             .foregroundStyle(SidebarLayout.controlColor)
             .shadow(color: .black.opacity(0.4), radius: 1, y: 1)
             .frame(width: Self.columnWidth)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.26), value: expanded)
             .accessibilityHidden(true)
     }
 }

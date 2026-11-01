@@ -447,9 +447,9 @@ final class SiteDataTests: XCTestCase {
         XCTAssertEqual(model.targets.first?.displayName, "Fixture browser")
     }
 
-    func testStatusIconKeepsItsOriginalAssetDimensions() throws {
+    func testStatusIconUsesRequestedMenuBarDimensions() throws {
         let image = try XCTUnwrap(LinkletMenuBarController.statusImage())
-        XCTAssertEqual(image.size, NSSize(width: 14, height: 14))
+        XCTAssertEqual(image.size, NSSize(width: 16, height: 16))
         XCTAssertTrue(image.isTemplate)
     }
 
