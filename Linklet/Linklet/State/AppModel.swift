@@ -53,6 +53,7 @@ final class AppModel: ObservableObject {
     let windowRegistry: BrowserWindowRegistry
 
     @Published private(set) var targets: [BrowserTarget] = []
+    @Published private(set) var isRefreshingTargets = false
     @Published private(set) var isDefaultBrowser = false
     @Published private(set) var isLaunchAtLoginEnabled = false
     @Published private(set) var showsFullURL: Bool
@@ -72,6 +73,8 @@ final class AppModel: ObservableObject {
 
     private let defaults: UserDefaults
     private let discoverTargets: () -> [BrowserTarget]
+    private let discoverTargetsAsync: (@Sendable () async -> [BrowserTarget])?
+    private var discoveryTask: Task<[BrowserTarget], Never>?
     private let launchService = BrowserLaunchService()
     private let defaultBrowserService = DefaultBrowserService()
     private lazy var previewWindowController = PreviewWindowController(model: self)
@@ -79,7 +82,8 @@ final class AppModel: ObservableObject {
         self?.showPreview(url: url)
     }
     private lazy var sidebarWindowController = SidebarWindowController(model: self)
-    private lazy var settingsWindowController = SettingsWindowController(model: self)
+    private var settingsWindowController: SettingsWindowController?
+    var settingsWindow: NSWindow? { settingsWindowController?.window }
     private lazy var welcomeWindowController = WelcomeWindowController(model: self)
     private var childPreviewModels: [AppModel] = []
     private var onPreviewClosed: (() -> Void)?
@@ -96,12 +100,16 @@ final class AppModel: ObservableObject {
         searchSettings: SearchSettings? = nil,
         linkLibrary: LinkLibrary? = nil,
         windowRegistry: BrowserWindowRegistry? = nil,
-        discoverTargets: (() -> [BrowserTarget])? = nil
+        discoverTargets: (() -> [BrowserTarget])? = nil,
+        discoverTargetsAsync: (@Sendable () async -> [BrowserTarget])? = nil
     ) {
         self.defaults = defaults
         self.searchSettings = searchSettings ?? SearchSettings(defaults: defaults)
         self.linkLibrary = linkLibrary ?? LinkLibrary(defaults: defaults)
         self.discoverTargets = discoverTargets ?? { BrowserDiscoveryService().discoverTargets() }
+        self.discoverTargetsAsync = discoverTargetsAsync ?? (discoverTargets == nil ? {
+            await Task.detached(priority: .utility) { BrowserDiscoveryService().discoverTargets() }.value
+        } : nil)
         settingsPage = SettingsPage.restoring(defaults.string(forKey: "settingsPage"))
         manualTargetOrder = defaults.stringArray(forKey: "manualTargetOrder") ?? []
         preferredTargetID = defaults.string(forKey: PreferenceKey.preferredTargetID)
@@ -224,7 +232,23 @@ final class AppModel: ObservableObject {
     }
 
     func refreshTargets() {
-        targets = discoverTargets()
+        applyDiscoveredTargets(discoverTargets())
+    }
+
+    func refreshTargetsForSettings() async {
+        if let discoveryTask { _ = await discoveryTask.value; return }
+        guard let discoverTargetsAsync else { refreshTargets(); return }
+        isRefreshingTargets = true
+        let task = Task { await discoverTargetsAsync() }
+        discoveryTask = task
+        let found = await task.value
+        applyDiscoveredTargets(found)
+        discoveryTask = nil
+        isRefreshingTargets = false
+    }
+
+    private func applyDiscoveredTargets(_ found: [BrowserTarget]) {
+        if targets != found { targets = found }
         let newIDs = targets.map(\.id).filter { !manualTargetOrder.contains($0) }
         if !newIDs.isEmpty {
             manualTargetOrder.append(contentsOf: newIDs)
@@ -464,7 +488,7 @@ final class AppModel: ObservableObject {
         AppLanguage.shared.set(selection)
         statusMessage = nil
         allPreviewModels.forEach { $0.previewSession.errorMessage = nil }
-        settingsWindowController.window?.title = settingsPage.title
+        settingsWindowController?.window?.title = settingsPage.title
         if isWelcomeVisible { welcomeWindowController.window?.title = L("Welcome to Linklet") }
         for preview in allPreviewModels where preview.previewSession.isWelcome {
             preview.previewSession.showWelcome(isDefault: isDefaultBrowser)
@@ -477,9 +501,20 @@ final class AppModel: ObservableObject {
         searchWindowController.close()
         if let page { settingsPage = page }
         makeAppVisibleInDock()
-        settingsWindowController.showWindow(nil)
+        let controller: SettingsWindowController
+        if let existing = settingsWindowController { controller = existing }
+        else {
+            controller = SettingsWindowController(model: self)
+            settingsWindowController = controller
+        }
+        controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        settingsWindowController.window?.makeKeyAndOrderFront(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        updateDockVisibilitySoon()
+    }
+
+    func settingsDidClose(_ controller: SettingsWindowController) {
+        if settingsWindowController === controller { settingsWindowController = nil }
         updateDockVisibilitySoon()
     }
 
@@ -504,13 +539,13 @@ final class AppModel: ObservableObject {
     func closeAllWindows() {
         closeWelcome()
         closeAllPreviewWindows()
-        settingsWindowController.close()
+        settingsWindowController?.close()
         if sidebarActionHandler == nil { sidebarWindowController.hide() }
         updateDockVisibilitySoon()
     }
 
     var hasOpenWindows: Bool {
-        windowRegistry.hasWindows || isWelcomeVisible || settingsWindowController.window?.isVisible == true
+        windowRegistry.hasWindows || isWelcomeVisible || settingsWindowController?.window?.isVisible == true
     }
 
     private func recordUsage(of target: BrowserTarget) {
@@ -533,7 +568,8 @@ final class AppModel: ObservableObject {
             searchSettings: searchSettings,
             linkLibrary: linkLibrary,
             windowRegistry: windowRegistry,
-            discoverTargets: discoverTargets
+            discoverTargets: discoverTargets,
+            discoverTargetsAsync: discoverTargetsAsync
         )
         child.refreshTargets()
         if let referenceFrame {

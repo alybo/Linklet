@@ -17,21 +17,27 @@ final class SiteDataService: ObservableObject {
     let mediaPermissions: SiteMediaPermissions
     private let defaults: UserDefaults
     private let persistentStore: WKWebsiteDataStore
+    private let readRecords: @MainActor () async -> [WKWebsiteDataRecord]
     private var temporaryStore = WKWebsiteDataStore.nonPersistent()
     private var operation: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
     private var maintenanceTimer: Timer?
     private var scheduledMaintenance: Task<Void, Never>?
     private var activePreviewCount = 0
     private var visits: [String: Date]
+    private var visitIndex: [String: Date]?
     private var firstSeen: [String: Date]
 
     private static let maintenanceCheckInterval: TimeInterval = 60 * 60
     private static let maintenanceIdleDelay: TimeInterval = 3
 
-    init(defaults: UserDefaults = .standard, persistentStore: WKWebsiteDataStore? = nil) {
+    init(defaults: UserDefaults = .standard, persistentStore: WKWebsiteDataStore? = nil,
+         readRecords: (@MainActor () async -> [WKWebsiteDataRecord])? = nil) {
         self.defaults = defaults
         mediaPermissions = SiteMediaPermissions(defaults: defaults, persists: defaults.bool(forKey: Self.enabledKey))
-        self.persistentStore = persistentStore ?? .default()
+        let store = persistentStore ?? .default()
+        self.persistentStore = store
+        self.readRecords = readRecords ?? { await store.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) }
         isEnabled = defaults.bool(forKey: Self.enabledKey)
         let days = defaults.integer(forKey: Self.daysKey)
         inactiveDays = [7, 30, 90].contains(days) ? days : 0
@@ -85,6 +91,7 @@ final class SiteDataService: ObservableObject {
     func recordVisit(_ url: URL, now: Date = Date()) {
         guard isEnabled, let host = url.host?.lowercased(), !host.isEmpty else { return }
         visits[host] = now
+        visitIndex = nil
         defaults.set(visits, forKey: Self.visitsKey)
     }
 
@@ -95,7 +102,19 @@ final class SiteDataService: ObservableObject {
     }
 
     func lastVisit(for domain: String) -> Date? {
-        visits.filter { Self.host($0.key, belongsTo: domain) }.values.max()
+        if visitIndex == nil {
+            var index: [String: Date] = [:]
+            for (host, date) in visits {
+                var suffix = host.lowercased()
+                while !suffix.isEmpty {
+                    index[suffix] = max(index[suffix] ?? .distantPast, date)
+                    guard let dot = suffix.firstIndex(of: ".") else { break }
+                    suffix = String(suffix[suffix.index(after: dot)...])
+                }
+            }
+            visitIndex = index
+        }
+        return visitIndex?[domain.lowercased()]
     }
 
     static func isExpired(lastActivity: Date, days: Int, now: Date) -> Bool {
@@ -153,7 +172,14 @@ final class SiteDataService: ObservableObject {
         }
     }
 
-    func refresh() async { await serialize { await self.fetchRecords() } }
+    func refresh() async {
+        guard !Task.isCancelled else { return }
+        if let refreshTask { await refreshTask.value; return }
+        let task = Task { await self.serialize { await self.fetchRecords() } }
+        refreshTask = task
+        await task.value
+        refreshTask = nil
+    }
 
     func delete(_ record: WKWebsiteDataRecord?) async {
         await serialize {
@@ -195,8 +221,13 @@ final class SiteDataService: ObservableObject {
     }
 
     private func fetchRecords(now: Date = Date()) async {
-        records = await persistentStore.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
-            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        let fetched = await readRecords()
+        // WebKit records stay on MainActor; sort only their Sendable names off it.
+        let names = fetched.map(\.displayName)
+        let order = await Task.detached(priority: .utility) {
+            names.indices.sorted { names[$0].localizedStandardCompare(names[$1]) == .orderedAscending }
+        }.value
+        records = order.map { fetched[$0] }
         for record in records where firstSeen[record.displayName] == nil {
             // Third-party data ages from first discovery; background requests never refresh it.
             firstSeen[record.displayName] = now
@@ -213,6 +244,7 @@ final class SiteDataService: ObservableObject {
             visits = visits.filter { !Self.host($0.key, belongsTo: record.displayName) }
             firstSeen.removeValue(forKey: record.displayName)
         }
+        visitIndex = nil
         saveDates()
     }
 
@@ -220,6 +252,7 @@ final class SiteDataService: ObservableObject {
         mediaPermissions.remove()
         await persistentStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
         visits = [:]
+        visitIndex = nil
         firstSeen = [:]
         saveDates()
     }

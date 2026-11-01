@@ -37,6 +37,7 @@ struct SearchSettingsView: View {
             if let browserModel { BrowserSettingsSections(model: browserModel) }
         }
         .formStyle(.grouped).toggleStyle(.switch)
+        .task { await browserModel?.refreshTargetsForSettings() }
         .onDisappear { stopRecording() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
             if recording { stopRecording() }

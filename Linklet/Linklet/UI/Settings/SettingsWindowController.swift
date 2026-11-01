@@ -31,7 +31,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        model?.updateDockVisibilitySoon()
+        model?.settingsDidClose(self)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -44,16 +44,8 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
     private let model: AppModel
     private var subscriptions = Set<AnyCancellable>()
     private var currentPage: SettingsPage
-    private var backPages: [SettingsPage] = []
-    private var forwardPages: [SettingsPage] = []
-    private var isNavigatingHistory = false
-    private let navigation = NSSegmentedControl(images: [
-        NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)!,
-        NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)!
-    ], trackingMode: .momentary, target: nil, action: nil)
     private let heading = NSTextField(labelWithString: "")
     private static let separatorID = NSToolbarItem.Identifier("Linklet.Settings.Divider")
-    private static let navigationID = NSToolbarItem.Identifier("Linklet.Settings.Navigation")
     private static let headingID = NSToolbarItem.Identifier("Linklet.Settings.Heading")
 
     init(model: AppModel) {
@@ -77,22 +69,11 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
         detailItem.minimumThickness = 500
         addSplitViewItem(sidebarItem)
         addSplitViewItem(detailItem)
-        navigation.target = self
-        navigation.action = #selector(navigate(_:))
-        navigation.setWidth(32, forSegment: 0)
-        navigation.setWidth(32, forSegment: 1)
-        navigation.setAccessibilityIdentifier("Linklet.Settings.Navigation")
         heading.font = .systemFont(ofSize: 15, weight: .semibold)
         heading.setContentCompressionResistancePriority(.required, for: .horizontal)
         model.$settingsPage.removeDuplicates().sink { [weak self] page in
             guard let self else { return }
-            if page != self.currentPage {
-                if !self.isNavigatingHistory {
-                    self.backPages.append(self.currentPage)
-                    self.forwardPages.removeAll()
-                }
-                self.currentPage = page
-            }
+            self.currentPage = page
             self.updateToolbar()
         }.store(in: &subscriptions)
         AppLanguage.shared.objectWillChange.sink { [weak self] in
@@ -106,10 +87,10 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
     override func viewDidAppear() {
         super.viewDidAppear()
         if let window = view.window { configureWindow(window) }
-        model.refreshTargets()
     }
 
     func configureWindow(_ window: NSWindow) {
+        guard window.toolbar?.delegate as? SettingsSplitViewController !== self else { return }
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -126,7 +107,7 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.separatorID, Self.navigationID, Self.headingID, .flexibleSpace]
+        [Self.separatorID, .space, Self.headingID, .flexibleSpace]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar)
@@ -137,8 +118,7 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
             return NSTrackingSeparatorToolbarItem(identifier: identifier, splitView: splitView, dividerIndex: 0)
         }
         let item = NSToolbarItem(itemIdentifier: identifier)
-        if identifier == Self.navigationID { item.view = navigation; item.label = L("Navigation") }
-        else if identifier == Self.headingID { item.view = heading; item.label = currentPage.title }
+        if identifier == Self.headingID { item.view = heading; item.label = currentPage.title }
         else { return nil }
         return item
     }
@@ -147,54 +127,5 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
         heading.stringValue = currentPage.title
         heading.sizeToFit()
         view.window?.title = currentPage.title
-        navigation.setEnabled(!backPages.isEmpty, forSegment: 0)
-        navigation.setEnabled(!forwardPages.isEmpty, forSegment: 1)
-        navigation.setToolTip(L("Back"), forSegment: 0)
-        navigation.setToolTip(L("Forward"), forSegment: 1)
-    }
-
-    @objc private func navigate(_ sender: NSSegmentedControl) {
-        navigate(back: sender.selectedSegment == 0)
-    }
-
-    func navigate(back: Bool) {
-        let page: SettingsPage
-        if back {
-            guard let previous = backPages.popLast() else { return }
-            forwardPages.append(currentPage)
-            page = previous
-        } else {
-            guard let next = forwardPages.popLast() else { return }
-            backPages.append(currentPage)
-            page = next
-        }
-        isNavigatingHistory = true
-        model.settingsPage = page
-        isNavigatingHistory = false
-    }
-}
-
-struct SettingsSearchField: NSViewRepresentable {
-    @Binding var text: String
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context: Context) -> NSSearchField {
-        let field = NSSearchField()
-        field.controlSize = .large
-        field.sendsSearchStringImmediately = true
-        field.delegate = context.coordinator
-        field.setAccessibilityIdentifier("Linklet.Settings.Search")
-        return field
-    }
-    func updateNSView(_ field: NSSearchField, context: Context) {
-        context.coordinator.owner = self
-        field.placeholderString = L("Search settings")
-        if field.stringValue != text { field.stringValue = text }
-    }
-    final class Coordinator: NSObject, NSSearchFieldDelegate {
-        var owner: SettingsSearchField
-        init(_ owner: SettingsSearchField) { self.owner = owner }
-        func controlTextDidChange(_ notification: Notification) {
-            if let field = notification.object as? NSSearchField { owner.text = field.stringValue }
-        }
     }
 }

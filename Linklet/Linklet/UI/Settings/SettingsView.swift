@@ -48,19 +48,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .about: return L("Version, updates, and support.")
         }
     }
-    func matches(_ query: String) -> Bool {
-        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return true }
-        let keys: [String]
-        switch self {
-        case .general: keys = ["Default browser", "Launch at login", "Language", "How to Use Linklet"]
-        case .windows: keys = ["Window mode", "Window behavior", "Sidebar", "Hide in full screen", "Appearance"]
-        case .search: keys = ["Quick Search", "Search engine", "Open Quick Search", "Bookmarks", "Browser for sending links"]
-        case .sites: keys = ["Save website data", "Automatically clear data", "History", "Block ads", "Website permissions", "Camera", "Microphone", "Location"]
-        case .about: keys = ["Version", "Updates", "Support development", "Contact the author"]
-        }
-        return ([title, summary] + keys.flatMap { [$0, L($0)] }).contains { $0.localizedStandardContains(query) }
-    }
+
 }
 
 /// Kept as a SwiftUI entry point for previews and embedded settings tests.
@@ -76,25 +64,20 @@ struct SettingsSidebarView: View {
     @ObservedObject private var language = AppLanguage.shared
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: AppModel
-    @State private var search = ""
-
-    private var pages: [SettingsPage] { SettingsPage.allCases.filter { $0.matches(search) } }
 
     var body: some View {
         VStack(spacing: 0) {
-            SettingsSearchField(text: $search)
-                .frame(height: 28).padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
+            Spacer().frame(height: 12)
             List(selection: Binding<SettingsPage?>(
                 get: { model.settingsPage },
                 set: { if let page = $0 { model.settingsPage = page } }
             )) {
                 Section {
-                    ForEach(pages.filter { $0 != .about }) { navigationRow($0) }
+                    ForEach(SettingsPage.allCases.filter { $0 != .about }) { navigationRow($0) }
                 }
-                if pages.contains(.about) { Section { navigationRow(.about) } }
-                if pages.isEmpty { Text(L("No matching settings")).foregroundStyle(.secondary) }
+                Section { navigationRow(.about) }
             }
-            .listStyle(.sidebar)
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -104,13 +87,20 @@ struct SettingsSidebarView: View {
 
     private func navigationRow(_ page: SettingsPage) -> some View {
         Label {
-            Text(page.title).foregroundStyle(model.settingsPage == page || colorScheme == .dark ? Color.white : Color.black)
+            Text(page.title).font(.system(size: 15))
+                .foregroundStyle(model.settingsPage == page || colorScheme == .dark ? Color.white : Color.black)
         } icon: {
             SettingsSectionIcon(page: page, size: 25)
         }
         .tag(page).padding(.vertical, 4)
-        .listRowBackground(model.settingsPage == page
-            ? RoundedRectangle(cornerRadius: 8).fill(Color.accentColor).padding(.horizontal, 10) : nil)
+        .listRowInsets(EdgeInsets(top: 4, leading: 18, bottom: 4, trailing: 14))
+        .listRowSeparator(.hidden)
+        .listRowBackground(ZStack {
+            Color(nsColor: .underPageBackgroundColor)
+            if model.settingsPage == page {
+                RoundedRectangle(cornerRadius: 8).fill(Color.accentColor).padding(.horizontal, 10)
+            }
+        })
     }
 }
 
@@ -154,6 +144,7 @@ struct SettingsDetailView: View {
                 case .about: AboutSettingsView(model: model, updates: model.appUpdates)
                 }
             }
+            .id(model.settingsPage)
             .frame(maxWidth: 760, maxHeight: .infinity)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             if let message = model.statusMessage {
@@ -327,26 +318,28 @@ struct BrowserSettingsSections: View {
                     ForEach(model.visibleTargets) { Text($0.displayName).tag($0.id) }
                 }
             }
-            DisclosureGroup(L("Browsers in the Open in menu")) {
-                if model.targets.isEmpty {
-                    Text(L("No compatible browsers or Orion profile apps were found.")).foregroundStyle(.secondary)
-                }
-                ForEach(model.orderedTargets) { target in
-                    row(target)
-                        .onDrag { draggedID = target.id; return NSItemProvider(object: target.id as NSString) }
-                        .onDrop(of: [UTType.text], delegate: BrowserOrderDropDelegate(
-                            destination: target.id, model: model, draggedID: $draggedID, dropTargetID: $dropTargetID))
-                }
-                Button(L("Refresh"), action: model.refreshTargets)
-            }
-            DisclosureGroup(L("Advanced settings")) {
-                Toggle(L("Sort browsers by usage"), isOn: Binding(get: { model.sortsTargetsByUsage }, set: model.setSortTargetsByUsage))
-                Text(L("Drag browsers to reorder when automatic sorting is off.")).font(.caption).foregroundStyle(.secondary)
-                Button(L("Reset usage"), action: model.resetTargetUsage)
-                    .disabled(model.targets.allSatisfy { model.targetUsageCount($0) == 0 })
-            }
         } header: { Text(L("Opening in Another Browser")) } footer: {
             Text(L("The primary Open in button uses this browser. It opens the original link without transferring website data or page state."))
+        }
+        Section {
+            if model.targets.isEmpty {
+                Text(L("No compatible browsers or Orion profile apps were found.")).foregroundStyle(.secondary)
+            }
+            ForEach(model.orderedTargets) { target in
+                row(target)
+                    .onDrag { draggedID = target.id; return NSItemProvider(object: target.id as NSString) }
+                    .onDrop(of: [UTType.text], delegate: BrowserOrderDropDelegate(
+                        destination: target.id, model: model, draggedID: $draggedID, dropTargetID: $dropTargetID))
+            }
+            Button(L("Refresh")) { Task { await model.refreshTargetsForSettings() } }
+                .disabled(model.isRefreshingTargets)
+        } header: { Text(L("Browsers in the Open in menu")) }
+        Section {
+            Toggle(L("Sort browsers by usage"), isOn: Binding(get: { model.sortsTargetsByUsage }, set: model.setSortTargetsByUsage))
+            Button(L("Reset usage"), action: model.resetTargetUsage)
+                .disabled(model.targets.allSatisfy { model.targetUsageCount($0) == 0 })
+        } header: { Text(L("Browser order")) } footer: {
+            Text(L("Drag browsers to reorder when automatic sorting is off."))
         }
     }
 
@@ -410,8 +403,43 @@ private struct BrowserOrderDropDelegate: DropDelegate {
 struct SiteDataSettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var data: SiteDataService
+    @State private var showsWebsiteData = false
+
+    var body: some View {
+        if showsWebsiteData {
+            WebsiteDataSettingsView(model: model, data: data, close: { showsWebsiteData = false })
+        } else {
+            Form {
+                SettingsPageHeader(page: .sites)
+                Section {
+                    Button { showsWebsiteData = true } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(L("Website Data"))
+                                Text(L(data.isEnabled ? "Website data is saved." : "Website data is temporary."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityIdentifier("settings-website-data")
+                }
+                HistorySettingsSection(library: model.linkLibrary)
+                AdBlockSettingsView(model: model, blocker: model.adBlockService)
+                SiteMediaPermissionsSettings(permissions: data.mediaPermissions)
+            }.formStyle(.grouped)
+        }
+    }
+}
+
+/// A separate, lazy list: opening Privacy never fetches or lays out stored sites.
+struct WebsiteDataSettingsView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var data: SiteDataService
+    let close: () -> Void
     @State private var search = ""
     @State private var confirmation: DataDeletion?
+    @State private var isMutating = false
 
     private enum DataDeletion: Identifiable {
         case disable, all, site(WKWebsiteDataRecord)
@@ -426,87 +454,81 @@ struct SiteDataSettingsView: View {
             }
         }
     }
-
     private var filtered: [WKWebsiteDataRecord] {
         data.records.filter { search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search) }
     }
+    private var isBusy: Bool { data.isBusy || isMutating }
 
     var body: some View {
-        Form {
-            SettingsPageHeader(page: .sites)
-            Section {
-                Toggle(isOn: Binding(get: { data.isEnabled }, set: { enabled in
-                    if !enabled { confirmation = .disable }
-                    else { Task { await model.setSavesSiteData(true) } }
-                })) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L("Save website data"))
-                        Text(L("Stay signed in and keep website preferences."))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .toggleStyle(.switch).disabled(data.isBusy)
-                Text(L(data.isEnabled
-                    ? "Website data is stored on this Mac. Turning this off deletes saved website data."
-                    : "Without saving, website data is deleted when all related windows close. Hiding the window when switching apps also ends the preview."))
-                    .font(.caption).foregroundStyle(.secondary)
-            } footer: {
-                Text(L("Data is stored only in Linklet on this Mac, separately from your other browsers."))
-            }
-            if data.isEnabled { Section {
-                Picker(L("Automatically clear data"), selection: Binding(
-                    get: { data.inactiveDays }, set: data.setInactiveDays)) {
-                    Text(L("Never")).tag(0)
-                    ForEach([7, 30, 90], id: \.self) { days in Text(L("%d days", days)).tag(days) }
-                }
-                .disabled(!data.isEnabled || data.isBusy)
-            } footer: {
-                Text(L("Time since the last visit to a website."))
-            } }
-            HistorySettingsSection(library: model.linkLibrary)
-            AdBlockSettingsView(model: model, blocker: model.adBlockService)
-            SiteMediaPermissionsSettings(permissions: data.mediaPermissions)
-            Section(L("Stored websites")) {
-                if data.records.count > 5 || !search.isEmpty {
-                    TextField(L("Search websites"), text: $search)
-                        .textFieldStyle(.roundedBorder)
-                }
-                if data.isBusy {
-                    HStack { ProgressView().controlSize(.small); Text(L("Updating website data…")).foregroundStyle(.secondary) }
-                }
-                if filtered.isEmpty && !data.isBusy {
-                    Text(L(search.isEmpty ? "No stored website data." : "No matching websites."))
-                        .foregroundStyle(.secondary).padding(.vertical, 12)
-                }
-                ForEach(filtered, id: \.displayName) { record in
-                    HStack {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button(L("Privacy"), action: close).buttonStyle(.link)
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
+                Text(L("Website Data")).font(.headline)
+                Spacer()
+            }.padding(20)
+            List {
+                Section {
+                    Toggle(isOn: Binding(get: { data.isEnabled }, set: { enabled in
+                        if !enabled { confirmation = .disable }
+                        else { setSavingEnabled() }
+                    })) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(record.displayName).textSelection(.enabled)
-                            Text(types(for: record)).font(.caption).foregroundStyle(.secondary)
-                            if let visit = data.lastVisit(for: record.displayName) {
-                                Text(L("Last visited: %@", visit.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(Locale(identifier: AppLanguage.shared.code)))))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
+                            Text(L("Save website data"))
+                            Text(L("Stay signed in and keep website preferences."))
+                                .font(.caption).foregroundStyle(.secondary)
                         }
-                        Spacer()
-                        Button(L("Delete data…")) { confirmation = .site(record) }
-                            .disabled(data.isBusy)
+                    }.toggleStyle(.switch).disabled(isBusy)
+                    Text(L(data.isEnabled
+                        ? "Website data is stored on this Mac. Turning this off deletes saved website data."
+                        : "Without saving, website data is deleted when all related windows close. Hiding the window when switching apps also ends the preview."))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if data.isEnabled {
+                        Picker(L("Automatically clear data"), selection: Binding(get: { data.inactiveDays }, set: data.setInactiveDays)) {
+                            Text(L("Never")).tag(0)
+                            ForEach([7, 30, 90], id: \.self) { Text(L("%d days", $0)).tag($0) }
+                        }.disabled(isBusy)
                     }
-                }
-                if !data.records.isEmpty {
-                    Button(L("Delete all data…")) { confirmation = .all }
-                        .disabled(data.isBusy)
-                }
-            }
+                } header: { Text(L("Storage")) }
+                Section {
+                    if filtered.isEmpty && !data.isBusy {
+                        Text(L(search.isEmpty ? "No stored website data." : "No matching websites."))
+                            .foregroundStyle(.secondary).padding(.vertical, 12)
+                    }
+                    ForEach(filtered, id: \.displayName) { record in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(record.displayName).textSelection(.enabled)
+                                Text(types(for: record)).font(.caption).foregroundStyle(.secondary)
+                                if let visit = data.lastVisit(for: record.displayName) {
+                                    Text(L("Last visited: %@", visit.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(Locale(identifier: AppLanguage.shared.code)))))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Button(L("Delete data…")) { confirmation = .site(record) }.disabled(isBusy)
+                        }.padding(.vertical, 4)
+                    }
+                } header: { Text(L("Stored websites")) }
+            }.listStyle(.inset)
+            Divider()
+            HStack(spacing: 12) {
+                if data.isBusy { ProgressView().controlSize(.small).accessibilityLabel(L("Updating website data…")) }
+                TextField(L("Search websites"), text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                Spacer()
+                Button(L("Refresh")) { Task { await data.refresh() } }.disabled(isBusy)
+                Button(L("Delete all data…")) { confirmation = .all }.disabled(isBusy || data.records.isEmpty)
+            }.padding(16)
         }
-        .formStyle(.grouped)
         .task { await data.refresh() }
         .alert(confirmation?.title ?? "", isPresented: Binding(
             get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }
         ), presenting: confirmation) { action in
             Button(L("Cancel"), role: .cancel) { confirmation = nil }
             Button(L(action.id == "disable" ? "Turn off and delete" : "Delete data"), role: .destructive) {
+                isMutating = true
                 Task {
+                    defer { isMutating = false }
                     switch action {
                     case .disable: await model.setSavesSiteData(false)
                     case .all: await model.deleteSiteData(nil)
@@ -520,6 +542,13 @@ struct SiteDataSettingsView: View {
         }
     }
 
+    private func setSavingEnabled() {
+        isMutating = true
+        Task {
+            defer { isMutating = false }
+            await model.setSavesSiteData(true)
+        }
+    }
     private func types(for record: WKWebsiteDataRecord) -> String {
         var labels: [String] = []
         if record.dataTypes.contains(WKWebsiteDataTypeCookies) { labels.append(L("Cookies")) }

@@ -37,15 +37,19 @@ final class LinkletMenuBarController: NSObject, NSMenuDelegate {
         buildMenu(clipboard: nil)
         if attachesToStatusBar {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-            let image = NSImage(named: "MenuBarIcon")?.copy() as? NSImage
-            image?.isTemplate = true
-            image?.size = NSSize(width: 18, height: 18)
-            item.button?.image = image
+            item.button?.image = Self.statusImage()
             item.button?.setAccessibilityLabel("Linklet")
             item.button?.toolTip = "Linklet"
             item.menu = menu
             statusItem = item
         }
+    }
+
+    static func statusImage() -> NSImage? {
+        let image = NSImage(named: "MenuBarIcon")?.copy() as? NSImage
+        image?.isTemplate = true
+        // Preserve the asset's original 14×14 point size, as MenuBarExtra did.
+        return image
     }
 
     // Read the pasteboard only when the user opens this menu, never on a timer.
@@ -185,10 +189,6 @@ final class AppLanguage: ObservableObject {
     }
     static let russian: [String: String] = 
 [
-        "Forward": "Вперёд",
-        "Navigation": "Навигация",
-        "Search settings": "Поиск настроек",
-        "No matching settings": "Настройки не найдены",
         "Opening links, launch, and language.": "Открытие ссылок, запуск и язык приложения.",
         "Choose how windows and the sidebar work.": "Настройте окна и боковую панель.",
         "Quick Search and opening links in other browsers.": "Быстрый поиск и открытие ссылок в других браузерах.",
@@ -199,6 +199,11 @@ final class AppLanguage: ObservableObject {
         "Hide sidebar": "Скрыть боковую панель",
         "Downloads (%d)": "Загрузки (%d)",
         "Help": "Справка",
+        "Website Data": "Данные сайтов",
+        "Website data is saved.": "Сохранение данных включено.",
+        "Website data is temporary.": "Данные сайтов временные.",
+        "Storage": "Хранение данных",
+        "Browser order": "Порядок браузеров",
         "Back": "Назад",
         "Skip": "Пропустить",
         "Windows & Sidebar": "Окна и панель",

@@ -292,7 +292,7 @@ final class SiteDataTests: XCTestCase {
         try snapshot(window, name: "settings-real-window")
     }
 
-    func testNativeSettingsToolbarTracksSidebarAndNavigationHistory() async throws {
+    func testNativeSettingsToolbarTracksSidebarWithoutSearchOrHistory() async throws {
         let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
         let controller = SettingsWindowController(model: model)
         let window = try XCTUnwrap(controller.window)
@@ -309,16 +309,15 @@ final class SiteDataTests: XCTestCase {
         XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier == .toggleSidebar })
         let heading = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "Linklet.Settings.Heading" }?.view as? NSTextField)
         XCTAssertGreaterThan(heading.convert(.zero, to: nil).x, sidebarView.convert(sidebarView.bounds, to: nil).maxX)
-        model.settingsPage = .search
-        model.settingsPage = .windows
-        split.navigate(back: true)
-        XCTAssertEqual(model.settingsPage, .search)
-        split.navigate(back: false)
-        XCTAssertEqual(model.settingsPage, .windows)
-        model.settingsPage = .sites
-        split.navigate(back: true)
-        XCTAssertEqual(model.settingsPage, .windows)
-        XCTAssertEqual(heading.stringValue, model.settingsPage.title)
+        XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier.rawValue == "Linklet.Settings.Navigation" })
+        func hasSearch(_ view: NSView) -> Bool {
+            view is NSSearchField || view.subviews.contains(where: hasSearch)
+        }
+        XCTAssertFalse(hasSearch(sidebarView))
+        for page in SettingsPage.allCases {
+            model.settingsPage = page
+            XCTAssertEqual(heading.stringValue, page.title)
+        }
     }
 
     func testMenuRefreshesClipboardOnlyOnOpenAndKeepsHelpGrouped() throws {
@@ -353,15 +352,105 @@ final class SiteDataTests: XCTestCase {
         }
     }
 
-    func testSettingsSearchFindsParametersInBothLanguages() {
-        let previous = AppLanguage.shared.selection
-        defer { AppLanguage.shared.set(previous) }
-        AppLanguage.shared.set("ru")
-        XCTAssertEqual(SettingsPage.allCases.filter { $0.matches("язык") }, [.general])
-        XCTAssertEqual(SettingsPage.allCases.filter { $0.matches("микрофон") }, [.sites])
-        AppLanguage.shared.set("en")
-        XCTAssertEqual(SettingsPage.allCases.filter { $0.matches("search engine") }, [.search])
-        XCTAssertTrue(SettingsPage.allCases.allSatisfy { $0.matches("  ") })
+    func testSettingsStatusDoesNotCreateAWindowAndCloseReleasesItsContent() async throws {
+        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] })
+        XCTAssertNil(model.settingsWindow)
+        XCTAssertFalse(model.hasOpenWindows)
+        model.setLanguage(AppLanguage.shared.selection)
+        XCTAssertNil(model.settingsWindow, "Status and language reads must not instantiate settings")
+        weak var previousContent: NSViewController?
+        var savedFrame = NSRect.zero
+        autoreleasepool {
+            model.showSettings()
+            model.settingsWindow?.setContentSize(NSSize(width: 920, height: 720))
+            savedFrame = model.settingsWindow?.frame ?? .zero
+            previousContent = model.settingsWindow?.contentViewController
+            model.settingsWindow?.close()
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(model.settingsWindow)
+        XCTAssertNil(previousContent, "Closing settings must release the SwiftUI tree and its model subscriptions")
+        model.showSettings()
+        XCTAssertNotNil(model.settingsWindow)
+        XCTAssertEqual(model.settingsWindow?.frame, savedFrame, "Recreating settings must restore the user's chosen size and position")
+        model.closeAllWindows()
+        XCTAssertNil(model.settingsWindow)
+    }
+
+    func testPrivacyOverviewDoesNotFetchWebsiteData() async throws {
+        var reads = 0
+        let service = SiteDataService(defaults: defaults, persistentStore: store, readRecords: {
+            reads += 1
+            try? await Task.sleep(for: .milliseconds(80))
+            return []
+        })
+        var discoveries = 0
+        let model = AppModel(defaults: defaults, siteData: service, discoverTargets: { discoveries += 1; return [] })
+        let controller = SettingsWindowController(model: model)
+        defer { controller.close() }
+        controller.showWindow(nil)
+        for page: SettingsPage in [.sites, .general, .windows, .sites] {
+            model.settingsPage = page
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        XCTAssertEqual(reads, 0, "Privacy must not fetch WebKit records or mount their list")
+        XCTAssertEqual(discoveries, 0, "Opening unrelated settings must not scan browsers")
+        let content = NSHostingController(rootView: WebsiteDataSettingsView(model: model, data: service, close: {}))
+        content.sizingOptions = []
+        content.view.setFrameSize(NSSize(width: 640, height: 650))
+        let child = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 650), styleMask: [.titled], backing: .buffered, defer: false)
+        child.isReleasedWhenClosed = false
+        child.contentViewController = content
+        child.setContentSize(NSSize(width: 640, height: 650))
+        child.orderFront(nil)
+        defer { child.close() }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(reads, 1, "Only the separate website-data screen should load records")
+        try snapshot(child, name: "settings-website-data")
+    }
+
+    func testOverlappingWebsiteRefreshesAreCoalescedAndVisitsUseDomainIndex() async throws {
+        var reads = 0
+        let service = SiteDataService(defaults: defaults, persistentStore: store, readRecords: {
+            reads += 1
+            try? await Task.sleep(for: .milliseconds(80))
+            return []
+        })
+        async let first: Void = service.refresh()
+        async let second: Void = service.refresh()
+        async let third: Void = service.refresh()
+        _ = await (first, second, third)
+        XCTAssertEqual(reads, 1)
+        XCTAssertFalse(service.isBusy)
+        service.selectModeForPreview(true)
+        let now = Date()
+        service.recordVisit(URL(string: "https://a.example.org")!, now: now)
+        service.recordVisit(URL(string: "https://b.example.org")!, now: now.addingTimeInterval(10))
+        XCTAssertEqual(service.lastVisit(for: "EXAMPLE.ORG"), now.addingTimeInterval(10))
+        XCTAssertNil(service.lastVisit(for: "notexample.org"))
+        service.recordVisit(URL(string: "https://b.example.org")!, now: now.addingTimeInterval(-10))
+        XCTAssertEqual(service.lastVisit(for: "example.org"), now, "The cache must invalidate after visits, including a clock rollback")
+    }
+
+    func testBrowserDiscoveryForSettingsDoesNotBlockTheMainActor() async throws {
+        let probe = SettingsDiscoveryProbe()
+        let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { [] },
+                             discoverTargetsAsync: { await probe.load() })
+        async let first: Void = model.refreshTargetsForSettings()
+        async let second: Void = model.refreshTargetsForSettings()
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertTrue(model.isRefreshingTargets, "MainActor must remain responsive while discovery is pending")
+        _ = await (first, second)
+        let calls = await probe.calls
+        XCTAssertEqual(calls, 1)
+        XCTAssertFalse(model.isRefreshingTargets)
+        XCTAssertEqual(model.targets.first?.displayName, "Fixture browser")
+    }
+
+    func testStatusIconKeepsItsOriginalAssetDimensions() throws {
+        let image = try XCTUnwrap(LinkletMenuBarController.statusImage())
+        XCTAssertEqual(image.size, NSSize(width: 14, height: 14))
+        XCTAssertTrue(image.isTemplate)
     }
 
     func testMenuActivatesExistingWindowWithoutChangingItsOriginalLink() throws {
@@ -452,5 +541,14 @@ final class SiteDataTests: XCTestCase {
         view.cacheDisplay(in: view.bounds, to: bitmap)
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: URL(fileURLWithPath: "/tmp/linklet-\(name).png"))
+    }
+}
+
+private actor SettingsDiscoveryProbe {
+    private(set) var calls = 0
+    func load() async -> [BrowserTarget] {
+        calls += 1
+        try? await Task.sleep(for: .milliseconds(100))
+        return [.browser(name: "Fixture browser", applicationURL: URL(fileURLWithPath: "/Applications/Fixture.app"))]
     }
 }
