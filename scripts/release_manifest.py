@@ -76,7 +76,7 @@ def expected_state(root: Path) -> dict[str, str]:
     return {"tag": tag, "commit": commit, "version": version, "build": build}
 
 
-def create_manifest(root: Path, source: Path, output: Path) -> None:
+def create_manifest(root: Path, source: Path, output: Path, owner_validated: bool = False) -> None:
     state = expected_state(root)
     if not source.is_file():
         raise ManifestError(f"Missing source archive: {source}")
@@ -89,8 +89,13 @@ def create_manifest(root: Path, source: Path, output: Path) -> None:
         **state,
         "sourceArchive": source_value,
         "sourceSHA256": sha256(source),
-        "checks": {name: "passed" for name in REQUIRED_CHECKS},
+        "checks": {
+            name: "skipped-owner-validated" if owner_validated and name != "sourceArchive" else "passed"
+            for name in REQUIRED_CHECKS
+        },
     }
+    if owner_validated:
+        payload["testValidation"] = "owner-validated"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -115,7 +120,12 @@ def validate_manifest(root: Path, manifest_path: Path) -> dict[str, object]:
     if not isinstance(checks, dict):
         raise ManifestError("Preflight receipt has no checks")
     for name in REQUIRED_CHECKS:
-        if checks.get(name) != "passed":
+        manually_accepted = (
+            name != "sourceArchive"
+            and checks.get(name) == "skipped-owner-validated"
+            and payload.get("testValidation") == "owner-validated"
+        )
+        if checks.get(name) != "passed" and not manually_accepted:
             raise ManifestError(f"Preflight check did not pass: {name}")
 
     source_value = payload.get("sourceArchive")
@@ -146,6 +156,8 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--repo-root", type=Path, required=True)
     create.add_argument("--source", type=Path, required=True)
     create.add_argument("--output", type=Path, required=True)
+    create.add_argument("--owner-validated", action="store_true",
+                        help="record explicit owner acceptance instead of claiming automated tests passed")
 
     verify = commands.add_parser("verify", help="validate a preflight receipt and source hash")
     verify.add_argument("--repo-root", type=Path, required=True)
@@ -168,7 +180,7 @@ def main() -> int:
             }
             print(values[args.field] if args.field else json.dumps(values, sort_keys=True))
         elif args.command == "create":
-            create_manifest(root, args.source.resolve(), args.output.resolve())
+            create_manifest(root, args.source.resolve(), args.output.resolve(), args.owner_validated)
             print(args.output.resolve())
         else:
             payload = validate_manifest(root, args.manifest.resolve())

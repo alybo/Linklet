@@ -7,21 +7,25 @@ repo_root="$(release_repo_root)"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/release-preflight.sh [--force] [--dry-run]
+Usage: scripts/release-preflight.sh [--force] [--owner-validated] [--dry-run]
 
 Runs expensive release checks once for the tagged commit and writes a hash-bound
 receipt under build/release-preflight/. A valid receipt is reused automatically.
 
   --force    rerun checks while retaining Xcode/SwiftPM build caches
+  --owner-validated  skip automated tests after explicit owner acceptance;
+                     retain source archive and offline build checks
   --dry-run  print the checks and cache paths without running or writing them
 EOF
 }
 
 force=0
 dry_run=0
+owner_validated=0
 while (( $# )); do
     case "$1" in
         --force) force=1 ;;
+        --owner-validated) owner_validated=1 ;;
         --dry-run) dry_run=1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -54,18 +58,31 @@ Planned checks:
 
 No files or external state were changed.
 EOF
+    if (( owner_validated )); then
+        echo "Owner-validated mode: steps 2-4 are skipped and recorded as skipped-owner-validated."
+        echo "SwiftPM dependency resolution still runs before source packaging."
+    fi
     exit 0
 fi
 
 release_require_command git
 release_require_command xcodebuild
-release_require_command npm
+if (( ! owner_validated )); then
+    release_require_command npm
+fi
 
 if (( ! force )) && [[ -f "$manifest" ]]; then
     if /usr/bin/python3 "$repo_root/scripts/release_manifest.py" verify \
         --repo-root "$repo_root" --manifest "$manifest" >/dev/null; then
-        echo "Reusing verified preflight receipt: $manifest"
-        exit 0
+        # A manual acceptance receipt must not silently replace automated checks.
+        if (( owner_validated )) || /usr/bin/python3 - "$manifest" <<'PY'
+import json, sys
+sys.exit(json.load(open(sys.argv[1])).get("testValidation") == "owner-validated")
+PY
+        then
+            echo "Reusing verified preflight receipt: $manifest"
+            exit 0
+        fi
     fi
     echo "Cached receipt is stale; rerunning preflight." >&2
 fi
@@ -94,6 +111,14 @@ remote_tag="$(git -C "$repo_root" ls-remote --tags origin "refs/tags/${tag}^{}" 
 
 mkdir -p "$cache_root" "$derived_data"
 
+if (( owner_validated )); then
+    release_step "Owner accepted manual validation; automated tests skipped"
+    xcodebuild \
+        -project "$repo_root/Linklet/Linklet.xcodeproj" \
+        -scheme Linklet \
+        -derivedDataPath "$derived_data" \
+        -resolvePackageDependencies
+else
 release_step "Run Python release tests"
 /usr/bin/python3 -m unittest discover -s "$repo_root/scripts/tests" -p 'test_*.py'
 
@@ -114,6 +139,7 @@ release_step "Run Raycast checks"
     npm run typecheck
     npm run lint:source
 )
+fi
 
 release_step "Create complete corresponding-source archive"
 /usr/bin/python3 "$repo_root/scripts/build_source_archive.py" \
@@ -142,8 +168,12 @@ xcodebuild \
 trap - EXIT INT TERM
 
 release_step "Write hash-bound preflight receipt"
+manifest_options=()
+if (( owner_validated )); then
+    manifest_options+=(--owner-validated)
+fi
 /usr/bin/python3 "$repo_root/scripts/release_manifest.py" create \
     --repo-root "$repo_root" \
     --source "$source_archive" \
-    --output "$manifest"
+    --output "$manifest" "${manifest_options[@]}"
 echo "Preflight passed and cached: $manifest"
