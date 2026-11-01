@@ -783,6 +783,44 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertFalse(window.isVisible)
     }
 
+    func testManualSidebarOpeningWaitsForPointerEntryIncludingDownloads() throws {
+        let suite = "SidebarManualPointerEntry.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.linkLibrary.setEnabled(true)
+        let controller = SidebarWindowController(model: model, reduceMotion: { true })
+        defer { controller.hide(animated: false); model.linkLibrary.setEnabled(false) }
+        let window = try XCTUnwrap(controller.window)
+
+        for open in [controller.toggle, controller.showDownloads] {
+            open()
+            let outside = NSPoint(x: window.frame.maxX + 100, y: window.frame.midY)
+            let inside = NSPoint(x: window.frame.midX, y: window.frame.midY)
+            let now = Date().addingTimeInterval(3)
+            controller.pollMouse(at: outside, now: now)
+            controller.pollMouse(at: outside, now: now.addingTimeInterval(30))
+            XCTAssertTrue(controller.isPresented, "A menu or shortcut action must give the user time to reach the sidebar")
+            XCTAssertTrue(window.isVisible)
+            controller.pollMouse(at: inside, now: now.addingTimeInterval(31))
+            controller.pollMouse(at: outside, now: now.addingTimeInterval(32))
+            controller.pollMouse(at: outside, now: now.addingTimeInterval(32.6))
+            XCTAssertFalse(controller.isPresented, "Pointer exit must dismiss normally once the user has entered")
+        }
+
+        // Edge hover keeps its automatic dismissal even without entering the panel.
+        let screen = try XCTUnwrap(window.screen ?? NSScreen.main)
+        let edge = NSPoint(x: screen.frame.minX, y: screen.visibleFrame.midY)
+        let outside = NSPoint(x: screen.frame.maxX - 20, y: screen.visibleFrame.midY)
+        let now = Date().addingTimeInterval(3)
+        controller.pollMouse(at: edge, now: now)
+        controller.pollMouse(at: edge, now: now.addingTimeInterval(3))
+        XCTAssertTrue(controller.isPresented)
+        controller.pollMouse(at: outside, now: now.addingTimeInterval(4))
+        controller.pollMouse(at: outside, now: now.addingTimeInterval(4.6))
+        XCTAssertFalse(controller.isPresented)
+    }
+
     func testSidebarShouldersRemainAtTheEdgeThroughoutReveal() {
         let rect = CGRect(x: 0, y: 0, width: 300, height: 500)
         XCTAssertTrue(SidebarContour(revealProgress: 0).path(in: rect).isEmpty)
@@ -1940,6 +1978,7 @@ final class WebPopupTests: XCTestCase {
         // performClick bypasses AppKit's normal activation on a user's click.
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow && NSApp.isActive }
         address.addressButton.performClick(nil)
         try await waitUntil { address.isExpanded && address.addressField.currentEditor() != nil }
         XCTAssertEqual(address.addressField.stringValue, longURL)

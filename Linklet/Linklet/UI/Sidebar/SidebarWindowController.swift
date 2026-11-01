@@ -58,7 +58,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     private var edgeScreenID: ObjectIdentifier?
     private var edgeEnteredAt: Date?
     private var leftPanelAt: Date?
-    private var exitDelay: TimeInterval = 0.5
+    private var waitsForPointerEntry = false
     private(set) var isResizing = false
     private var suppressedUntil: Date = .distantPast
     private(set) var isPresented = false
@@ -175,7 +175,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         indicatorWindow?.orderOut(nil)
         indicatorWindow = nil
         isResizing = false
-        exitDelay = 0.5
+        waitsForPointerEntry = false
         edgeEnteredAt = nil
         edgeScreenID = nil
         leftPanelAt = nil
@@ -218,15 +218,18 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         if isBlockedByFullScreen { refreshFullScreenAvailability(); return }
         guard let window, now >= suppressedUntil else { return }
         if isPresented {
-            if isResizing || editor.isEditing { leftPanelAt = nil; return }
+            let containsPointer = window.frame.insetBy(dx: -8, dy: -8).contains(point)
+            if containsPointer { waitsForPointerEntry = false }
+            // Menu and shortcut actions open the panel away from the pointer.
+            // Start pointer-exit dismissal only after the user reaches it.
+            if waitsForPointerEntry || isResizing || editor.isEditing { leftPanelAt = nil; return }
             let holdsOpeningEdge = !library.showsRevealIndicator && window.screen.map {
                 Self.isAtLeftEdge(point, screenFrame: $0.frame, visibleFrame: $0.visibleFrame)
             } == true
-            if window.frame.insetBy(dx: -8, dy: -8).contains(point) || holdsOpeningEdge || window.attachedSheet != nil {
+            if containsPointer || holdsOpeningEdge || window.attachedSheet != nil {
                 leftPanelAt = nil
-                exitDelay = 0.5
             } else {
-                if let leftPanelAt, now.timeIntervalSince(leftPanelAt) >= exitDelay { hide() }
+                if let leftPanelAt, now.timeIntervalSince(leftPanelAt) >= 0.5 { hide() }
                 else if leftPanelAt == nil { leftPanelAt = now }
             }
             return
@@ -342,7 +345,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
 
     private func present(on screen: NSScreen, manual: Bool) {
         guard let window, !isBlockedByFullScreen else { return }
-        exitDelay = manual ? 1 : 0.5
+        waitsForPointerEntry = manual
         library.resetRecentDisplayLimit()
         library.cancelHistoryClear()
         leftPanelAt = nil
