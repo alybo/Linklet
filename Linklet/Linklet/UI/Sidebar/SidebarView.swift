@@ -506,13 +506,16 @@ struct SidebarFolderSymbol: View {
 
     var body: some View {
         ZStack {
-            SidebarFolderBack()
+            SidebarFolderBack(progress: expanded ? 1 : 0)
                 .fill(Color.white.opacity(0.16))
-                .overlay { SidebarFolderBack().stroke(Color.white.opacity(0.85), lineWidth: layout.iconSize / 18) }
+                .overlay {
+                    SidebarFolderBack(progress: expanded ? 1 : 0)
+                        .stroke(Color.white.opacity(0.85), lineWidth: layout.iconSize / 18)
+                }
                 .rotationEffect(.degrees(expanded ? -9 : 0), anchor: .bottomLeading)
                 .offset(x: expanded ? layout.iconSize * 0.07 : 0)
             SidebarFolderFront(progress: expanded ? 1 : 0)
-                .fill(Color.black.opacity(0.94))
+                .fill(Color.black)
                 .overlay {
                     SidebarFolderFront(progress: expanded ? 1 : 0)
                         .stroke(Color.white.opacity(0.95), lineWidth: layout.iconSize / 18)
@@ -525,7 +528,16 @@ struct SidebarFolderSymbol: View {
 }
 
 private struct SidebarFolderBack: Shape {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
     func path(in rect: CGRect) -> Path {
+        // Tuck the lower right edge behind the flap throughout the opening motion.
+        let lowerRight: CGFloat = 0.91 - 0.23 * progress
+        let lowerCorner: CGFloat = lowerRight - 0.07
         var path = Path()
         path.move(to: CGPoint(x: 0.09, y: 0.81))
         path.addLine(to: CGPoint(x: 0.09, y: 0.24))
@@ -534,8 +546,8 @@ private struct SidebarFolderBack: Shape {
         path.addLine(to: CGPoint(x: 0.47, y: 0.28))
         path.addLine(to: CGPoint(x: 0.84, y: 0.28))
         path.addQuadCurve(to: CGPoint(x: 0.91, y: 0.35), control: CGPoint(x: 0.91, y: 0.28))
-        path.addLine(to: CGPoint(x: 0.91, y: 0.81))
-        path.addQuadCurve(to: CGPoint(x: 0.84, y: 0.88), control: CGPoint(x: 0.91, y: 0.88))
+        path.addLine(to: CGPoint(x: lowerRight, y: 0.81))
+        path.addQuadCurve(to: CGPoint(x: lowerCorner, y: 0.88), control: CGPoint(x: lowerRight, y: 0.88))
         path.addLine(to: CGPoint(x: 0.16, y: 0.88))
         path.addQuadCurve(to: CGPoint(x: 0.09, y: 0.81), control: CGPoint(x: 0.09, y: 0.88))
         path.closeSubpath()
