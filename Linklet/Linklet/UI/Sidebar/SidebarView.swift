@@ -449,7 +449,7 @@ struct SidebarView: View {
                         ForEach(sites) { bookmarkRow($0) }
                         dropSlot(before: nil, folder: folder.id).padding(.bottom, -layout.rowGap)
                         if sites.isEmpty { emptyMessage("Empty folder").padding(.vertical, 6) }
-                    }.padding(.leading, 20)
+                    }.padding(.leading, 16)
                 }
             }
         }
