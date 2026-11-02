@@ -261,14 +261,13 @@ struct SidebarView: View {
                 Text("Linklet").font(layout.labelFont)
                 Spacer()
             }.padding(16).padding(.leading, -8)
-            if library.showsSidebarSearch && !editor.isEditing {
+            if library.showsSidebarSearch && editor.isSearchVisible && !editor.isEditing {
                 HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.white.opacity(0.55))
-                    TextField(L("Search sidebar"), text: $editor.query)
-                        .textFieldStyle(.plain).font(layout.groupFont)
-                        .accessibilityIdentifier("sidebar-search-field")
+                    SidebarSearchField(editor: editor, fontSize: max(10, layout.labelSize - 1))
+                        .frame(height: 20)
                     if !editor.query.isEmpty {
-                        Button { editor.query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        Button { editor.endSearch() } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain).help(L("Clear search"))
                             .accessibilityLabel(L("Clear search"))
                     }
@@ -326,9 +325,9 @@ struct SidebarView: View {
         .font(layout.labelFont)
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
-        .onChange(of: library.showsSidebarSearch) { enabled in if !enabled { editor.query = "" } }
+        .onChange(of: library.showsSidebarSearch) { enabled in if !enabled { editor.endSearch() } }
         .onExitCommand {
-            if !query.isEmpty { editor.query = "" }
+            if editor.isSearchVisible { editor.endSearch() }
             else if editor.isEditing { editor.cancel() }
             else if library.isHistoryClearPending { library.cancelHistoryClear() }
             else { dismiss() }
@@ -887,17 +886,107 @@ struct SidebarEditorPresentation: Identifiable {
 @MainActor
 final class SidebarEditorState: ObservableObject {
     @Published var activeSection: SidebarSection?
-    @Published var query = ""
+    @Published var query = "" {
+        didSet { if !query.isEmpty && !isSearchVisible { isSearchVisible = true } }
+    }
+    @Published private(set) var isSearchVisible = false
+    weak var searchField: NSTextField?
+    private var pendingSearchEvents: [NSEvent] = []
+
+    func beginSearch(with event: NSEvent) {
+        pendingSearchEvents.append(event)
+        isSearchVisible = true
+        focusSearchField()
+    }
+
+    func focusSearchField() {
+        guard isSearchVisible, let searchField, let window = searchField.window,
+              window.makeFirstResponder(searchField), let input = searchField.currentEditor() else { return }
+        let events = pendingSearchEvents
+        pendingSearchEvents.removeAll()
+        if !events.isEmpty { input.interpretKeyEvents(events) }
+    }
+
+    func endSearch() {
+        pendingSearchEvents.removeAll()
+        if let searchField, let input = searchField.currentEditor(), searchField.window?.firstResponder === input {
+            searchField.window?.makeFirstResponder(nil)
+        }
+        searchField?.stringValue = ""
+        query = ""
+        isSearchVisible = false
+    }
     @Published var downloadsRequest = 0
     @Published private(set) var presentation: SidebarEditorPresentation?
     var isEditing: Bool { presentation != nil }
     func showBookmark(site: FavoriteSite? = nil, recent: RecentLink? = nil) {
+        endSearch()
         presentation = SidebarEditorPresentation(target: .bookmark(site, recent))
     }
     func showFolder(_ folder: BookmarkFolder? = nil) {
+        endSearch()
         presentation = SidebarEditorPresentation(target: .folder(folder))
     }
     func cancel() { presentation = nil }
+}
+
+/// Native input receives the actual first key event, including input-method events.
+/// It is created only when typing starts; no hidden field or global keyboard monitor.
+private struct SidebarSearchField: NSViewRepresentable {
+    @ObservedObject var editor: SidebarEditorState
+    let fontSize: CGFloat
+
+    final class Field: NSTextField {
+        var ready: (() -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { DispatchQueue.main.async { [weak self] in self?.ready?() } }
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        let editor: SidebarEditorState
+        init(editor: SidebarEditorState) { self.editor = editor }
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            editor.query = field.stringValue
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(editor: editor) }
+
+    func makeNSView(context: Context) -> Field {
+        let field = Field()
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.textColor = .white
+        field.usesSingleLineMode = true
+        field.placeholderString = L("Search sidebar")
+        field.setAccessibilityIdentifier("sidebar-search-field")
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.delegate = context.coordinator
+        field.ready = { [weak editor] in editor?.focusSearchField() }
+        editor.searchField = field
+        updateNSView(field, context: context)
+        return field
+    }
+
+    func updateNSView(_ field: Field, context: Context) {
+        field.font = .systemFont(ofSize: fontSize, weight: .semibold)
+        field.placeholderString = L("Search sidebar")
+        // Leave marked text to the input method. External clear/section changes
+        // can update an ordinary selection without interrupting composition.
+        if field.stringValue != editor.query, (field.currentEditor() as? NSTextView)?.hasMarkedText() != true {
+            field.stringValue = editor.query
+        }
+    }
+
+    static func dismantleNSView(_ field: Field, coordinator: Coordinator) {
+        field.ready = nil
+        if coordinator.editor.searchField === field { coordinator.editor.searchField = nil }
+    }
 }
 
 private struct SidebarFolderEditor: View {

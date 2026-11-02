@@ -6,6 +6,7 @@ import SwiftUI
 
 private final class SidebarPanel: NSPanel {
     var keepsGlassAppearanceActive = false
+    var handleSearchKeyDown: ((NSEvent) -> Bool)?
 
     private typealias ActiveAppearanceGetter = @convention(c) (AnyObject, Selector) -> Bool
     private static let activeAppearanceSelector = NSSelectorFromString("_hasActiveAppearance")
@@ -27,6 +28,7 @@ private final class SidebarPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, handleSearchKeyDown?(event) == true { return }
         super.sendEvent(event)
         // Set the edge cursor after the hosting view's tracking/cursor processing.
         guard !ignoresMouseEvents,
@@ -96,6 +98,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         // Our contour provides the complete transition; AppKit must not add an ordering fade.
         panel.animationBehavior = .none
         super.init(window: panel)
+        panel.handleSearchKeyDown = { [weak self] in self?.handleSearchKeyDown($0) ?? false }
         appearanceObservation = library.$sidebarAppearance.sink { [weak panel] appearance in
             panel?.keepsGlassAppearanceActive = appearance == .glass && SidebarAppearance.supportsGlass
         }
@@ -138,7 +141,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
             DispatchQueue.main.async {
                 self?.hide(animated: false)
                 self?.editor.activeSection = nil
-                self?.editor.query = ""
+                self?.editor.endSearch()
             }
         }
         hotKey.action = { [weak self] in self?.toggle() }
@@ -184,6 +187,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         // Resigning key while ordering out must not restart an in-flight dismissal.
         guard isPresented || !animated else { return }
         isPresented = false
+        editor.endSearch()
         // A click opening a preview must not immediately reopen the edge panel.
         suppressedUntil = Date().addingTimeInterval(0.8)
         editor.cancel()
@@ -226,6 +230,28 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     static func isAtLeftEdge(_ point: NSPoint, screenFrame: NSRect, visibleFrame: NSRect) -> Bool {
         point.x >= screenFrame.minX && point.x <= screenFrame.minX + 2 &&
             point.y >= visibleFrame.minY && point.y <= visibleFrame.maxY
+    }
+
+    /// Receives only events already addressed to our own nonactivating panel.
+    /// The original event is replayed through native text input after the field appears,
+    /// preserving the first character, dead keys, keyboard layouts and IME composition.
+    func handleSearchKeyDown(_ event: NSEvent) -> Bool {
+        guard isPresented, event.type == .keyDown, !editor.isEditing,
+              window?.attachedSheet == nil else { return false }
+        let textInput = window?.firstResponder as? NSTextView
+        if textInput?.hasMarkedText() == true { return false }
+        if event.keyCode == 53 {
+            if editor.isSearchVisible { editor.endSearch() }
+            else { hide() }
+            return true
+        }
+        guard library.showsSidebarSearch, textInput?.isFieldEditor != true,
+              !event.modifierFlags.contains(.command), !event.modifierFlags.contains(.control),
+              let characters = event.charactersIgnoringModifiers, !characters.isEmpty,
+              characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value) })
+        else { return false }
+        editor.beginSearch(with: event)
+        return true
     }
 
     private var hasSearchFocus: Bool {
@@ -460,7 +486,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     private func present(on screen: NSScreen, manual: Bool, section: SidebarSection? = nil) {
         guard let window, !isBlockedByFullScreen else { return }
         let selected = library.separatesSections ? (section ?? editor.activeSection ?? library.sectionOrder.first) : nil
-        if editor.activeSection != selected { editor.query = ""; editor.cancel() }
+        if editor.activeSection != selected { editor.endSearch(); editor.cancel() }
         editor.activeSection = selected
         waitsForPointerEntry = manual
         library.resetRecentDisplayLimit()
@@ -486,9 +512,14 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
             reveal.progress = reduceMotion() ? 1 : 0
             reveal.shoulderProgress = reveal.progress
         }
-        // Hover never activates Linklet or closes a private preview in Hide mode.
+        // A nonactivating NSPanel can own keyboard focus while the user's app stays
+        // active. Search off preserves the previous passive hover behavior.
         if manual { window.makeKeyAndOrderFront(nil) }
-        else { window.orderFrontRegardless() }
+        else {
+            window.orderFrontRegardless()
+            if library.showsSidebarSearch { window.makeKey() }
+        }
+        if library.showsSidebarSearch && !editor.isSearchVisible && !editor.isEditing { window.makeFirstResponder(nil) }
         if selected != nil { showSectionIndicators(on: screen) }
         if reduceMotion() { reveal.progress = 1; reveal.shoulderProgress = 1 }
         else { animate(to: 1, opening: true) }

@@ -179,6 +179,100 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertEqual(library.recentLinks.count, 25)
     }
 
+    private func sidebarKey(_ characters: String, keyCode: UInt16 = 0,
+                            modifiers: NSEvent.ModifierFlags = [], window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, characters: characters, charactersIgnoringModifiers: characters,
+            isARepeat: false, keyCode: keyCode))
+    }
+
+    func testSidebarTypingRevealsNativeSearchKeepsFirstKeysAndEscapeResetsIt() async throws {
+        let suite = "SidebarTypingSearch.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.linkLibrary.setShowsSidebarSearch(true)
+        let controller = SidebarWindowController(model: model, reduceMotion: { true })
+        defer { controller.hide(animated: false); defaults.removePersistentDomain(forName: suite) }
+        controller.showDownloads()
+        let window = try XCTUnwrap(controller.window)
+        XCTAssertTrue(window.isKeyWindow)
+        XCTAssertFalse(controller.editor.isSearchVisible)
+        XCTAssertNil(controller.editor.searchField)
+        for character in ["ф", "o", "o"] { window.sendEvent(try sidebarKey(character, window: window)) }
+        for _ in 0..<100 {
+            if controller.editor.query == "фoo" { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(controller.editor.query, "фoo", "Keys arriving before the field is mounted must all reach native input")
+        XCTAssertTrue(controller.editor.isSearchVisible)
+        let input = try XCTUnwrap(controller.editor.searchField?.currentEditor() as? NSTextView)
+        XCTAssertTrue(window.firstResponder === input)
+        XCTAssertFalse(controller.handleSearchKeyDown(try sidebarKey("a", modifiers: .command, window: window)))
+        XCTAssertFalse(controller.handleSearchKeyDown(try sidebarKey("f", modifiers: .control, window: window)))
+        input.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(input.hasMarkedText())
+        XCTAssertFalse(controller.handleSearchKeyDown(try sidebarKey("\u{1b}", keyCode: 53, window: window)), "The input method must handle Escape while it has marked text")
+        input.unmarkText()
+        window.sendEvent(try sidebarKey("\u{1b}", keyCode: 53, window: window))
+        XCTAssertTrue(controller.isPresented)
+        XCTAssertFalse(controller.editor.isSearchVisible)
+        XCTAssertEqual(controller.editor.query, "")
+        // Start again immediately, even before SwiftUI removes the previous field.
+        window.sendEvent(try sidebarKey("x", keyCode: 7, window: window))
+        for _ in 0..<100 {
+            if controller.editor.query == "x" { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(controller.editor.query, "x")
+        controller.hide(animated: false)
+        XCTAssertFalse(window.isKeyWindow)
+        XCTAssertFalse(controller.editor.isSearchVisible)
+        controller.showDownloads()
+        XCTAssertFalse(controller.editor.isSearchVisible, "Every opening starts with the field hidden")
+        window.sendEvent(try sidebarKey("\u{1b}", keyCode: 53, window: window))
+        XCTAssertFalse(controller.isPresented)
+    }
+
+    func testSearchHoverOwnsKeyboardAndPreservesFrontmostAppWhileDisabledSearchStaysPassive() async throws {
+        let suite = "SidebarHoverKeyboard.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        let library = model.linkLibrary
+        library.setEnabled(true)
+        NSApp.deactivate()
+        try await Task.sleep(for: .milliseconds(100))
+        let controller = SidebarWindowController(model: model, reduceMotion: { true })
+        defer {
+            controller.hide(animated: false)
+            library.setEnabled(false)
+            NSApp.activate(ignoringOtherApps: true)
+            defaults.removePersistentDomain(forName: suite)
+        }
+        let screen = try XCTUnwrap(NSScreen.main)
+        let edge = NSPoint(x: screen.frame.minX, y: screen.visibleFrame.midY)
+        let now = Date().addingTimeInterval(5)
+        controller.pollMouse(at: edge, now: now)
+        controller.pollMouse(at: edge, now: now.addingTimeInterval(0.5))
+        XCTAssertTrue(controller.isPresented)
+        XCTAssertFalse(controller.window!.isKeyWindow, "Search off preserves passive hover")
+        XCTAssertFalse(controller.handleSearchKeyDown(try sidebarKey("x", window: controller.window!)))
+        controller.hide(animated: false)
+        library.setShowsSidebarSearch(true)
+        let activeApp = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        controller.pollMouse(at: edge, now: now.addingTimeInterval(5))
+        controller.pollMouse(at: edge, now: now.addingTimeInterval(5.5))
+        XCTAssertTrue(controller.isPresented)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(controller.isPresented)
+        XCTAssertTrue(controller.window!.isKeyWindow, "Search-enabled hover must receive the next typed key")
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, activeApp)
+        XCTAssertFalse(controller.editor.isSearchVisible)
+        controller.editor.showFolder()
+        XCTAssertFalse(controller.handleSearchKeyDown(try sidebarKey("x", window: controller.window!)), "Typing in an inline editor must not start search")
+        XCTAssertFalse(controller.editor.isSearchVisible)
+    }
+
     func testHistoryIsOptInBoundedAndIndependentOfSidebar() throws {
         let suite = "LinkLibraryTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
