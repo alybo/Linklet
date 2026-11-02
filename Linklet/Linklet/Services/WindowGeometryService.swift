@@ -62,3 +62,47 @@ final class WindowGeometryService {
         return host
     }
 }
+
+/// Shares geometry rules between incoming links and site-created WebKit windows.
+/// Only committed destinations may replace the host used for future saves.
+@MainActor
+final class WebsiteWindowGeometry {
+    private weak var window: NSWindow?
+    private let service: WindowGeometryService
+    private var url: URL?
+    private var isApplying = false
+
+    init(window: NSWindow, service: WindowGeometryService) {
+        self.window = window
+        self.service = service
+    }
+
+    @discardableResult
+    func begin(at url: URL?) -> Bool {
+        self.url = url.flatMap { URLPolicy.canPreview($0) ? $0 : nil }
+        return restore()
+    }
+
+    func committed(_ destination: URL) {
+        guard URLPolicy.canPreview(destination) else { return }
+        let changedHost = destination.host?.lowercased() != url?.host?.lowercased()
+        url = destination
+        if changedHost { _ = restore() }
+    }
+
+    func save() {
+        guard !isApplying, let window, window.isVisible, let url else { return }
+        service.save(window.frame, for: url)
+    }
+
+    private func restore() -> Bool {
+        guard let url, let frame = service.frame(for: url), let window else { return false }
+        let screen = NSScreen.screens.first { $0.visibleFrame.contains(NSPoint(x: frame.midX, y: frame.midY)) }
+            ?? window.screen ?? NSScreen.main
+        guard let screen else { return false }
+        isApplying = true
+        window.setFrame(WindowGeometryService.clamped(frame, to: screen.visibleFrame), display: false)
+        isApplying = false
+        return true
+    }
+}

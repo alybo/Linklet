@@ -234,6 +234,25 @@ struct SidebarView: View {
         self.closeWindow = closeWindow
     }
 
+    private var query: String { library.showsSidebarSearch ? editor.query.trimmingCharacters(in: .whitespacesAndNewlines) : "" }
+    private var sections: [SidebarSection] {
+        if library.separatesSections, let section = editor.activeSection { return [section] }
+        return library.sectionOrder
+    }
+    var matchingWindows: [BrowserWindowInfo] {
+        windows.windows.filter { LinkLibrary.matches(query, in: $0.title, $0.url?.absoluteString ?? "") }
+    }
+    var matchingDownloads: [DownloadItem] {
+        downloads.items.reversed().filter { LinkLibrary.matches(query, in: $0.filename) }
+    }
+    var matchingRecentLinks: [RecentLink] {
+        query.isEmpty ? library.visibleRecentLinks : library.recentLinks.filter { LinkLibrary.matches(query, in: $0.title, $0.address) }
+    }
+    func matches(_ site: FavoriteSite) -> Bool { LinkLibrary.matches(query, in: site.name, site.address) }
+    func matches(_ folder: BookmarkFolder) -> Bool {
+        LinkLibrary.matches(query, in: folder.name) || settings.favoriteSites.contains { library.folderID(for: $0) == folder.id && matches($0) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: layout.iconGap) {
@@ -242,6 +261,21 @@ struct SidebarView: View {
                 Text("Linklet").font(layout.labelFont)
                 Spacer()
             }.padding(16).padding(.leading, -8)
+            if library.showsSidebarSearch && !editor.isEditing {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.white.opacity(0.55))
+                    TextField(L("Search sidebar"), text: $editor.query)
+                        .textFieldStyle(.plain).font(layout.groupFont)
+                        .accessibilityIdentifier("sidebar-search-field")
+                    if !editor.query.isEmpty {
+                        Button { editor.query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).help(L("Clear search"))
+                            .accessibilityLabel(L("Clear search"))
+                    }
+                }
+                .padding(9).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, SidebarLayout.inset).padding(.bottom, 8)
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     if let presentation = editor.presentation {
@@ -262,7 +296,7 @@ struct SidebarView: View {
                         .padding(SidebarLayout.inset)
                     } else {
                         LazyVStack(alignment: .leading, spacing: layout.rowGap) {
-                            ForEach(library.sectionOrder) { section in sidebarSection(section) }
+                            ForEach(sections) { section in sidebarSection(section) }
                         }.padding(SidebarLayout.inset)
                     }
                 }.id(editor.presentation?.id)
@@ -288,11 +322,14 @@ struct SidebarView: View {
             }.buttonStyle(.plain).padding(16)
         }
         .padding(.vertical, 24)
+        .padding(.leading, library.separatesSections ? 30 : 0)
         .font(layout.labelFont)
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
+        .onChange(of: library.showsSidebarSearch) { enabled in if !enabled { editor.query = "" } }
         .onExitCommand {
-            if editor.isEditing { editor.cancel() }
+            if !query.isEmpty { editor.query = "" }
+            else if editor.isEditing { editor.cancel() }
             else if library.isHistoryClearPending { library.cancelHistoryClear() }
             else { dismiss() }
         }
@@ -303,9 +340,9 @@ struct SidebarView: View {
     private func sidebarSection(_ section: SidebarSection) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             SidebarSectionHeader(section: section, layout: layout,
-                expanded: library.expandedSections.contains(section),
+                expanded: editor.activeSection == section || !query.isEmpty || library.expandedSections.contains(section),
                 count: section == .open ? windows.windows.count : section == .downloads ? downloads.activeCount : 0,
-                toggle: { library.toggleSection(section) },
+                toggle: { if editor.activeSection != section { library.toggleSection(section) } },
                 addBookmark: section == .bookmarks ? { editor.showBookmark() } : nil,
                 clearDownloads: section == .downloads && downloads.items.contains(where: { !$0.isActive })
                     ? { downloads.clearFinished() } : nil)
@@ -315,6 +352,11 @@ struct SidebarView: View {
                 return NSItemProvider(object: "linklet-sidebar-section:\(section.rawValue)" as NSString)
             }
             .contextMenu {
+                if section == .open {
+                    Button(L("Restore closed window")) { dismiss(); model.restoreClosedWindow() }
+                        .disabled(windows.closedWindows.isEmpty)
+                    Divider()
+                }
                 if section == .bookmarks {
                     Button(L("Add bookmark")) { editor.showBookmark() }
                     Button(L("New folder")) { editor.showFolder() }
@@ -325,7 +367,7 @@ struct SidebarView: View {
                 Button(L("Move down")) { library.moveSection(section, before: nil) }
                     .disabled(library.sectionOrder.last == section)
             }
-            SidebarCollapsibleContent(expanded: library.expandedSections.contains(section)) {
+            SidebarCollapsibleContent(expanded: editor.activeSection == section || !query.isEmpty || library.expandedSections.contains(section)) {
                 switch section {
                 case .open: openContents
                 case .bookmarks: bookmarkContents
@@ -343,26 +385,26 @@ struct SidebarView: View {
 
     private var downloadContents: some View {
         VStack(alignment: .leading, spacing: layout.rowGap) {
-            ForEach(downloads.items.reversed()) { item in
+            ForEach(matchingDownloads) { item in
                 DownloadSidebarRow(item: item, manager: downloads, layout: layout)
             }
-            if downloads.items.isEmpty {
-                emptyMessage("No downloads.")
-            }
+            if matchingDownloads.isEmpty { emptyMessage(query.isEmpty ? "No downloads." : "No results.") }
         }.padding(.top, layout.rowGap)
     }
 
     private var bookmarkContents: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(library.rootOrder, id: \.self) { id in
-                if let folder = library.folders.first(where: { $0.id == id }) {
+                if let folder = library.folders.first(where: { $0.id == id }), matches(folder) {
                     folderRow(folder)
-                } else if let site = settings.favoriteSites.first(where: { $0.id == id }) {
+                } else if let site = settings.favoriteSites.first(where: { $0.id == id }), matches(site) {
                     bookmarkRow(site)
                 }
             }
             dropSlot(before: nil, folder: nil)
-            if settings.favoriteSites.isEmpty && library.folders.isEmpty {
+            if !query.isEmpty && !settings.favoriteSites.contains(where: matches) && !library.folders.contains(where: matches) {
+                emptyMessage("No results.")
+            } else if settings.favoriteSites.isEmpty && library.folders.isEmpty {
                 emptyMessage("Save links here or add the current page with the bookmark button.")
             }
         }
@@ -370,7 +412,7 @@ struct SidebarView: View {
 
     private var openContents: some View {
         VStack(alignment: .leading, spacing: layout.rowGap) {
-            ForEach(windows.windows) { window in
+            ForEach(matchingWindows) { window in
                 SidebarOpenWindowRow(window: window, settings: settings, layout: layout,
                     activate: { dismiss(); windows.activate(window.id) },
                     close: {
@@ -378,8 +420,8 @@ struct SidebarView: View {
                         else { windows.closeFromSidebar(window.id) }
                     })
             }
-            if windows.windows.isEmpty {
-                emptyMessage("No open windows.")
+            if matchingWindows.isEmpty {
+                emptyMessage(query.isEmpty ? "No open windows." : "No results.")
                     .accessibilityIdentifier("sidebar-open-empty")
             }
         }.padding(.top, layout.rowGap)
@@ -387,20 +429,21 @@ struct SidebarView: View {
 
     private var recentContents: some View {
         VStack(alignment: .leading, spacing: layout.rowGap) {
-            ForEach(library.visibleRecentLinks) { link in
+            ForEach(matchingRecentLinks) { link in
                 Button { dismiss(); model.showRecentLink(link) } label: {
                     linkLabel(title: link.title, address: link.address)
                 }.buttonStyle(.plain)
+                .accessibilityIdentifier("sidebar-recent-\(link.id.uuidString)")
                 .contextMenu {
                     Button(L("Add bookmark")) { editor.showBookmark(recent: link) }
                     Button(L("Remove"), role: .destructive) { library.removeRecent(link) }
                 }
             }
-            if library.recentLinks.isEmpty {
-                emptyMessage("No recent links.")
+            if matchingRecentLinks.isEmpty {
+                emptyMessage(query.isEmpty ? "No recent links." : "No results.")
             } else {
                 HStack(spacing: 12) {
-                    if library.hasMoreRecentLinks { Button(L("Show more"), action: library.showMoreRecentLinks) }
+                    if query.isEmpty && library.hasMoreRecentLinks { Button(L("Show more"), action: library.showMoreRecentLinks) }
                     Button(L("Clear history"), action: library.requestHistoryClear)
                 }.font(layout.groupFont).buttonStyle(.plain).foregroundStyle(.secondary).padding(.top, 8)
             }
@@ -420,8 +463,9 @@ struct SidebarView: View {
     @State private var targetedDrop: UUID?
 
     private func folderRow(_ folder: BookmarkFolder) -> some View {
-        let sites = settings.favoriteSites.filter { library.folderID(for: $0) == folder.id }
-        let expanded = library.expandedFolderIDs.contains(folder.id)
+        let folderMatches = !query.isEmpty && LinkLibrary.matches(query, in: folder.name)
+        let sites = settings.favoriteSites.filter { library.folderID(for: $0) == folder.id && (folderMatches || matches($0)) }
+        let expanded = !query.isEmpty || library.expandedFolderIDs.contains(folder.id)
         return VStack(alignment: .leading, spacing: 0) {
             Group {
                 dropSlot(before: folder.id, folder: nil)
@@ -473,6 +517,7 @@ struct SidebarView: View {
             dropSlot(before: site.id, folder: library.folderID(for: site))
             Button { open(site.url) } label: { linkLabel(title: site.name, address: site.address) }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("sidebar-bookmark-\(site.id.uuidString)")
             .contextMenu {
                 Button(L("Edit")) { editor.showBookmark(site: site) }
                 Menu(L("Move to folder")) {
@@ -786,7 +831,7 @@ private struct DownloadSidebarRow: View {
     private var symbol: String {
         switch item.state {
         case .choosing, .downloading: return "arrow.down.circle"
-        case .finishing, .finished: return "doc"
+        case .finishing, .finished: return DownloadItem.fileSymbol(for: item.filename)
         case .cancelled: return "xmark.circle"
         case .failed: return "exclamationmark.triangle"
         }
@@ -797,7 +842,7 @@ private struct DownloadSidebarRow: View {
             Button { manager.reveal(item) } label: {
                 HStack(spacing: layout.iconGap) {
                     Image(systemName: symbol).font(.system(size: layout.iconSize * 0.8))
-                        .foregroundStyle(item.state == .failed ? Color.orange : Color.secondary)
+                        .foregroundStyle(.white)
                         .frame(width: layout.iconSize, height: layout.iconSize)
                     Text(item.filename).font(layout.labelFont).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
@@ -816,7 +861,7 @@ private struct DownloadSidebarRow: View {
                 Group {
                     if let fraction = item.fraction { ProgressView(value: fraction).progressViewStyle(.linear) }
                     else { ProgressView().progressViewStyle(.linear) }
-                }.frame(height: 2).allowsHitTesting(false)
+                }.tint(.white).frame(height: 2).allowsHitTesting(false)
             }
         }
         .help("\(item.filename)\n\(item.status)")
@@ -824,6 +869,7 @@ private struct DownloadSidebarRow: View {
         .contextMenu {
             Text(item.status).disabled(true)
             if item.state == .finished { Button(L("Show in Finder")) { manager.reveal(item) } }
+            Button(L("Copy download link")) { manager.copySourceURL(item) }.disabled(item.sourceURL == nil)
             if item.canCancel { Button(L("Cancel download")) { manager.cancel(item.id) } }
         }
     }
@@ -840,6 +886,8 @@ struct SidebarEditorPresentation: Identifiable {
 
 @MainActor
 final class SidebarEditorState: ObservableObject {
+    @Published var activeSection: SidebarSection?
+    @Published var query = ""
     @Published var downloadsRequest = 0
     @Published private(set) var presentation: SidebarEditorPresentation?
     var isEditing: Bool { presentation != nil }
@@ -1039,6 +1087,8 @@ struct SidebarSettingsSections: View {
             Toggle(L("Enable sidebar"), isOn: Binding(get: { library.isEnabled }, set: library.setEnabled))
             if library.isEnabled {
                 LabeledContent(L("Open sidebar")) { Text("⌃⌥B").foregroundStyle(.secondary) }
+                Toggle(L("Separate by section"), isOn: Binding(get: { library.separatesSections }, set: library.setSeparatesSections))
+                Toggle(L("Show sidebar search"), isOn: Binding(get: { library.showsSidebarSearch }, set: library.setShowsSidebarSearch))
                 Toggle(L("Hide in full screen"), isOn: Binding(get: { library.hidesInFullScreen }, set: library.setHidesInFullScreen))
                 Button(L("Show sidebar"), action: show)
             }
@@ -1051,8 +1101,13 @@ struct SidebarSettingsSections: View {
         if library.isEnabled {
             Section {
                 DisclosureGroup(L("Advanced settings"), isExpanded: $showsAdvanced) {
-                    Toggle(L("Show sidebar indicator"), isOn: Binding(get: { library.showsRevealIndicator }, set: library.setShowsRevealIndicator))
-                    if !library.showsRevealIndicator {
+                    if !library.separatesSections {
+                        Toggle(L("Show sidebar indicator"), isOn: Binding(get: { library.showsRevealIndicator }, set: library.setShowsRevealIndicator))
+                    } else {
+                        Text(L("Each section has a fixed edge tab and remembers its own width. Drag the right edge to resize."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !library.separatesSections && !library.showsRevealIndicator {
                         LabeledContent(L("Opening delay")) {
                             Slider(value: Binding(get: { library.edgeOpenDelay }, set: library.setEdgeOpenDelay), in: 0.1...2, step: 0.1)
                                 .frame(maxWidth: 180)

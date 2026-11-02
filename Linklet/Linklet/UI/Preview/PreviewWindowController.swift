@@ -69,6 +69,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     private static let initialContentSize = PreviewWindowAppearance.initialContentSize
     private unowned let model: AppModel
     private var cancellables = Set<AnyCancellable>()
+    private var geometry: WebsiteWindowGeometry!
     private var hasAppliedInitialSize = false
     private var initialPositionReferenceFrame: NSRect?
 
@@ -91,6 +92,8 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         panel.hidesOnDeactivate = !model.keepsPreviewVisibleWhenInactive
         super.init(window: panel)
         panel.delegate = self
+        geometry = WebsiteWindowGeometry(window: panel, service: model.windowGeometry)
+        model.previewSession.onWindowURLCommitted = { [weak self] url in self?.geometry.committed(url) }
         Publishers.CombineLatest(model.previewSession.$pageTitle, model.previewSession.$currentURL)
             .map { pageTitle, url in
                 let title = pageTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -160,14 +163,12 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         model.makeAppVisibleInDock()
         let animatesAppearance = !window.isVisible
         if animatesAppearance {
-            if let initialURL, let savedFrame = model.savedWindowFrame(for: initialURL) {
-                restore(savedFrame, in: window)
-            } else {
-                placeInitially(window)
-            }
+            window.setContentSize(Self.initialContentSize)
+            if !geometry.begin(at: initialURL) { placeInitially(window) }
             window.alphaValue = 0
         }
 
+        if !animatesAppearance { _ = geometry.begin(at: initialURL) }
         load()
         window.contentView?.layoutSubtreeIfNeeded()
         showWindow(nil)
@@ -209,24 +210,16 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         window.setFrameOrigin(origin)
     }
 
-    private func restore(_ frame: NSRect, in window: NSWindow) {
-        let screen = NSScreen.screens.first { $0.visibleFrame.intersects(frame) } ?? NSScreen.main
-        guard let screen else {
-            window.center()
-            return
-        }
-        window.setFrame(WindowGeometryService.clamped(frame, to: screen.visibleFrame), display: false)
-    }
-
     func windowDidMove(_ notification: Notification) {
-        if let window { model.saveWindowFrame(window.frame) }
+        geometry.save()
     }
 
     func windowDidResize(_ notification: Notification) {
-        if let window { model.saveWindowFrame(window.frame) }
+        geometry.save()
     }
 
     func windowWillClose(_ notification: Notification) {
+        geometry.save()
         model.previewDidEnd()
     }
 }

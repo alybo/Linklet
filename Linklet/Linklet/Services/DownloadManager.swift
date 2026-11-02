@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import CoreServices
 import WebKit
+import UniformTypeIdentifiers
 
 @MainActor
 final class DownloadItem: ObservableObject, Identifiable {
@@ -12,7 +13,29 @@ final class DownloadItem: ObservableObject, Identifiable {
     @Published var received: Int64 = 0
     @Published var expected: Int64 = 0
     @Published var error: String?
+    var sourceURL: URL?
     var destination: URL?
+
+    static func fileSymbol(for filename: String) -> String {
+        let ext = (filename as NSString).pathExtension.lowercased()
+        switch ext {
+        case "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz": return "doc.zipper"
+        case "dmg", "iso": return "externaldrive"
+        case "app", "pkg": return "shippingbox"
+        case "pdf": return "doc.richtext"
+        case "xls", "xlsx", "csv", "tsv", "numbers", "ods": return "tablecells"
+        case "ppt", "pptx", "key", "odp": return "rectangle.on.rectangle"
+        case "swift", "js", "ts", "tsx", "jsx", "py", "html", "css", "json", "xml", "sh", "c", "cpp", "h", "rs": return "chevron.left.forwardslash.chevron.right"
+        default: break
+        }
+        guard let type = UTType(filenameExtension: ext) else { return "doc" }
+        if type.conforms(to: .image) { return "photo" }
+        if type.conforms(to: .movie) || type.conforms(to: .video) { return "film" }
+        if type.conforms(to: .audio) { return "music.note" }
+        if type.conforms(to: .text) || type.conforms(to: .content) && ["doc", "docx", "odt", "rtf", "pages", "epub"].contains(ext) { return "doc.text" }
+        if type.conforms(to: .font) { return "textformat" }
+        return "doc"
+    }
     var isActive: Bool { [.choosing, .downloading, .finishing].contains(state) }
     var canCancel: Bool { [.choosing, .downloading].contains(state) }
     var fraction: Double? { expected > 0 ? min(1, Double(received) / Double(expected)) : nil }
@@ -76,6 +99,7 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
         guard jobs[ObjectIdentifier(download)] == nil else { return }
         let job = Job(download, release: session.retainWebsiteDataForDownload())
         jobs[ObjectIdentifier(download)] = job
+        job.item.sourceURL = download.originalRequest?.url.flatMap { URLPolicy.canPreview($0) ? $0 : nil }
         items.append(job.item)
         download.delegate = self
         updateActivity()
@@ -110,10 +134,19 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    func copySourceURL(_ item: DownloadItem) {
+        guard let url = item.sourceURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+    }
+
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
         guard let job = jobs[ObjectIdentifier(download)], job.item.state == .choosing else {
             completionHandler(nil); return
+        }
+        if job.item.sourceURL == nil {
+            job.item.sourceURL = response.url.flatMap { URLPolicy.canPreview($0) ? $0 : nil }
         }
         job.item.filename = Self.safeFilename(suggestedFilename)
         job.destinationHandler = completionHandler

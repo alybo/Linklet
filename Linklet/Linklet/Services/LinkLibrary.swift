@@ -60,6 +60,9 @@ final class LinkLibrary: ObservableObject {
     @Published private(set) var savesHistory: Bool
     @Published private(set) var showsRevealIndicator: Bool
     @Published private(set) var hidesInFullScreen: Bool
+    @Published private(set) var separatesSections: Bool
+    @Published private(set) var showsSidebarSearch: Bool
+    @Published private(set) var sectionWidths: [String: Double]
     @Published private(set) var sidebarWidth: Double
     @Published private(set) var edgeOpenDelay: TimeInterval
     @Published private(set) var sidebarAppearance: SidebarAppearance
@@ -95,6 +98,10 @@ final class LinkLibrary: ObservableObject {
         expandedSections = Set(SidebarSection.allCases.filter { defaults.object(forKey: "sidebarExpanded.\($0.rawValue)") as? Bool ?? true })
         let savedWidth = defaults.object(forKey: "sidebarWidth") as? Double ?? 300
         sidebarWidth = savedWidth.isFinite && savedWidth > 0 ? savedWidth : 300
+        separatesSections = defaults.bool(forKey: "sidebarSeparatesSections")
+        showsSidebarSearch = defaults.bool(forKey: "sidebarShowsSearch")
+        sectionWidths = (defaults.dictionary(forKey: "sidebarSectionWidths") as? [String: Double] ?? [:])
+            .filter { $0.value.isFinite && $0.value > 0 }
         isEnabled = defaults.bool(forKey: "sidebarEnabled")
         sidebarAppearance = defaults.string(forKey: "sidebarAppearance").flatMap(SidebarAppearance.init(rawValue:)) ?? .black
         showsRevealIndicator = defaults.object(forKey: "sidebarShowsRevealIndicator") as? Bool ?? false
@@ -144,6 +151,33 @@ final class LinkLibrary: ObservableObject {
 
     static func clampedEdgeDelay(_ delay: TimeInterval) -> TimeInterval {
         delay.isFinite ? min(2, max(0.1, delay)) : 0.4
+    }
+
+    func setSeparatesSections(_ enabled: Bool) {
+        separatesSections = enabled
+        defaults.set(enabled, forKey: "sidebarSeparatesSections")
+    }
+
+    func setShowsSidebarSearch(_ enabled: Bool) {
+        showsSidebarSearch = enabled
+        defaults.set(enabled, forKey: "sidebarShowsSearch")
+    }
+
+    func width(for section: SidebarSection?) -> Double {
+        guard let section else { return sidebarWidth }
+        return sectionWidths[section.rawValue] ?? 260
+    }
+
+    func setWidth(_ width: Double, for section: SidebarSection?) {
+        guard let section else { setSidebarWidth(width); return }
+        guard width.isFinite, width > 0 else { return }
+        sectionWidths[section.rawValue] = width
+        defaults.set(sectionWidths, forKey: "sidebarSectionWidths")
+    }
+
+    static func matches(_ query: String, in values: String...) -> Bool {
+        let terms = query.split(whereSeparator: { $0.isWhitespace })
+        return terms.allSatisfy { term in values.contains { $0.localizedStandardContains(String(term)) } }
     }
 
     func setSidebarWidth(_ width: Double) {

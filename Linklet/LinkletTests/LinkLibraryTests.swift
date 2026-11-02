@@ -11,6 +11,174 @@ import CoreLocation
 
 @MainActor
 final class LinkLibraryTests: XCTestCase {
+    func testSectionPanelsAndSearchAreOptInWithIndependentPersistedWidths() throws {
+        let suite = "Sidebar18Preferences.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let library = LinkLibrary(defaults: defaults)
+        XCTAssertFalse(library.separatesSections)
+        XCTAssertFalse(library.showsSidebarSearch)
+        library.setSidebarWidth(310)
+        library.setWidth(190, for: .downloads)
+        library.setWidth(280, for: .bookmarks)
+        library.setWidth(.nan, for: .recent)
+        library.setSeparatesSections(true)
+        library.setShowsSidebarSearch(true)
+        let restored = LinkLibrary(defaults: defaults)
+        XCTAssertTrue(restored.separatesSections)
+        XCTAssertTrue(restored.showsSidebarSearch)
+        XCTAssertEqual(restored.width(for: nil), 310)
+        XCTAssertEqual(restored.width(for: .downloads), 190)
+        XCTAssertEqual(restored.width(for: .bookmarks), 280)
+        XCTAssertEqual(restored.width(for: .recent), 260)
+        restored.setSeparatesSections(false)
+        restored.setShowsSidebarSearch(false)
+        XCTAssertEqual(restored.sidebarWidth, 310)
+        XCTAssertFalse(LinkLibrary(defaults: defaults).separatesSections)
+        XCTAssertFalse(LinkLibrary(defaults: defaults).showsSidebarSearch)
+    }
+
+    func testSeparatedPanelsOpenAtFixedTabsAndSwitchWithTheirOwnWidths() throws {
+        let suite = "Sidebar18Anchors.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        let library = model.linkLibrary
+        library.setEnabled(true)
+        library.setSeparatesSections(true)
+        library.setWidth(190, for: .downloads)
+        library.setWidth(270, for: .bookmarks)
+        let controller = SidebarWindowController(model: model, reduceMotion: { true })
+        defer { controller.hide(animated: false); library.setEnabled(false) }
+        let screen = try XCTUnwrap(NSScreen.main)
+        let edge = NSPoint(x: screen.frame.minX, y: screen.visibleFrame.midY)
+        let now = Date().addingTimeInterval(10)
+        controller.pollMouse(at: edge, now: now)
+        controller.pollMouse(at: edge, now: now.addingTimeInterval(0.3))
+        XCTAssertEqual(controller.sectionIndicators.count, 4)
+        XCTAssertFalse(controller.isPresented)
+        var frames: [SidebarSection: NSRect] = [:]
+        for (offset, section) in [SidebarSection.downloads, .bookmarks].enumerated() {
+            let tab = try XCTUnwrap(controller.sectionIndicators[section])
+            frames[section] = tab.frame
+            let point = NSPoint(x: tab.frame.midX, y: tab.frame.midY)
+            let time = now.addingTimeInterval(Double(offset + 1))
+            controller.pollMouse(at: point, now: time)
+            controller.pollMouse(at: point, now: time.addingTimeInterval(0.2))
+            XCTAssertTrue(controller.isPresented)
+            XCTAssertEqual(controller.editor.activeSection, section)
+            let frame = try XCTUnwrap(controller.window?.frame)
+            XCTAssertEqual(frame.width, min(library.width(for: section), screen.frame.width / 4), accuracy: 1)
+            XCTAssertTrue(screen.visibleFrame.insetBy(dx: -1, dy: -1).contains(frame))
+            XCTAssertTrue(frame.contains(point), "The selected tab belongs to its panel")
+            XCTAssertEqual(controller.sectionIndicators.count, 4)
+        }
+        for (section, frame) in frames { XCTAssertEqual(controller.sectionIndicators[section]?.frame, frame) }
+        controller.editor.query = "Old section query"
+        controller.showDownloads()
+        XCTAssertEqual(controller.editor.activeSection, .downloads)
+        XCTAssertTrue(controller.editor.query.isEmpty)
+        controller.window?.contentView?.layoutSubtreeIfNeeded()
+        if let view = controller.window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-download-panel.png"))
+        }
+    }
+
+    func testSectionPanelFramesFitSmallAndOffsetScreensAroundTheirTabs() {
+        for visible in [NSRect(x: -1440, y: -875, width: 1440, height: 875),
+                        NSRect(x: 0, y: 0, width: 800, height: 400)] {
+            var previousY = CGFloat.infinity
+            for index in 0..<4 {
+                let tab = SidebarWindowController.sectionIndicatorFrame(index: index, visibleFrame: visible)
+                let panel = SidebarWindowController.sectionPanelFrame(index: index, screenFrame: visible,
+                                                                      visibleFrame: visible, preferredWidth: 185)
+                XCTAssertTrue(visible.contains(panel))
+                XCTAssertTrue(panel.contains(NSPoint(x: tab.midX, y: tab.midY)))
+                XCTAssertLessThan(tab.midY, previousY)
+                previousY = tab.midY
+                XCTAssertEqual(panel.width, 185)
+            }
+        }
+    }
+
+    func testSidebarSearchMatchesEveryWordAcrossNamesAndAddresses() {
+        XCTAssertTrue(LinkLibrary.matches("  ", in: "Anything"))
+        XCTAssertTrue(LinkLibrary.matches("АвИтО авто", in: "Авито", "https://avito.ru/авто"))
+        XCTAssertTrue(LinkLibrary.matches("cafe", in: "Café"))
+        XCTAssertFalse(LinkLibrary.matches("авито видео", in: "Авито", "https://avito.ru/auto"))
+    }
+
+    func testDownloadFileSymbolsCoverCommonTypesWithGenericFallback() throws {
+        for (filename, symbol) in [("Picture.JPG", "photo"), ("Movie.mp4", "film"), ("Song.mp3", "music.note"),
+                                   ("Document.pdf", "doc.richtext"), ("Notes.txt", "doc.text"), ("Book.docx", "doc.text"),
+                                   ("Sheet.xlsx", "tablecells"), ("Slides.pptx", "rectangle.on.rectangle"),
+                                   ("Archive.tar.gz", "doc.zipper"), ("Code.swift", "chevron.left.forwardslash.chevron.right"),
+                                   ("Unknown.linkletRareType", "doc"), ("No extension", "doc")] {
+            XCTAssertEqual(DownloadItem.fileSymbol(for: filename), symbol, filename)
+            XCTAssertNotNil(NSImage(systemSymbolName: symbol, accessibilityDescription: nil), symbol)
+        }
+    }
+
+    func testOptionalSidebarSearchFiltersCollapsedBookmarksAndAllHistoryThenRemovesItsField() async throws {
+        let suite = "Sidebar18SearchUI.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in Data() })
+        let model = AppModel(defaults: defaults, searchSettings: settings, discoverTargets: { [] })
+        let library = model.linkLibrary
+        library.setSeparatesSections(true)
+        let needle = try settings.addFavoriteSite(name: "Needle Documentation", address: "https://example.com/reference")
+        let other = try settings.addFavoriteSite(name: "Other bookmark", address: "https://example.org")
+        let folder = try XCTUnwrap(library.addFolder(name: "Work"))
+        library.moveBookmark(needle, to: folder.id)
+        library.toggleFolder(folder.id)
+        for index in 1...25 {
+            library.recordVisit(URL(string: "https://example.com/article/\(index)")!,
+                                title: index == 1 ? "Hidden search result" : "Article \(index)")
+        }
+        let hiddenRecent = try XCTUnwrap(library.recentLinks.first { $0.title == "Hidden search result" })
+        let editor = SidebarEditorState()
+        editor.activeSection = .bookmarks
+        editor.query = "needle"
+        let view = SidebarView(model: model, dismiss: {}, editor: editor)
+        XCTAssertTrue(view.matches(other), "Disabled search must ignore a previous query")
+        library.setShowsSidebarSearch(true)
+        XCTAssertTrue(view.matches(needle))
+        XCTAssertTrue(view.matches(folder), "A match inside a closed folder reveals that folder")
+        XCTAssertFalse(view.matches(other))
+        XCTAssertFalse(library.expandedFolderIDs.contains(folder.id))
+        editor.activeSection = .recent
+        editor.query = "Hidden search result"
+        XCTAssertEqual(view.matchingRecentLinks, [hiddenRecent], "Search includes history beyond its initial ten rows")
+        XCTAssertEqual(library.recentDisplayLimit, 10)
+        editor.activeSection = .bookmarks
+        editor.query = "needle"
+        let reveal = SidebarRevealState()
+        reveal.progress = 1
+        reveal.shoulderProgress = 1
+        let hosting = NSHostingView(rootView: SidebarPanelSurface(model: model, library: library, reveal: reveal, editor: editor, dismiss: {}))
+        hosting.sizingOptions = []
+        hosting.frame = NSRect(x: 0, y: 0, width: 260, height: 460)
+        func textFields(in view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? [] + view.subviews.flatMap { textFields(in: $0) }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertTrue(textFields(in: hosting).contains { $0.stringValue == "needle" })
+        if let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-search-panel.png"))
+        }
+        library.setShowsSidebarSearch(false)
+        try await Task.sleep(for: .milliseconds(100))
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertFalse(textFields(in: hosting).contains { $0.stringValue == "needle" })
+        XCTAssertTrue(view.matches(other))
+        XCTAssertFalse(library.expandedFolderIDs.contains(folder.id))
+        XCTAssertEqual(library.recentLinks.count, 25)
+    }
+
     func testHistoryIsOptInBoundedAndIndependentOfSidebar() throws {
         let suite = "LinkLibraryTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -1456,6 +1624,48 @@ final class LinkLibraryTests: XCTestCase {
 
 @MainActor
 final class WebPopupTests: XCTestCase {
+    func testSiteCreatedWindowsIgnoreSmallFeaturesAndRestoreTheirCommittedDomainGeometry() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "Popup18Geometry.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let original = URL(string: "http://127.0.0.1:\(port)/site")!
+        model.showPreview(url: original)
+        try await waitUntil { model.previewSession.pageTitle == "Original site" }
+        let parent = try XCTUnwrap(model.previewSession.webView)
+        _ = try await parent.evaluateJavaScript("window.child=window.open('about:blank','geometry','width=200,height=200');true")
+        try await waitUntil { model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).count == 1 }
+        let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        let window = try XCTUnwrap(popup.window)
+        XCTAssertEqual(window.frame.width, PreviewWindowAppearance.initialContentSize.width, accuracy: 1)
+        let screen = try XCTUnwrap(window.screen)
+        let destination = URL(string: "http://localhost:\(port)/destination")!
+        let saved = WindowGeometryService.clamped(NSRect(x: screen.visibleFrame.minX + 80, y: screen.visibleFrame.minY + 60,
+                                                        width: 740, height: 510), to: screen.visibleFrame)
+        model.windowGeometry.save(saved, for: destination)
+        _ = try await parent.evaluateJavaScript("window.child.location='http://localhost:\(port)/destination';true")
+        try await waitUntil { popup.session.currentURL?.host == "localhost" && !popup.session.isLoading }
+        XCTAssertEqual(window.frame.origin.x, saved.origin.x, accuracy: 1)
+        XCTAssertEqual(window.frame.origin.y, saved.origin.y, accuracy: 1)
+        XCTAssertEqual(window.frame.width, saved.width, accuracy: 1)
+        XCTAssertEqual(window.frame.height, saved.height, accuracy: 1)
+        window.setFrameOrigin(NSPoint(x: saved.minX + 20, y: saved.minY + 20))
+        popup.windowDidMove(Notification(name: NSWindow.didMoveNotification))
+        XCTAssertEqual(model.savedWindowFrame(for: destination), window.frame)
+        XCTAssertEqual(model.previewSession.originalURL, original)
+        window.performClose(nil)
+        try await waitUntil { model.windowRegistry.closedWindows.count == 1 }
+        XCTAssertEqual(model.windowRegistry.closedWindows.last?.url, destination)
+        model.restoreClosedWindow()
+        try await waitUntil { model.windowRegistry.windows.count == 2 && model.windowRegistry.windows.contains { $0.url == destination && !$0.isLoading } }
+        XCTAssertTrue(model.windowRegistry.closedWindows.isEmpty)
+    }
+
     func testSidebarFavoritePlusOpensBookmarkFormWithoutTogglingSection() async throws {
         let pointer = CGEvent(source: nil)?.location
         defer { if let pointer { CGWarpMouseCursorPosition(pointer) } }
@@ -2635,6 +2845,7 @@ final class WebPopupTests: XCTestCase {
         _ = try await child.webView.evaluateJavaScript("document.getElementById('attachment').click();true")
         try await waitUntil { manager.items.count == 6 && manager.items.last?.state == .finished }
         XCTAssertTrue(child.session.windowRegistry.downloads === manager)
+        XCTAssertEqual(manager.items.last?.sourceURL?.path, "/attachment")
         page.session.windowRegistry.closeAll()
 
         let suite = "DownloadSidebar.\(UUID())"

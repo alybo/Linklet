@@ -319,6 +319,13 @@ final class AppModel: ObservableObject {
         showPreview(url: url, restoring: link.position)
     }
 
+    func restoreClosedWindow() {
+        guard let closed = windowRegistry.takeLastClosedWindow() else { return }
+        closeWelcome()
+        if !siteData.hasChosenMode { siteData.markModeChosen() }
+        showPreviewInNewWindow(url: closed.url, restoring: closed.position)
+    }
+
     func previewDidEnd() {
         previewSession.endSession()
         if siteData.isEnabled { Task { await siteData.refresh() } }

@@ -11,6 +11,7 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
     let webView: WKWebView
     let coordinator: WebPreview.Coordinator
     private var observations = Set<AnyCancellable>()
+    private var geometry: WebsiteWindowGeometry!
     let openerID: UUID
 
     init(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures, model: AppModel? = nil) {
@@ -30,17 +31,15 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         session.history = parent.history
         webView = WKWebView(frame: .zero, configuration: configuration)
         coordinator = WebPreview.Coordinator(session: session)
-        let width = min(max(features.width?.doubleValue ?? PreviewWindowAppearance.initialContentSize.width,
-                            PreviewWindowAppearance.minimumSize.width), 1000)
-        let height = min(max(features.height?.doubleValue ?? PreviewWindowAppearance.initialContentSize.height,
-                             PreviewWindowAppearance.minimumSize.height), 900)
-        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+        let panel = NSWindow(contentRect: NSRect(origin: .zero, size: PreviewWindowAppearance.initialContentSize),
                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         PreviewWindowAppearance.apply(to: panel)
         panel.level = parent.webView?.window?.level ?? .normal
         panel.hidesOnDeactivate = parent.webView?.window?.hidesOnDeactivate ?? false
         super.init(window: panel)
         panel.delegate = self
+        geometry = WebsiteWindowGeometry(window: panel, service: model?.windowGeometry ?? WindowGeometryService())
+        session.onWindowURLCommitted = { [weak self] url in self?.geometry.committed(url) }
         coordinator.onWebViewClose = { [weak self] in self?.close() }
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
@@ -63,6 +62,9 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
             .map { title, url in title.isEmpty ? (url?.host ?? L("Website window")) : title }
             .removeDuplicates()
             .sink { [weak panel] title in panel?.title = title }.store(in: &observations)
+        // Assigning the hosting controller can shrink an initially empty WebView.
+        // AppKit owns the size, just as in PreviewWindowController.prepare().
+        panel.setContentSize(PreviewWindowAppearance.initialContentSize)
         // An AppKit child window moves and orders with its parent. OAuth needs
         // only WebKit's opener/configuration, not a native window attachment.
         if let frame = parent.webView?.window?.frame,
@@ -84,7 +86,11 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         if let window { session.windowRegistry.register(window, session: session, parentID: openerID) }
     }
 
+    func windowDidMove(_ notification: Notification) { geometry.save() }
+    func windowDidResize(_ notification: Notification) { geometry.save() }
+
     func windowWillClose(_ notification: Notification) {
+        geometry.save()
         coordinator.stopCursorHandling()
         session.endSession()
     }

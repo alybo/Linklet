@@ -16,6 +16,11 @@ struct BrowserWindowInfo: Identifiable, Equatable {
 /// never reloads a URL to activate a page and never persists browsing information.
 @MainActor
 final class BrowserWindowRegistry: ObservableObject {
+    struct ClosedWindow: Equatable {
+        let url: URL
+        let position: PagePosition?
+    }
+    @Published private(set) var closedWindows: [ClosedWindow] = []
     @Published private(set) var windows: [BrowserWindowInfo] = []
     private(set) var lastActiveWindowID: UUID?
     let downloads: DownloadManager
@@ -35,6 +40,7 @@ final class BrowserWindowRegistry: ObservableObject {
         }
     }
 
+    private var remembersClosedWindows = true
     private var entries: [UUID: Entry] = [:]
     private var order: [UUID] = []
     private var refreshIsScheduled = false
@@ -81,6 +87,11 @@ final class BrowserWindowRegistry: ObservableObject {
     }
 
     func unregister(_ id: UUID) {
+        if remembersClosedWindows, let info = windows.first(where: { $0.id == id }),
+           let url = info.url, URLPolicy.canPreview(url) {
+            closedWindows.append(ClosedWindow(url: url, position: entries[id]?.session?.closedWindowPosition))
+            if closedWindows.count > 20 { closedWindows.removeFirst(closedWindows.count - 20) }
+        }
         if lastActiveWindowID == id { lastActiveWindowID = nil }
         entries.removeValue(forKey: id)
         order.removeAll { $0 == id }
@@ -111,7 +122,13 @@ final class BrowserWindowRegistry: ObservableObject {
         close(id)
     }
 
+    func takeLastClosedWindow() -> ClosedWindow? { closedWindows.popLast() }
+
     func closeAll() {
+        // Closing for termination or deleting private data must not retain a reopen stack.
+        closedWindows.removeAll()
+        remembersClosedWindows = false
+        defer { remembersClosedWindows = true }
         let windows = entries.values.compactMap(\.window)
         // Used before changing/deleting website data as well as by Close All.
         // Preserve the previous unconditional close semantics for that operation.

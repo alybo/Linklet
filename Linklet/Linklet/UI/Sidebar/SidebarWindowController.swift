@@ -40,6 +40,10 @@ private final class SidebarPanel: NSPanel {
 @MainActor
 final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     private(set) var indicatorWindow: NSPanel?
+    private(set) var sectionIndicators: [SidebarSection: NSPanel] = [:]
+    private var modeObservation: AnyCancellable?
+    private var hoveredSection: SidebarSection?
+    private var sectionEnteredAt: Date?
     let editor = SidebarEditorState()
     let reveal = SidebarRevealState()
     private var editorObservation: AnyCancellable?
@@ -130,6 +134,13 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
             self.isPresented = true
             self.window?.makeKeyAndOrderFront(nil)
         }
+        modeObservation = library.$separatesSections.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.hide(animated: false)
+                self?.editor.activeSection = nil
+                self?.editor.query = ""
+            }
+        }
         hotKey.action = { [weak self] in self?.toggle() }
         enabledObservation = library.$isEnabled.sink { [weak self] enabled in
             self?.setMonitoring(enabled)
@@ -165,7 +176,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         guard !isBlockedByFullScreen else { return }
         editor.cancel()
         if !library.expandedSections.contains(.downloads) { library.toggleSection(.downloads) }
-        if let screen = screenAtMouse() ?? NSScreen.main { present(on: screen, manual: true) }
+        if let screen = screenAtMouse() ?? NSScreen.main { present(on: screen, manual: true, section: .downloads) }
         editor.downloadsRequest += 1
     }
 
@@ -178,8 +189,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         editor.cancel()
         library.cancelHistoryClear()
         window?.ignoresMouseEvents = true
-        indicatorWindow?.orderOut(nil)
-        indicatorWindow = nil
+        clearIndicators()
         isResizing = false
         waitsForPointerEntry = false
         edgeEnteredAt = nil
@@ -218,17 +228,23 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
             point.y >= visibleFrame.minY && point.y <= visibleFrame.maxY
     }
 
+    private var hasSearchFocus: Bool {
+        library.showsSidebarSearch && window?.isKeyWindow == true
+            && (window?.firstResponder as? NSTextView)?.isFieldEditor == true
+    }
+
     private func pollMouse() { pollMouse(at: NSEvent.mouseLocation, now: Date()) }
 
     func pollMouse(at point: NSPoint, now: Date) {
         if isBlockedByFullScreen { refreshFullScreenAvailability(); return }
         guard let window, now >= suppressedUntil else { return }
+        if library.separatesSections { pollSeparatedPanels(at: point, now: now); return }
         if isPresented {
             let containsPointer = window.frame.insetBy(dx: -8, dy: -8).contains(point)
             if containsPointer { waitsForPointerEntry = false }
             // Menu and shortcut actions open the panel away from the pointer.
             // Start pointer-exit dismissal only after the user reaches it.
-            if waitsForPointerEntry || isResizing || editor.isEditing { leftPanelAt = nil; return }
+            if waitsForPointerEntry || isResizing || editor.isEditing || hasSearchFocus { leftPanelAt = nil; return }
             let holdsOpeningEdge = !library.showsRevealIndicator && window.screen.map {
                 Self.isAtLeftEdge(point, screenFrame: $0.frame, visibleFrame: $0.visibleFrame)
             } == true
@@ -271,9 +287,9 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    static func clampedWidth(_ preferred: CGFloat, screenFrame: NSRect, visibleFrame: NSRect) -> CGFloat {
+    static func clampedWidth(_ preferred: CGFloat, screenFrame: NSRect, visibleFrame: NSRect, separated: Bool = false) -> CGFloat {
         let maximum = max(1, min(screenFrame.width / 4, visibleFrame.width))
-        return min(maximum, max(min(200, maximum), preferred.isFinite ? preferred : 300))
+        return min(maximum, max(min(separated ? 180 : 200, maximum), preferred.isFinite ? preferred : 300))
     }
 
     func resize(to preferred: CGFloat) {
@@ -283,7 +299,8 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         reveal.shoulderProgress = 1
         var frame = window.frame
         frame.origin.x = screen.frame.minX
-        frame.size.width = Self.clampedWidth(preferred, screenFrame: screen.frame, visibleFrame: screen.visibleFrame)
+        frame.size.width = Self.clampedWidth(preferred, screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
+                                            separated: editor.activeSection != nil)
         window.setFrame(frame, display: true)
         presentedFrame = frame
     }
@@ -291,7 +308,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
     private func finishResizing() {
         isResizing = false
         leftPanelAt = nil
-        if let width = window?.frame.width { library.setSidebarWidth(width) }
+        if let width = window?.frame.width { library.setWidth(width, for: editor.activeSection) }
     }
 
     static func panelFrame(screenFrame: NSRect, visibleFrame: NSRect, preferredWidth: CGFloat = 300) -> NSRect {
@@ -327,6 +344,97 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         indicator.setFrame(frame, display: true)
     }
 
+    private func clearIndicators() {
+        indicatorWindow?.orderOut(nil)
+        indicatorWindow = nil
+        sectionIndicators.values.forEach { $0.orderOut(nil) }
+        sectionIndicators.removeAll()
+        hoveredSection = nil
+        sectionEnteredAt = nil
+    }
+
+    /// Fixed quarter-screen anchors build muscle memory; the pane grows around its own tab.
+    static func sectionIndicatorFrame(index: Int, visibleFrame: NSRect) -> NSRect {
+        let slot = visibleFrame.height / 4
+        let height = min(70, slot - 4)
+        let center = visibleFrame.maxY - slot * (CGFloat(index) + 0.5)
+        return NSRect(x: visibleFrame.minX, y: center - height / 2, width: 30, height: max(1, height))
+    }
+
+    static func sectionPanelFrame(index: Int, screenFrame: NSRect, visibleFrame: NSRect, preferredWidth: CGFloat) -> NSRect {
+        let anchor = sectionIndicatorFrame(index: index, visibleFrame: visibleFrame)
+        let height = min(460, max(280, visibleFrame.height * 0.5), visibleFrame.height)
+        let y = min(max(anchor.midY - height / 2, visibleFrame.minY), visibleFrame.maxY - height)
+        return NSRect(x: screenFrame.minX, y: y,
+                      width: clampedWidth(preferredWidth, screenFrame: screenFrame, visibleFrame: visibleFrame, separated: true),
+                      height: height)
+    }
+
+    private func showSectionIndicators(on screen: NSScreen) {
+        for (index, section) in library.sectionOrder.enumerated() {
+            var frame = Self.sectionIndicatorFrame(index: index, visibleFrame: screen.visibleFrame)
+            frame.origin.x = screen.frame.minX
+            let indicator: NSPanel
+            if let existing = sectionIndicators[section] { indicator = existing }
+            else {
+                indicator = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+                indicator.backgroundColor = .clear
+                indicator.isOpaque = false
+                indicator.hasShadow = false
+                indicator.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+                indicator.hidesOnDeactivate = false
+                indicator.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                let view = SidebarRevealView(frame: NSRect(origin: .zero, size: frame.size))
+                view.section = section
+                view.toolTip = section.title
+                view.setAccessibilityLabel(section.title)
+                view.onPress = { [weak self] in self?.present(on: screen, manual: true, section: section) }
+                indicator.contentView = view
+                sectionIndicators[section] = indicator
+            }
+            (indicator.contentView as? SidebarRevealView)?.isSelected = isPresented && editor.activeSection == section
+            indicator.setFrame(frame, display: true)
+            indicator.orderFrontRegardless()
+        }
+    }
+
+    private func pollSeparatedPanels(at point: NSPoint, now: Date) {
+        guard let window, let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) else {
+            if isPresented { hide() } else { clearIndicators() }
+            return
+        }
+        let nearEdge = point.x >= screen.frame.minX && point.x <= screen.frame.minX + 36
+            && point.y >= screen.visibleFrame.minY && point.y <= screen.visibleFrame.maxY
+        let screenID = ObjectIdentifier(screen)
+        if nearEdge {
+            if edgeScreenID != screenID { edgeEnteredAt = now; edgeScreenID = screenID }
+            if let edgeEnteredAt, now.timeIntervalSince(edgeEnteredAt) >= 0.25 { showSectionIndicators(on: screen) }
+        }
+        if let hit = library.sectionOrder.first(where: { sectionIndicators[$0]?.frame.contains(point) == true }) {
+            leftPanelAt = nil
+            if hoveredSection != hit { hoveredSection = hit; sectionEnteredAt = now }
+            if !isResizing, !editor.isEditing, !isPresented || editor.activeSection != hit,
+               let entered = sectionEnteredAt, now.timeIntervalSince(entered) >= 0.12 {
+                present(on: screen, manual: false, section: hit)
+            }
+            return
+        }
+        hoveredSection = nil
+        sectionEnteredAt = nil
+        if isPresented {
+            let containsPointer = window.frame.insetBy(dx: -8, dy: -8).contains(point)
+            if containsPointer { waitsForPointerEntry = false }
+            if containsPointer || nearEdge || waitsForPointerEntry || isResizing || editor.isEditing || hasSearchFocus || window.attachedSheet != nil {
+                leftPanelAt = nil
+            } else if let leftPanelAt, now.timeIntervalSince(leftPanelAt) >= 0.5 { hide() }
+            else if leftPanelAt == nil { leftPanelAt = now }
+        } else if !nearEdge {
+            clearIndicators()
+            edgeScreenID = nil
+            edgeEnteredAt = nil
+        }
+    }
+
     func closePreview(_ id: UUID) {
         let wasPresented = isPresented
         isClosingPreview = wasPresented
@@ -349,15 +457,24 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         hide()
     }
 
-    private func present(on screen: NSScreen, manual: Bool) {
+    private func present(on screen: NSScreen, manual: Bool, section: SidebarSection? = nil) {
         guard let window, !isBlockedByFullScreen else { return }
+        let selected = library.separatesSections ? (section ?? editor.activeSection ?? library.sectionOrder.first) : nil
+        if editor.activeSection != selected { editor.query = ""; editor.cancel() }
+        editor.activeSection = selected
         waitsForPointerEntry = manual
         library.resetRecentDisplayLimit()
         library.cancelHistoryClear()
         leftPanelAt = nil
-        indicatorWindow?.orderOut(nil)
-        indicatorWindow = nil
-        let frame = Self.panelFrame(screenFrame: screen.frame, visibleFrame: screen.visibleFrame, preferredWidth: library.sidebarWidth)
+        if selected != nil { showSectionIndicators(on: screen) }
+        else { clearIndicators() }
+        let frame: NSRect
+        if let selected, let index = library.sectionOrder.firstIndex(of: selected) {
+            frame = Self.sectionPanelFrame(index: index, screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
+                                           preferredWidth: library.width(for: selected))
+        } else {
+            frame = Self.panelFrame(screenFrame: screen.frame, visibleFrame: screen.visibleFrame, preferredWidth: library.sidebarWidth)
+        }
         let continuing = window.isVisible && presentedFrame == frame
         stopAnimation()
         presentedFrame = frame
@@ -372,6 +489,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         // Hover never activates Linklet or closes a private preview in Hide mode.
         if manual { window.makeKeyAndOrderFront(nil) }
         else { window.orderFrontRegardless() }
+        if selected != nil { showSectionIndicators(on: screen) }
         if reduceMotion() { reveal.progress = 1; reveal.shoulderProgress = 1 }
         else { animate(to: 1, opening: true) }
     }
@@ -447,6 +565,8 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
 
 private final class SidebarRevealView: NSView {
     var onPress: (() -> Void)?
+    var section: SidebarSection?
+    var isSelected = false { didSet { needsDisplay = true } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -458,6 +578,22 @@ private final class SidebarRevealView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let section {
+            let path = NSBezierPath(cgPath: SidebarContour().path(in: bounds).cgPath)
+            NSColor.black.setFill()
+            path.fill()
+            if isSelected {
+                NSColor.white.withAlphaComponent(0.12).setFill()
+                path.fill()
+            }
+            let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+            if let icon = NSImage(systemSymbolName: section.symbol, accessibilityDescription: section.title)?.withSymbolConfiguration(config) {
+                let rect = NSRect(x: 7, y: bounds.midY - 8, width: 16, height: 16)
+                icon.draw(in: rect)
+            }
+            return
+        }
         guard let image = NSImage(named: "SidebarReveal") else { return }
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()

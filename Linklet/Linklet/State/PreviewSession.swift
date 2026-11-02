@@ -63,6 +63,8 @@ final class PreviewSession: ObservableObject {
     var onContinueInBrowser: (() -> Void)?
     var onPageFinished: ((URL, String) -> Void)?
     var onSiteLoaded: ((URL) -> Void)?
+    var onWindowURLCommitted: ((URL) -> Void)?
+    var closedWindowPosition: PagePosition? { restoration?.position ?? lastPosition }
     var makePopup: ((WKWebViewConfiguration, PreviewSession, WKWindowFeatures) -> WebPopupWindowController)?
     private var welcomeIsDefault = false
 
@@ -411,6 +413,7 @@ final class PreviewSession: ObservableObject {
         requestedURL = nil
         pageFailure = nil
         lastCommittedURL = webView.url
+        if !isWelcome, let url = webView.url { onWindowURLCommitted?(url) }
         lastCommittedTitle = ""
         lastPosition = .top
         committedWasPOST = attemptedRequest?.httpMethod?.uppercased() == "POST"
