@@ -1718,6 +1718,79 @@ final class LinkLibraryTests: XCTestCase {
 
 @MainActor
 final class WebPopupTests: XCTestCase {
+    func testSiteWindowsUseFinalSavedFrameFromTheirFirstVisibleMomentIncludingRedirectsAndFailures() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "PopupFirstFrame.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let screen = try XCTUnwrap(NSScreen.main)
+        let source = URL(string: "http://127.0.0.1:\(port)/site")!
+        let destination = URL(string: "http://localhost:\(port)/geometry-slow")!
+        let initialFrame = WindowGeometryService.clamped(NSRect(x: screen.visibleFrame.minX + 20,
+            y: screen.visibleFrame.minY + 20, width: 700, height: 470), to: screen.visibleFrame)
+        let finalFrame = WindowGeometryService.clamped(NSRect(x: screen.visibleFrame.minX + 80,
+            y: screen.visibleFrame.minY + 70, width: 780, height: 530), to: screen.visibleFrame)
+        model.windowGeometry.save(initialFrame, for: source)
+        model.windowGeometry.save(finalFrame, for: destination)
+        model.showPreview(url: source)
+        try await waitUntil { model.previewSession.pageTitle == "Original site" }
+        let parent = try XCTUnwrap(model.previewSession.webView)
+        var firstVisibleFrames: [Int: NSRect] = [:]
+        var visibleResizes: [Int: [NSRect]] = [:]
+        let visibility = NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification).sink { note in
+            guard let window = note.object as? NSWindow, firstVisibleFrames[window.windowNumber] == nil else { return }
+            firstVisibleFrames[window.windowNumber] = window.frame
+        }
+        let resizing = NotificationCenter.default.publisher(for: NSWindow.didResizeNotification).sink { note in
+            guard let window = note.object as? NSWindow, window.isVisible else { return }
+            visibleResizes[window.windowNumber, default: []].append(window.frame)
+        }
+        defer { visibility.cancel(); resizing.cancel() }
+        for (index, address) in [destination.absoluteString, "http://127.0.0.1:\(port)/geometry-redirect"].enumerated() {
+            _ = try await parent.evaluateJavaScript("window.open('\(address)','first-frame-\(index)','width=200,height=200');true")
+            try await waitUntil { model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).count == 1 }
+            let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+            let window = try XCTUnwrap(popup.window)
+            XCTAssertTrue(popup.isWaitingForFirstPage)
+            XCTAssertFalse(window.isVisible, "Do not paint a provisional frame while the destination response is pending")
+            model.windowRegistry.activate(popup.session.windowID)
+            XCTAssertFalse(window.isVisible, "Sidebar activation must not bypass preparation")
+            try await waitUntil { popup.session.pageTitle == "Geometry destination" && !popup.session.isLoading && window.isVisible }
+            let first = try XCTUnwrap(firstVisibleFrames[window.windowNumber])
+            XCTAssertEqual(first, finalFrame, "The first onscreen frame must already belong to the final host")
+            XCTAssertEqual(window.frame, finalFrame)
+            XCTAssertTrue((visibleResizes[window.windowNumber] ?? []).allSatisfy { $0 == finalFrame },
+                          "No default or intermediate-host size may be visible")
+            XCTAssertEqual(popup.session.currentURL, destination)
+            XCTAssertEqual(model.previewSession.originalURL, source)
+            window.performClose(nil)
+            try await waitUntil { model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).isEmpty }
+        }
+        _ = try await parent.evaluateJavaScript("window.open('http://localhost:9/unavailable','failed-first-frame');true")
+        try await waitUntil {
+            model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first.map {
+                $0.session.pageFailure != nil && $0.window?.isVisible == true
+            } == true
+        }
+        let failure = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        XCTAssertEqual(failure.window?.frame, finalFrame, "An unreachable site must still reveal its error window")
+        failure.close()
+        try await waitUntil { model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).isEmpty }
+        // Closing an as-yet-hidden window must cancel it without resurrecting it later.
+        _ = try await parent.evaluateJavaScript("window.open('\(destination.absoluteString)','cancelled-first-frame');true")
+        try await waitUntil { model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).count == 1 }
+        let cancelled = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        XCTAssertFalse(cancelled.window!.isVisible)
+        model.windowRegistry.close(cancelled.session.windowID)
+        try await waitUntil { !cancelled.session.isActive }
+        XCTAssertFalse(cancelled.window!.isVisible)
+    }
+
     func testSiteCreatedWindowsIgnoreSmallFeaturesAndRestoreTheirCommittedDomainGeometry() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
@@ -1737,6 +1810,7 @@ final class WebPopupTests: XCTestCase {
         let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
         let window = try XCTUnwrap(popup.window)
         XCTAssertEqual(window.frame.width, PreviewWindowAppearance.initialContentSize.width, accuracy: 1)
+        XCTAssertFalse(window.isVisible, "A reserved blank context must not flash before its real destination")
         let screen = try XCTUnwrap(window.screen)
         let destination = URL(string: "http://localhost:\(port)/destination")!
         let saved = WindowGeometryService.clamped(NSRect(x: screen.visibleFrame.minX + 80, y: screen.visibleFrame.minY + 60,
@@ -3826,6 +3900,13 @@ private final class PopupHTTPFixture: @unchecked Sendable {
             document.addEventListener('mouseup',()=>{map.style.cursor='grab';window.released='yes'});
             </script>
             """
+        } else if firstLine.hasPrefix("GET /geometry-redirect ") {
+            status = "302 Found"
+            extraHeaders = "Location: http://localhost:\(port)/geometry-slow\r\n"
+            html = ""
+        } else if firstLine.hasPrefix("GET /geometry-slow ") {
+            status = "200 OK"
+            html = "<title>Geometry destination</title><h1>Delayed destination</h1>"
         } else if firstLine.hasPrefix("GET /destination ") {
             status = "200 OK"
             html = "<title>Destination</title><h1>Ordinary destination</h1>"
@@ -3837,7 +3918,9 @@ private final class PopupHTTPFixture: @unchecked Sendable {
             html = "<title>Original site</title><form method='POST' target='login' action='http://localhost:\(port)/authorize'><input name='state' value='fixture-state'></form><script>window.result='pending';addEventListener('message',e=>{if(e.origin==='http://localhost:\(port)')window.result=e.data;});</script>"
         }
         let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\(extraHeaders)\r\n\(html)"
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+        let send = { connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() }) }
+        if firstLine.hasPrefix("GET /geometry-slow ") { queue.asyncAfter(deadline: .now() + 0.6, execute: send) }
+        else { send() }
     }
 
     private func stream(_ connection: NWConnection, remaining: Int) {

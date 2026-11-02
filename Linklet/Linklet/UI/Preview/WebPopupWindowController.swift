@@ -12,6 +12,8 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
     let coordinator: WebPreview.Coordinator
     private var observations = Set<AnyCancellable>()
     private var geometry: WebsiteWindowGeometry!
+    private var defaultFrame: NSRect = .zero
+    private(set) var isWaitingForFirstPage = false
     let openerID: UUID
 
     init(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures, model: AppModel? = nil) {
@@ -39,7 +41,20 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: panel)
         panel.delegate = self
         geometry = WebsiteWindowGeometry(window: panel, service: model?.windowGeometry ?? WindowGeometryService())
-        session.onWindowURLCommitted = { [weak self] url in self?.geometry.committed(url) }
+        session.onWindowURLResolved = { [weak self] url in self?.showPreparedWindow(for: url) }
+        session.onWindowURLCommitted = { [weak self] url in
+            guard let self else { return }
+            self.geometry.committed(url)
+            // Also covers documents restored without a navigation response.
+            if URLPolicy.canPreview(url) { self.showPreparedWindow(for: url) }
+        }
+        session.$pageFailure.compactMap { $0 }.sink { [weak self] failure in
+            // Published emits before assignment; let the failure UI update first.
+            DispatchQueue.main.async {
+                guard let self, self.session.pageFailure == failure else { return }
+                self.showPreparedWindow(for: failure.url)
+            }
+        }.store(in: &observations)
         coordinator.onWebViewClose = { [weak self] in self?.close() }
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
@@ -75,21 +90,38 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         } else {
             panel.center()
         }
+        defaultFrame = panel.frame
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func present() {
-        window?.makeKeyAndOrderFront(nil)
-        window?.contentView?.layoutSubtreeIfNeeded()
-        window?.makeFirstResponder(webView)
-        if let window { session.windowRegistry.register(window, session: session, parentID: openerID) }
+    func present(initialURL: URL? = nil) {
+        guard let window, session.isActive else { return }
+        // Seed a familiar direct link immediately, while the window is hidden.
+        // The response below can still resolve it to a different final host.
+        if !geometry.begin(at: initialURL) { window.setFrame(defaultFrame, display: false) }
+        isWaitingForFirstPage = true
+        session.windowRegistry.register(window, session: session, parentID: openerID)
+        if let url = session.lastCommittedURL, URLPolicy.canPreview(url) { showPreparedWindow(for: url) }
+        else if let failure = session.pageFailure { showPreparedWindow(for: failure.url) }
+    }
+
+    private func showPreparedWindow(for url: URL?) {
+        guard isWaitingForFirstPage, session.isActive, let window else { return }
+        // Restore before ordering the native window: neither the default frame nor
+        // an intermediate redirect host is ever painted at the wrong size.
+        if !geometry.begin(at: url) { window.setFrame(defaultFrame, display: false) }
+        isWaitingForFirstPage = false
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(webView)
     }
 
     func windowDidMove(_ notification: Notification) { geometry.save() }
     func windowDidResize(_ notification: Notification) { geometry.save() }
 
     func windowWillClose(_ notification: Notification) {
+        isWaitingForFirstPage = false
         geometry.save()
         coordinator.stopCursorHandling()
         session.endSession()

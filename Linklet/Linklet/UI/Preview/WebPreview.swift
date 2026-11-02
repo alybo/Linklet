@@ -254,7 +254,8 @@ struct WebPreview: NSViewRepresentable {
             // A new browsing context is an independent window, just as a browser
             // creates a tab. WebKit loads the supplied request exactly once.
             guard popupWindows.count < 8 else { return nil }
-            return createPopup(configuration: configuration, parent: session, features: windowFeatures).webView
+            return createPopup(configuration: configuration, parent: session, features: windowFeatures,
+                               initialURL: navigationAction.request.url).webView
         }
 
         static func canCreatePopup(for url: URL?) -> Bool {
@@ -266,11 +267,12 @@ struct WebPreview: NSViewRepresentable {
         }
 
         @discardableResult
-        private func createPopup(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures) -> WebPopupWindowController {
+        private func createPopup(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures,
+                                 initialURL: URL?) -> WebPopupWindowController {
             let popup = parent.makePopup?(configuration, parent, features)
                 ?? WebPopupWindowController(configuration: configuration, parent: parent, features: features)
             parent.windowRegistry.retain(popup)
-            popup.present()
+            popup.present(initialURL: initialURL)
             return popup
         }
 
@@ -407,6 +409,11 @@ struct WebPreview: NSViewRepresentable {
             if attachment || !navigationResponse.canShowMIMEType {
                 decisionHandler(.download)
                 return
+            }
+            // This is the final main-document URL after HTTP redirects, before
+            // the first document is committed or its window is ordered onscreen.
+            if navigationResponse.isForMainFrame, let url = navigationResponse.response.url, URLPolicy.canPreview(url) {
+                session?.onWindowURLResolved?(url)
             }
             // HTTP error documents belong to the website; render their content.
             decisionHandler(.allow)

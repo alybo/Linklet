@@ -63,6 +63,7 @@ final class PreviewSession: ObservableObject {
     var onContinueInBrowser: (() -> Void)?
     var onPageFinished: ((URL, String) -> Void)?
     var onSiteLoaded: ((URL) -> Void)?
+    var onWindowURLResolved: ((URL) -> Void)?
     var onWindowURLCommitted: ((URL) -> Void)?
     var closedWindowPosition: PagePosition? { restoration?.position ?? lastPosition }
     var makePopup: ((WKWebViewConfiguration, PreviewSession, WKWindowFeatures) -> WebPopupWindowController)?

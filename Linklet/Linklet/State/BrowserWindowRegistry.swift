@@ -104,6 +104,8 @@ final class BrowserWindowRegistry: ObservableObject {
     }
 
     func activate(_ id: UUID) {
+        // A loading site's final frame must be prepared before any activation path.
+        guard webWindows[id]?.isWaitingForFirstPage != true else { return }
         guard let window = entries[id]?.window else { return }
         lastActiveWindowID = id
         if window.isMiniaturized { window.deminiaturize(nil) }
