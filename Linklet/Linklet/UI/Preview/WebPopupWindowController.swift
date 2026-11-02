@@ -99,10 +99,15 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         guard let window, session.isActive else { return }
         // Seed a familiar direct link immediately, while the window is hidden.
         // The response below can still resolve it to a different final host.
-        if !geometry.begin(at: initialURL) { window.setFrame(defaultFrame, display: false) }
+        let restored = geometry.begin(at: initialURL)
+        if !restored { window.setFrame(defaultFrame, display: false) }
         isWaitingForFirstPage = true
         session.windowRegistry.register(window, session: session, parentID: openerID)
-        if let url = session.lastCommittedURL, URLPolicy.canPreview(url) { showPreparedWindow(for: url) }
+        if restored, let destination = initialURL.flatMap({ WindowGeometryService.googleRedirectDestination(in: $0) }) {
+            // A familiar target is already explicit in Google's link. No network
+            // response is needed to show its saved frame, and no request is replayed.
+            showPreparedWindow(for: destination)
+        } else if let url = session.lastCommittedURL, URLPolicy.canPreview(url) { showPreparedWindow(for: url) }
         else if let failure = session.pageFailure { showPreparedWindow(for: failure.url) }
     }
 

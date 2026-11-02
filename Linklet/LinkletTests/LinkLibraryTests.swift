@@ -273,6 +273,52 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertFalse(controller.editor.isSearchVisible)
     }
 
+    func testGoogleRedirectGeometryUsesEmbeddedWebDestinationAndKeepsIncomingURLIntact() throws {
+        let incoming = URL(string: "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://www.avito.ru/&ved=fixture&usg=fixture")!
+        let target = URL(string: "https://www.avito.ru/")!
+        XCTAssertEqual(WindowGeometryService.googleRedirectDestination(in: incoming), target)
+        XCTAssertEqual(WindowGeometryService.googleRedirectDestination(in:
+            URL(string: "https://google.com/url?url=https%3A%2F%2Fwww.avito.ru%2F")!), target)
+        let encodedTarget = URL(string: "https://example.com/a%2Fb?q=hello%20world&x=1#section")!
+        var wrapper = URLComponents(string: "https://www.google.com/url")!
+        wrapper.queryItems = [URLQueryItem(name: "url", value: encodedTarget.absoluteString)]
+        XCTAssertEqual(WindowGeometryService.googleRedirectDestination(in: wrapper.url!), encodedTarget,
+                       "Decode the query value exactly once, preserving the destination URL")
+        for value in ["https://google.com.evil.test/url?url=https://www.avito.ru/",
+                      "https://www.google.com@evil.test/url?url=https://www.avito.ru/",
+                      "https://example.org/url?url=https://www.avito.ru/",
+                      "https://www.google.com/search?url=https://www.avito.ru/",
+                      "https://www.google.com/url?url=javascript%3Aalert(1)",
+                      "https://www.google.com/url?url=file%3A%2F%2F%2Ftmp%2Fprivate",
+                      "https://www.google.com/url?url=linklet%3A%2F%2Fsearch",
+                      "https://www.google.com/url?url=%2Frelative",
+                      "https://www.google.com/url?url=",
+                      "https://www.google.com/url?url=https://www.avito.ru/&url=https://example.com/",
+                      "file:///url?url=https://www.avito.ru/"] {
+            XCTAssertNil(WindowGeometryService.googleRedirectDestination(in: URL(string: value)!), value)
+        }
+        let suite = "GoogleGeometryHint.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let screen = try XCTUnwrap(NSScreen.main)
+        let saved = WindowGeometryService.clamped(NSRect(x: screen.visibleFrame.minX + 60,
+            y: screen.visibleFrame.minY + 60, width: 780, height: 530), to: screen.visibleFrame)
+        let service = WindowGeometryService(defaults: defaults)
+        service.save(saved, for: target)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 650),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        PreviewWindowAppearance.apply(to: window)
+        defer { window.close() }
+        let geometry = WebsiteWindowGeometry(window: window, service: service)
+        XCTAssertTrue(geometry.begin(at: incoming))
+        XCTAssertEqual(window.frame, saved)
+        XCTAssertFalse(window.isVisible)
+        geometry.committed(target)
+        XCTAssertEqual(window.frame, saved)
+        XCTAssertNil(service.frame(for: incoming), "The redirect wrapper must not acquire the destination's saved geometry")
+        XCTAssertTrue(incoming.absoluteString.contains("www.google.com/url?sa=t"))
+    }
+
     func testHistoryIsOptInBoundedAndIndependentOfSidebar() throws {
         let suite = "LinkLibraryTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -1718,6 +1764,51 @@ final class LinkLibraryTests: XCTestCase {
 
 @MainActor
 final class WebPopupTests: XCTestCase {
+    func testGoogleRedirectWithSavedTargetAppearsImmediatelyWithoutAnyNetworkResponse() throws {
+        let suite = "InstantGooglePopup.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer {
+            model.closeAllWindows()
+            model.previewSession.endSession()
+            defaults.removePersistentDomain(forName: suite)
+        }
+        let source = URL(string: "https://example.org/source")!
+        model.previewSession.load(source)
+        let incoming = URL(string: "https://www.google.com/url?sa=t&source=web&rct=j&url=https://www.avito.ru/&ved=fixture&usg=fixture")!
+        let target = URL(string: "https://www.avito.ru/")!
+        let screen = try XCTUnwrap(NSScreen.main)
+        let saved = WindowGeometryService.clamped(NSRect(x: screen.visibleFrame.minX + 60,
+            y: screen.visibleFrame.minY + 60, width: 780, height: 530), to: screen.visibleFrame)
+        model.windowGeometry.save(NSRect(x: 0, y: 0, width: 700, height: 470), for: incoming)
+        model.windowGeometry.save(saved, for: target)
+        func makePopup() -> WebPopupWindowController {
+            let popup = WebPopupWindowController(
+                configuration: WebPreview.configuration(websiteDataStore: model.previewSession.websiteDataStore),
+                parent: model.previewSession, features: WKWindowFeatures(), model: model)
+            model.windowRegistry.retain(popup)
+            return popup
+        }
+        let popup = makePopup()
+        popup.present(initialURL: incoming)
+        XCTAssertTrue(popup.window!.isVisible, "Show immediately, without waiting for Google or loading the target")
+        XCTAssertFalse(popup.isWaitingForFirstPage)
+        XCTAssertNil(popup.session.lastCommittedURL, "No document has loaded yet")
+        XCTAssertEqual(popup.window!.frame, saved)
+        XCTAssertEqual(popup.session.originalURL, source)
+        popup.session.onWindowURLResolved?(target)
+        popup.session.onWindowURLCommitted?(target)
+        XCTAssertEqual(popup.window!.frame, saved, "The actual response must not resize the already-correct window")
+        popup.close()
+        let unknown = makePopup()
+        unknown.present(initialURL: URL(string: "https://www.google.com/url?url=https://unknown.example/")!)
+        XCTAssertFalse(unknown.window!.isVisible, "A saved Google frame must not substitute for an unknown destination")
+        XCTAssertTrue(unknown.isWaitingForFirstPage)
+        XCTAssertEqual(model.previewSession.originalURL, source)
+    }
+
     func testSiteWindowsUseFinalSavedFrameFromTheirFirstVisibleMomentIncludingRedirectsAndFailures() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()

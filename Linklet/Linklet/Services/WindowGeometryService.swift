@@ -39,6 +39,20 @@ final class WindowGeometryService {
         defaults.set(data, forKey: Self.preferenceKey)
     }
 
+    /// Google Search includes the destination in /url?url=… . Use it only as a
+    /// local geometry hint; the original request still goes through WebKit.
+    static func googleRedirectDestination(in url: URL) -> URL? {
+        guard URLPolicy.canPreview(url),
+              ["google.com", "www.google.com"].contains(url.host?.lowercased() ?? ""),
+              url.path == "/url",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        let destinations = items.filter { $0.name == "url" }
+        guard destinations.count == 1, let value = destinations.first?.value,
+              let destination = URL(string: value), URLPolicy.canPreview(destination),
+              destination.host?.isEmpty == false else { return nil }
+        return destination
+    }
+
     static func clamped(_ frame: NSRect, to visibleFrame: NSRect) -> NSRect {
         let width = min(max(frame.width, 1), visibleFrame.width)
         let height = min(max(frame.height, 1), visibleFrame.height)
@@ -79,7 +93,10 @@ final class WebsiteWindowGeometry {
 
     @discardableResult
     func begin(at url: URL?) -> Bool {
-        self.url = url.flatMap { URLPolicy.canPreview($0) ? $0 : nil }
+        self.url = url.flatMap { incoming in
+            guard URLPolicy.canPreview(incoming) else { return nil }
+            return WindowGeometryService.googleRedirectDestination(in: incoming) ?? incoming
+        }
         return restore()
     }
 
