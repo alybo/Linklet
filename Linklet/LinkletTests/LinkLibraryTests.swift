@@ -9,6 +9,36 @@ import Darwin
 import CoreLocation
 @testable import Linklet
 
+/// Recognized wire formats, independent of live search results or network access.
+private func searchRedirectFixtures(to target: URL) -> [(String, URL)] {
+    func query(_ base: String, _ name: String, _ value: String) -> URL {
+        var parts = URLComponents(string: base)!
+        parts.queryItems = [URLQueryItem(name: name, value: value)]
+        return parts.url!
+    }
+    let address = target.absoluteString
+    let encoded = Data(address.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    let pathEncoded = address.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+    return [
+        ("Google", query("https://www.google.com/url", "url", address)),
+        ("Google regional", query("https://www.google.co.uk/url", "q", address)),
+        ("Bing", query("https://www.bing.com/ck/a", "u", "a1" + encoded)),
+        ("DuckDuckGo", query("https://duckduckgo.com/l/", "uddg", address)),
+        ("Yandex transparent", query("https://yandex.ru/clck/jsredir", "url", address)),
+        ("Yandex path", URL(string: "https://clck.yandex.ru/redir/fixture/*" + address)!),
+        ("Yandex encoded path", URL(string: "https://clck.yandex.ru/redir/fixture/*" + pathEncoded)!),
+        ("Yahoo", URL(string: "https://r.search.yahoo.com/_ylt=fixture/RU=" + pathEncoded + "/RK=2/RS=fixture")!)
+    ]
+}
+
+private let searchResultOrigins = [
+    "https://www.google.com/search?q=fixture", "https://yandex.ru/search/?text=fixture",
+    "https://duckduckgo.com/?q=fixture", "https://www.bing.com/search?q=fixture",
+    "https://search.yahoo.com/search?p=fixture", "https://search.brave.com/search?q=fixture",
+    "https://www.ecosia.org/search?q=fixture", "https://www.startpage.com/sp/search?query=fixture"
+].map { URL(string: $0)! }
+
 @MainActor
 final class LinkLibraryTests: XCTestCase {
     func testSectionPanelsAndSearchAreOptInWithIndependentPersistedWidths() throws {
@@ -276,13 +306,13 @@ final class LinkLibraryTests: XCTestCase {
     func testGoogleRedirectGeometryUsesEmbeddedWebDestinationAndKeepsIncomingURLIntact() throws {
         let incoming = URL(string: "https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://www.avito.ru/&ved=fixture&usg=fixture")!
         let target = URL(string: "https://www.avito.ru/")!
-        XCTAssertEqual(WindowGeometryService.googleRedirectDestination(in: incoming), target)
-        XCTAssertEqual(WindowGeometryService.googleRedirectDestination(in:
+        XCTAssertEqual(WindowGeometryService.searchRedirectDestination(in: incoming), target)
+        XCTAssertEqual(WindowGeometryService.searchRedirectDestination(in:
             URL(string: "https://google.com/url?url=https%3A%2F%2Fwww.avito.ru%2F")!), target)
         let encodedTarget = URL(string: "https://example.com/a%2Fb?q=hello%20world&x=1#section")!
         var wrapper = URLComponents(string: "https://www.google.com/url")!
         wrapper.queryItems = [URLQueryItem(name: "url", value: encodedTarget.absoluteString)]
-        XCTAssertEqual(WindowGeometryService.googleRedirectDestination(in: wrapper.url!), encodedTarget,
+        XCTAssertEqual(WindowGeometryService.searchRedirectDestination(in: wrapper.url!), encodedTarget,
                        "Decode the query value exactly once, preserving the destination URL")
         for value in ["https://google.com.evil.test/url?url=https://www.avito.ru/",
                       "https://www.google.com@evil.test/url?url=https://www.avito.ru/",
@@ -295,7 +325,7 @@ final class LinkLibraryTests: XCTestCase {
                       "https://www.google.com/url?url=",
                       "https://www.google.com/url?url=https://www.avito.ru/&url=https://example.com/",
                       "file:///url?url=https://www.avito.ru/"] {
-            XCTAssertNil(WindowGeometryService.googleRedirectDestination(in: URL(string: value)!), value)
+            XCTAssertNil(WindowGeometryService.searchRedirectDestination(in: URL(string: value)!), value)
         }
         let suite = "GoogleGeometryHint.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -317,6 +347,44 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertEqual(window.frame, saved)
         XCTAssertNil(service.frame(for: incoming), "The redirect wrapper must not acquire the destination's saved geometry")
         XCTAssertTrue(incoming.absoluteString.contains("www.google.com/url?sa=t"))
+    }
+
+    func testSearchEngineGeometryHintsDecodeKnownFormatsChainsAndRejectUnknownTargets() {
+        let target = URL(string: "https://www.avito.ru/a%2Fb?q=hello%20world&other=1#section")!
+        for (engine, url) in searchRedirectFixtures(to: target) {
+            XCTAssertEqual(WindowGeometryService.searchRedirectDestination(in: url), target, engine)
+        }
+        let bing = searchRedirectFixtures(to: target).first { $0.0 == "Bing" }!.1
+        var nested = URLComponents(string: "https://duckduckgo.com/l/")!
+        nested.queryItems = [URLQueryItem(name: "uddg", value: bing.absoluteString)]
+        XCTAssertEqual(WindowGeometryService.searchRedirectDestination(in: nested.url!), target)
+        var tooDeep = target
+        for _ in 0..<5 {
+            var parts = URLComponents(string: "https://www.google.com/url")!
+            parts.queryItems = [URLQueryItem(name: "url", value: tooDeep.absoluteString)]
+            tooDeep = parts.url!
+        }
+        XCTAssertNil(WindowGeometryService.searchRedirectDestination(in: tooDeep))
+        for value in ["https://www.bing.com/ck/a?u=a1!!!", "https://www.bing.com/ck/a?u=a1A",
+                      "https://www.bing.com/ck/a?u=a1amF2YXNjcmlwdDphbGVydCgxKQ",
+                      "https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbQ&u=duplicate",
+                      "https://www.bing.com/ck/a?u=opaque", "https://bing.com.evil.test/ck/a?u=encoded",
+                      "https://duckduckgo.com/l/?uddg=javascript%3Aalert(1)",
+                      "https://duckduckgo.com/l/?uddg=https://example.com/&uddg=https://other.example/",
+                      "https://duckduckgo.com.evil.test/l/?uddg=https://example.com/",
+                      "https://yandex.ru/clck/jsredir?data=opaque&sign=fixture",
+                      "https://clck.yandex.ru/redir/opaque", "https://yandex.ru/search/?url=https://example.com/",
+                      "https://r.search.yahoo.com/_ylt=opaque", "https://r.search.yahoo.com/RU=javascript%3Aalert(1)/RK=2",
+                      "https://r.search.yahoo.com.evil.test/RU=https%3A%2F%2Fexample.com%2F/RK=2"] {
+            XCTAssertNil(WindowGeometryService.searchRedirectDestination(in: URL(string: value)!), value)
+        }
+        for origin in searchResultOrigins {
+            XCTAssertEqual(WindowGeometryService.searchResultDestination(in: target, from: origin), target, origin.absoluteString)
+            let opaque = URL(string: "https://yandex.ru/clck/jsredir?data=opaque")!
+            XCTAssertNil(WindowGeometryService.searchResultDestination(in: opaque, from: origin))
+        }
+        XCTAssertNil(WindowGeometryService.searchResultDestination(in: target, from: URL(string: "https://google.com.evil.test/search")))
+        XCTAssertNil(WindowGeometryService.searchResultDestination(in: target, from: nil))
     }
 
     func testHistoryIsOptInBoundedAndIndependentOfSidebar() throws {
@@ -1764,6 +1832,74 @@ final class LinkLibraryTests: XCTestCase {
 
 @MainActor
 final class WebPopupTests: XCTestCase {
+    func testPopularSearchResultsRestoreImmediatelyAndKeepTargetGeometryThroughRedirectDocuments() throws {
+        let suite = "SearchResultFrames.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer {
+            model.closeAllWindows()
+            model.previewSession.endSession()
+            defaults.removePersistentDomain(forName: suite)
+        }
+        let source = URL(string: "https://example.org/source")!
+        model.previewSession.load(source)
+        let target = URL(string: "https://www.avito.ru/")!
+        let screen = try XCTUnwrap(NSScreen.main)
+        let saved = WindowGeometryService.clamped(NSRect(x: screen.visibleFrame.minX + 70,
+            y: screen.visibleFrame.minY + 70, width: 780, height: 530), to: screen.visibleFrame)
+        model.windowGeometry.save(saved, for: target)
+        func popup(for initialURL: URL) -> WebPopupWindowController {
+            let controller = WebPopupWindowController(
+                configuration: WebPreview.configuration(websiteDataStore: model.previewSession.websiteDataStore),
+                parent: model.previewSession, features: WKWindowFeatures(), model: model)
+            model.windowRegistry.retain(controller)
+            controller.present(initialURL: initialURL)
+            return controller
+        }
+        for (engine, wrapper) in searchRedirectFixtures(to: target) {
+            // Different engine geometry catches a flash on Bing's intermediate JS document.
+            model.windowGeometry.save(NSRect(x: 0, y: 0, width: 700, height: 470), for: wrapper)
+            let child = popup(for: wrapper)
+            XCTAssertTrue(child.window!.isVisible, engine)
+            XCTAssertFalse(child.isWaitingForFirstPage, engine)
+            XCTAssertNil(child.session.lastCommittedURL, "No response was needed: " + engine)
+            XCTAssertEqual(child.window!.frame, saved, engine)
+            child.session.onWindowURLResolved?(wrapper)
+            child.session.onWindowURLCommitted?(wrapper)
+            XCTAssertEqual(child.window!.frame, saved, "Keep destination frame through intermediate document: " + engine)
+            child.session.onWindowURLResolved?(target)
+            child.session.onWindowURLCommitted?(target)
+            XCTAssertEqual(child.window!.frame, saved, engine)
+            XCTAssertEqual(child.session.originalURL, source)
+            child.close()
+        }
+        for origin in searchResultOrigins {
+            model.previewSession.load(origin)
+            let child = popup(for: target)
+            XCTAssertTrue(child.window!.isVisible, origin.absoluteString)
+            XCTAssertFalse(child.isWaitingForFirstPage)
+            XCTAssertEqual(child.window!.frame, saved)
+            XCTAssertEqual(child.session.originalURL, origin)
+            child.close()
+        }
+        let opaque = URL(string: "https://yandex.ru/clck/jsredir?data=opaque&sign=fixture")!
+        let pending = popup(for: opaque)
+        pending.session.onWindowURLResolved?(opaque)
+        pending.session.onWindowURLCommitted?(opaque)
+        XCTAssertFalse(pending.window!.isVisible, "Do not show an undecoded intermediate document")
+        XCTAssertTrue(pending.isWaitingForFirstPage)
+        pending.session.onWindowURLResolved?(target)
+        XCTAssertTrue(pending.window!.isVisible)
+        XCTAssertEqual(pending.window!.frame, saved)
+        pending.close()
+        let finished = popup(for: opaque)
+        finished.session.onWindowURLResolved?(opaque)
+        XCTAssertFalse(finished.window!.isVisible)
+        finished.session.onWindowDocumentFinished?(opaque)
+        XCTAssertTrue(finished.window!.isVisible, "A completed engine error document must not remain hidden forever")
+    }
+
     func testGoogleRedirectWithSavedTargetAppearsImmediatelyWithoutAnyNetworkResponse() throws {
         let suite = "InstantGooglePopup.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!

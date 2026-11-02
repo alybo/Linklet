@@ -63,6 +63,7 @@ final class PreviewSession: ObservableObject {
     var onContinueInBrowser: (() -> Void)?
     var onPageFinished: ((URL, String) -> Void)?
     var onSiteLoaded: ((URL) -> Void)?
+    var onWindowDocumentFinished: ((URL) -> Void)?
     var onWindowURLResolved: ((URL) -> Void)?
     var onWindowURLCommitted: ((URL) -> Void)?
     var closedWindowPosition: PagePosition? { restoration?.position ?? lastPosition }
@@ -403,7 +404,10 @@ final class PreviewSession: ObservableObject {
         } else { PreviewPageStateBridge.shared.capture(in: view) }
         pageFind.navigationFinished()
         welcomeDidFinish()
-        if !isWelcome, let url = view.url, URLPolicy.canPreview(url) { onSiteLoaded?(url) }
+        if !isWelcome, let url = view.url, URLPolicy.canPreview(url) {
+            onWindowDocumentFinished?(url)
+            onSiteLoaded?(url)
+        }
         guard !isWelcome, shouldRecordInitialTitle, let originalURL else { return }
         shouldRecordInitialTitle = false
         onPageFinished?(originalURL, view.title ?? "")

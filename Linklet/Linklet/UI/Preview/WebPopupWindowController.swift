@@ -14,9 +14,11 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
     private var geometry: WebsiteWindowGeometry!
     private var defaultFrame: NSRect = .zero
     private(set) var isWaitingForFirstPage = false
+    private let openerURL: URL?
     let openerID: UUID
 
     init(configuration: WKWebViewConfiguration, parent: PreviewSession, features: WKWindowFeatures, model: AppModel? = nil) {
+        openerURL = parent.currentURL
         openerID = parent.windowID
         session = PreviewSession(adBlockService: parent.adBlockService, siteData: parent.siteData,
                                  windowRegistry: parent.windowRegistry)
@@ -41,6 +43,10 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: panel)
         panel.delegate = self
         geometry = WebsiteWindowGeometry(window: panel, service: model?.windowGeometry ?? WindowGeometryService())
+        session.onWindowDocumentFinished = { [weak self] url in
+            // A completed redirect document may instead be an engine error page.
+            self?.showPreparedWindow(for: url, allowsRedirectDocument: true)
+        }
         session.onWindowURLResolved = { [weak self] url in self?.showPreparedWindow(for: url) }
         session.onWindowURLCommitted = { [weak self] url in
             guard let self else { return }
@@ -52,7 +58,7 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
             // Published emits before assignment; let the failure UI update first.
             DispatchQueue.main.async {
                 guard let self, self.session.pageFailure == failure else { return }
-                self.showPreparedWindow(for: failure.url)
+                self.showPreparedWindow(for: failure.url, allowsRedirectDocument: true)
             }
         }.store(in: &observations)
         coordinator.onWebViewClose = { [weak self] in self?.close() }
@@ -103,16 +109,17 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         if !restored { window.setFrame(defaultFrame, display: false) }
         isWaitingForFirstPage = true
         session.windowRegistry.register(window, session: session, parentID: openerID)
-        if restored, let destination = initialURL.flatMap({ WindowGeometryService.googleRedirectDestination(in: $0) }) {
-            // A familiar target is already explicit in Google's link. No network
-            // response is needed to show its saved frame, and no request is replayed.
+        if restored, let destination = initialURL.flatMap({ WindowGeometryService.searchResultDestination(in: $0, from: openerURL) }) {
+            // A familiar search result is explicit in the link. Show its saved
+            // frame without a network wait, keeping the actual request untouched.
             showPreparedWindow(for: destination)
         } else if let url = session.lastCommittedURL, URLPolicy.canPreview(url) { showPreparedWindow(for: url) }
         else if let failure = session.pageFailure { showPreparedWindow(for: failure.url) }
     }
 
-    private func showPreparedWindow(for url: URL?) {
+    private func showPreparedWindow(for url: URL?, allowsRedirectDocument: Bool = false) {
         guard isWaitingForFirstPage, session.isActive, let window else { return }
+        if !allowsRedirectDocument, let url, WindowGeometryService.isSearchRedirect(url) { return }
         // Restore before ordering the native window: neither the default frame nor
         // an intermediate redirect host is ever painted at the wrong size.
         if !geometry.begin(at: url) { window.setFrame(defaultFrame, display: false) }
