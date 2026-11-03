@@ -42,3 +42,15 @@ xcodebuild -project Linklet/Linklet.xcodeproj -scheme Linklet -sdk macosx test C
 6. На сайте с выбором папки проверить относительные пути и вложенные файлы.
 
 Документация: [WKUIDelegate open panel](https://developer.apple.com/documentation/webkit/wkuidelegate/webview(_:runopenpanelwith:initiatedbyframe:completionhandler:)), [WKOpenPanelParameters](https://developer.apple.com/documentation/webkit/wkopenpanelparameters), [NSOpenPanel](https://developer.apple.com/documentation/appkit/nsopenpanel), [NSDraggingInfo](https://developer.apple.com/documentation/appkit/nsdragginginfo).
+
+## Диагностика зависания YouTube на 0%, 3 ноября 2026
+
+Сообщение владельца поступило после выдачи сборки 1.8 (36); версия установленного приложения отдельно не проверена. Причина на самом YouTube пока не подтверждена: запросы авторизованной страницы и ошибки её JavaScript не получены. Реальные пользовательские видео на сторонние сервисы при диагностике не отправлялись.
+
+Добавлена локальная интеграционная проверка `testPickedFileUploadsRawAndInWorkerChunks`: выбранный через delegate файл с синтетическими байтами размером 3 МБ + 17 байт передаётся целиком через fetch, а затем четырьмя частями через XMLHttpRequest из настоящего Web Worker. Проверяются события прогресса и точное совпадение всех отправленных байтов. Файл имеет расширение `.mp4`, но это проверка транспорта, а не декодирования видео. Сценарий проходит на macOS 27.2; он не воспроизводит весь протокол YouTube, многогигабайтные видео или файлы облачных провайдеров.
+
+Отдельный временный диагностический сценарий выявил проблемы системного WebKit с выбранным File и IndexedDB: в приватном профиле запись завершилась `UnknownError: Error preparing Blob/File data to be stored in object store`; в чистом постоянном профиле запись и чтение прошли, но последующий multipart POST содержал пустое тело при правильном `File.size`. Последний симптом соответствует [WebKit bug 319985](https://bugs.webkit.org/show_bug.cgi?id=319985). Использование именно этого пути загрузчиком YouTube пока не установлено. Созданный для проверки отдельный профиль удалён; профиль владельца не менялся.
+
+Подмена File/FormData, копирование видео в память и изменение настроек хранения не добавлялись. Для следующего шага нужны результат повторной загрузки без AdGuard, размер и расположение файла, а также результат отправки того же файла в Safari или Chrome. В исходном коде приложения изменений пока нет; новая сборка с исправлением этого зависания не заявляется.
+
+Обязательный полный прогон после добавления проверки: **178 тестов, 0 ошибок**, `TEST SUCCEEDED`. Лог: `/tmp/linklet-upload-diagnostic-full-tests.log`.

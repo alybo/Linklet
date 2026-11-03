@@ -3494,6 +3494,72 @@ final class WebPopupTests: XCTestCase {
 
 @MainActor
 final class WebUploadTests: XCTestCase {
+    func testPickedFileUploadsRawAndInWorkerChunks() async throws {
+        let server = try UploadHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let page = UploadTestPage(url: URL(string: "http://127.0.0.1:\(port)/page")!)
+        defer { page.close() }
+        try await waitUntil { (try? await page.view.evaluateJavaScript("document.title")) as? String == "Upload fixture" }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("Upload-\(UUID()).mp4")
+        let payload = try await Task.detached(priority: .utility) {
+            let bytes = Data((0..<(3 * 1024 * 1024 + 17)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+            try bytes.write(to: file)
+            return bytes
+        }.value
+        defer { try? FileManager.default.removeItem(at: file) }
+        page.coordinator.makeFileUploadPanel = {
+            let panel = UploadTestPanel()
+            panel.selection = [file]
+            panel.automaticResponse = .OK
+            return panel
+        }
+        _ = try await page.view.evaluateJavaScript("document.getElementById('single').click();true")
+        try await waitUntil { (try? await page.view.evaluateJavaScript("document.getElementById('single').files.length")) as? Int == 1 }
+        let result = try await page.view.callAsyncJavaScript(#"""
+        const file = document.getElementById('single').files[0];
+        const raw = await fetch('/upload', {method:'POST', body:file});
+        if (!raw.ok) throw new Error('Raw upload failed: ' + raw.status);
+        const workerURL = URL.createObjectURL(new Blob([`
+          onmessage = async event => {
+            try {
+              const {file, endpoint} = event.data;
+              let progress = 0, sent = 0;
+              for (let offset = 0; offset < file.size; offset += 1024 * 1024) {
+                const chunk = file.slice(offset, offset + 1024 * 1024, file.type);
+                await new Promise((resolve,reject) => {
+                  const xhr = new XMLHttpRequest();
+                  xhr.open('POST', endpoint);
+                  xhr.setRequestHeader('X-Upload-Offset', String(offset));
+                  xhr.upload.onprogress = e => { if(e.loaded > 0) progress++; };
+                  xhr.onload = () => xhr.status === 200 ? resolve() : reject(new Error('HTTP '+xhr.status));
+                  xhr.onerror = () => reject(new Error('Chunk upload failed'));
+                  xhr.send(chunk);
+                });
+                sent += chunk.size;
+              }
+              postMessage({sent,progress});
+            } catch(error) { postMessage({error:String(error)}); }
+          };
+        `], {type:'text/javascript'}));
+        const worker = new Worker(workerURL);
+        try {
+          return await new Promise((resolve,reject) => {
+            worker.onmessage = e => e.data.error ? reject(new Error(e.data.error)) : resolve(e.data);
+            worker.onerror = e => reject(new Error(e.message));
+            worker.postMessage({file, endpoint:new URL('/upload', location.href).href});
+          });
+        } finally { worker.terminate(); URL.revokeObjectURL(workerURL); }
+        """#, in: nil, contentWorld: .page) as? [String: Int]
+        XCTAssertEqual(result?["sent"], payload.count)
+        XCTAssertGreaterThan(result?["progress"] ?? 0, 0)
+        let uploads = server.uploads
+        XCTAssertEqual(uploads.count, 5)
+        XCTAssertEqual(uploads.first?.body, payload)
+        XCTAssertEqual(uploads.dropFirst().reduce(into: Data()) { $0.append($1.body) }, payload)
+        XCTAssertEqual(page.view.url?.path, "/page")
+    }
+
     func testPickerUploadsSingleAndMultipleFilesInMainAndPopupWindows() async throws {
         let server = try UploadHTTPFixture()
         let port = try await server.start()
@@ -3837,7 +3903,7 @@ private final class UploadHTTPFixture: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] bytes, _, complete, error in
             guard let self, error == nil else { connection.cancel(); return }
             var data = data; data.append(bytes ?? Data())
-            guard data.count < 2_097_152 else { connection.cancel(); return }
+            guard data.count < 8_388_608 else { connection.cancel(); return }
             guard let split = data.range(of: Data("\r\n\r\n".utf8)), let headers = String(data: data[..<split.lowerBound], encoding: .utf8) else {
                 if complete { connection.cancel() } else { self.receive(connection, data: data) }; return
             }
