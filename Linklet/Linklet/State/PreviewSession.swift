@@ -195,6 +195,20 @@ final class PreviewSession: ObservableObject {
     }
 
     private func navigate(to url: URL, in webView: WKWebView) {
+        #if LINKLET_TCP_UPLOAD_DIAGNOSTICS
+        let generation = requestGeneration
+        Task { @MainActor [weak self, weak webView] in
+            guard let self, let webView else { return }
+            await DiagnosticUploadTransport.shared.prepare(webView.configuration.websiteDataStore)
+            guard self.webView === webView, !isWelcome, requestGeneration == generation, requestedURL == url else { return }
+            loadPreparedPage(url, in: webView)
+        }
+        #else
+        loadPreparedPage(url, in: webView)
+        #endif
+    }
+
+    private func loadPreparedPage(_ url: URL, in webView: WKWebView) {
         if !adBlockService.hasActiveRules {
             webView.load(URLRequest(url: url))
             return
