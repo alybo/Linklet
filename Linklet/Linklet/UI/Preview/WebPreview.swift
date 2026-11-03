@@ -26,10 +26,24 @@ struct WebPreview: NSViewRepresentable {
         Coordinator(session: session)
     }
 
+    /// Explicit diagnostic builds only; ordinary builds keep inspection off.
+    static func configureInspection(_ webView: WKWebView) {
+        #if LINKLET_WEB_INSPECTOR
+        webView.isInspectable = true
+        // WebKit SPI adds the local Inspect Element menu. Public isInspectable
+        // also permits inspection from Safari's Develop menu if SPI is absent.
+        let preferences = webView.configuration.preferences
+        if preferences.responds(to: NSSelectorFromString("_setDeveloperExtrasEnabled:")) {
+            preferences.setValue(true, forKey: "developerExtrasEnabled")
+        }
+        #endif
+    }
+
     func makeNSView(context: Context) -> WKWebView {
         let configuration = Self.configuration(websiteDataStore: session.websiteDataStore)
         // Let WebKit own scrolling, including macOS preferences and site CSS.
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        Self.configureInspection(webView)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsMagnification = true

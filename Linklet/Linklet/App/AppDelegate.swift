@@ -18,13 +18,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidResignActive(_ notification: Notification) {
+        #if !LINKLET_WEB_INSPECTOR
         guard !model.siteData.mediaPermissions.hasPendingOrActiveCapture else { return }
         model.previewApplicationDidHide()
+        #endif
     }
 
     func applicationDidHide(_ notification: Notification) {
+        #if !LINKLET_WEB_INSPECTOR
         guard !model.siteData.mediaPermissions.hasPendingOrActiveCapture else { return }
         model.previewApplicationDidHide()
+        #endif
     }
 
     func applicationWillTerminate(_ notification: Notification) {

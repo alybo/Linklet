@@ -34,6 +34,7 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         session.onSiteLoaded = parent.onSiteLoaded
         session.history = parent.history
         webView = WKWebView(frame: .zero, configuration: configuration)
+        WebPreview.configureInspection(webView)
         coordinator = WebPreview.Coordinator(session: session)
         let panel = NSWindow(contentRect: NSRect(origin: .zero, size: PreviewWindowAppearance.initialContentSize),
                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
