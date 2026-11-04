@@ -3237,8 +3237,8 @@ final class WebPopupTests: XCTestCase {
         defer { server.stop() }
         let suite = "BrowserToolbarMode.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        let first = BrowserTarget.browser(name: "Fixture A", applicationURL: URL(fileURLWithPath: "/Applications/FixtureA.app"))
-        let preferred = BrowserTarget.browser(name: "Fixture B", applicationURL: URL(fileURLWithPath: "/Applications/FixtureB.app"))
+        let first = BrowserTarget.browser(name: "Safari", applicationURL: URL(fileURLWithPath: "/Applications/Safari.app"))
+        let preferred = BrowserTarget.browser(name: "Arc", applicationURL: URL(fileURLWithPath: "/Applications/Arc.app"))
         let model = AppModel(defaults: defaults, discoverTargets: { [first, preferred] })
         defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
         model.refreshTargets()
@@ -3256,17 +3256,42 @@ final class WebPopupTests: XCTestCase {
             content.layoutSubtreeIfNeeded()
             if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
                 content.cacheDisplay(in: content.bounds, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-41-toolbar-\(name).png"))
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-42-toolbar-\(name).png"))
             }
         }
         try await waitUntil { node("preview-browser-menu") != nil }
+        _ = try XCTUnwrap(node("preview-browser-menu"))
         XCTAssertNil(node("preview-open-in-button"))
         try snapshot("compact")
         XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
         try await waitUntil { menuNode("preview-browser-target-\(preferred.id)") != nil }
         XCTAssertNotNil(menuNode("preview-browser-target-\(first.id)"))
         XCTAssertEqual(model.previewOpenTargets.first?.id, preferred.id)
-        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        // The card belongs to the preview itself, rather than a native popover window.
+        XCTAssertNotNil(node("preview-browser-card"))
+        func menuSnapshot(_ name: String) throws {
+            content.layoutSubtreeIfNeeded()
+            let rect = NSRect(x: content.bounds.width - 340, y: content.isFlipped ? 0 : content.bounds.height - 220, width: 340, height: 220)
+            if let bitmap = content.bitmapImageRepForCachingDisplay(in: rect) {
+                content.cacheDisplay(in: rect, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-42-menu-\(name).png"))
+            }
+        }
+        window.appearance = NSAppearance(named: .aqua)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try menuSnapshot("light")
+        window.appearance = NSAppearance(named: .darkAqua)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try menuSnapshot("dark")
+        window.appearance = nil
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow }
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        NSApp.sendEvent(escape)
+        try await waitUntil { node("preview-browser-card") == nil }
+        XCTAssertTrue(window.isVisible, "Escape is consumed before PreviewWindow closes the page")
         model.setShowsOpenInButton(true)
         try await waitUntil { node("preview-open-in-button") != nil }
         XCTAssertTrue(AppModel(defaults: defaults, discoverTargets: { [] }).showsOpenInButton)
@@ -3294,6 +3319,80 @@ final class WebPopupTests: XCTestCase {
         model.setTargetVisible(preferred, isVisible: false)
         XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
         try await waitUntil { menuNode("preview-browser-picker-empty") != nil }
+    }
+
+    func testBrowserMenuHoverDelayTransitionAndOptionalClickMode() async throws {
+        let menu = BrowserMenuInteraction()
+        menu.hoverTrigger(true, enabled: false)
+        try await Task.sleep(nanoseconds: 220_000_000)
+        XCTAssertFalse(menu.isPresented)
+        menu.toggle()
+        XCTAssertTrue(menu.isPresented)
+        menu.hoverTrigger(false, enabled: false)
+        menu.hoverCard(false)
+        try await Task.sleep(nanoseconds: 340_000_000)
+        XCTAssertTrue(menu.isPresented, "A click-opened list stays open until dismissed")
+        menu.dismiss()
+        menu.hoverTrigger(true, enabled: true)
+        try await Task.sleep(nanoseconds: 60_000_000)
+        menu.hoverTrigger(false, enabled: true)
+        try await Task.sleep(nanoseconds: 220_000_000)
+        XCTAssertFalse(menu.isPresented, "Passing across the arrow must not open the list")
+        menu.hoverTrigger(true, enabled: true)
+        try await waitUntil { menu.isPresented }
+        menu.hoverTrigger(false, enabled: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        menu.hoverCard(true)
+        try await Task.sleep(nanoseconds: 340_000_000)
+        XCTAssertTrue(menu.isPresented, "Moving across the gap into the card keeps it open")
+        menu.hoverCard(false)
+        try await waitUntil { !menu.isPresented }
+        menu.hoverTrigger(true, enabled: true)
+        menu.dismiss()
+        try await Task.sleep(nanoseconds: 220_000_000)
+        XCTAssertFalse(menu.isPresented, "Closing a window cancels delayed presentation")
+    }
+
+    func testBrowserMenuKeyboardAndOutsideClickPreservePageWindow() async throws {
+        let menu = BrowserMenuInteraction()
+        let view = BrowserMenuEventView(menu: menu)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 440),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        defer { view.stopObserving(); window.close() }
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow }
+        view.targets = (0..<10).map { BrowserTarget.browser(name: "Browser \($0)",
+            applicationURL: URL(fileURLWithPath: "/Applications/Fixture\($0).app")) }
+        var opened: String?
+        view.onOpen = { opened = $0.id; menu.dismiss() }
+        func key(_ code: UInt16) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
+                isARepeat: false, keyCode: code))
+        }
+        menu.toggle()
+        XCTAssertTrue(view.handle(try key(126)))
+        XCTAssertEqual(menu.selectedIndex, 9)
+        XCTAssertTrue(view.handle(try key(125)))
+        XCTAssertEqual(menu.selectedIndex, 0)
+        XCTAssertTrue(view.handle(try key(36)))
+        XCTAssertEqual(opened, view.targets.first?.id)
+        XCTAssertFalse(menu.isPresented)
+        menu.toggle()
+        XCTAssertTrue(view.handle(try key(53)))
+        XCTAssertFalse(menu.isPresented)
+        XCTAssertTrue(window.isVisible, "Escape dismisses the list before the page window")
+        menu.toggle()
+        let outside = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 200, y: 200),
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1))
+        XCTAssertFalse(view.handle(outside), "Outside clicks continue to the page")
+        XCTAssertFalse(menu.isPresented)
+        menu.toggle()
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        XCTAssertFalse(menu.isPresented)
     }
 
     func testColdHTMLCapabilityFlagDoesNotDownloadDocumentsButPreservesAttachments() throws {

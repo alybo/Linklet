@@ -162,6 +162,7 @@ final class AppModelPreferencesTests: XCTestCase {
         let model = AppModel(defaults: defaults)
         XCTAssertFalse(model.showsFullURL)
         XCTAssertFalse(model.showsOpenInButton)
+        XCTAssertFalse(model.opensBrowserMenuOnHover)
         XCTAssertTrue(model.sortsTargetsByUsage)
         XCTAssertFalse(model.keepsPreviewVisibleWhenInactive)
         XCTAssertEqual(model.previewWindowBehavior, .hide)
@@ -176,6 +177,7 @@ final class AppModelPreferencesTests: XCTestCase {
 
         model.setShowsFullURL(true)
         model.setShowsOpenInButton(true)
+        model.setOpensBrowserMenuOnHover(true)
         model.setSortTargetsByUsage(false)
         model.setKeepsPreviewVisibleWhenInactive(false)
         model.setKeepsPreviewAboveOtherWindows(true)
@@ -185,6 +187,7 @@ final class AppModelPreferencesTests: XCTestCase {
         let restoredModel = AppModel(defaults: defaults)
         XCTAssertTrue(restoredModel.showsFullURL)
         XCTAssertTrue(restoredModel.showsOpenInButton)
+        XCTAssertTrue(restoredModel.opensBrowserMenuOnHover)
         XCTAssertFalse(restoredModel.sortsTargetsByUsage)
         XCTAssertFalse(restoredModel.keepsPreviewVisibleWhenInactive)
         XCTAssertTrue(restoredModel.keepsPreviewAboveOtherWindows)

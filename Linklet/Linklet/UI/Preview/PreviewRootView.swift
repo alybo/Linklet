@@ -40,6 +40,7 @@ struct PreviewPageView: View {
     var model: AppModel? = nil
     var existingWebView: WKWebView? = nil
     @State private var isToolbarHovered = false
+    @StateObject private var browserMenu = BrowserMenuInteraction()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,6 +61,15 @@ struct PreviewPageView: View {
         }
         .background { PreviewWindowMaterial() }
         .background { PreviewPageKeyboardCommands(session: session) }
+        .overlay(alignment: .topTrailing) {
+            if let model {
+                PreviewBrowserMenuLayer(model: model, session: session, menu: browserMenu)
+            }
+        }
+        .onChange(of: session.navigationID) { _ in browserMenu.dismiss() }
+        .onChange(of: session.currentURL) { _ in browserMenu.dismiss() }
+        .onChange(of: session.isActive) { _ in browserMenu.dismiss() }
+        .onDisappear { browserMenu.dismiss() }
         .ignoresSafeArea(.container, edges: .all)
         .alert(
             L("Couldn't open the page"),
@@ -94,7 +104,7 @@ struct PreviewPageView: View {
 
             if !session.isWelcome && session.isActive {
                 if let model {
-                    PreviewOpenInToolbarView(model: model, session: session)
+                    PreviewOpenInToolbarView(model: model, session: session, menu: browserMenu)
                 } else if let continueInBrowser = session.onContinueInBrowser {
                     Button(L("Continue in browser"), action: continueInBrowser)
                         .buttonStyle(.bordered).controlSize(.small)
@@ -381,11 +391,212 @@ private struct PreviewBookmarkLocationView: View {
     }
 }
 
+private struct PreviewBrowserMenuLayer: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var session: PreviewSession
+    @ObservedObject var menu: BrowserMenuInteraction
+
+    private var targets: [BrowserTarget] {
+        model.showsOpenInButton ? Array(model.previewOpenTargets.dropFirst()) : model.previewOpenTargets
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            if menu.isPresented {
+                BrowserTargetPicker(
+                    targets: targets,
+                    firstShortcutNumber: model.showsOpenInButton ? 2 : 1,
+                    menu: menu,
+                    onOpen: openBrowser,
+                    onFind: { menu.dismiss(); model.refreshTargets() },
+                    onChoose: { menu.dismiss(); model.showSettings(page: .search) }
+                )
+                .padding(.top, PreviewLayout.topBarHeight + 2)
+                .padding(.trailing, PreviewLayout.contentInset + 2)
+            }
+        }
+        .background { BrowserMenuEventBridge(menu: menu, targets: targets, onOpen: openBrowser).accessibilityHidden(true) }
+        .onChange(of: model.showsOpenInButton) { _ in menu.dismiss() }
+        .onChange(of: model.opensBrowserMenuOnHover) { _ in menu.dismiss() }
+    }
+
+    private func openBrowser(_ target: BrowserTarget) {
+        menu.dismiss()
+        model.openOriginalURL(in: target, session: session)
+    }
+}
+
+/// Owns only menu interaction; the page and its native WebKit view keep focus.
+@MainActor
+final class BrowserMenuInteraction: ObservableObject {
+    @Published private(set) var isPresented = false
+    @Published var selectedIndex: Int?
+    weak var triggerView: NSView?
+    weak var cardView: NSView?
+    private var triggerHovered = false
+    private var cardHovered = false
+    private var openedByHover = false
+    private var pending: Task<Void, Never>?
+
+    func toggle() {
+        if isPresented { dismiss() }
+        else { pending?.cancel(); openedByHover = false; isPresented = true }
+    }
+
+    func dismiss() {
+        pending?.cancel()
+        pending = nil
+        if isPresented { isPresented = false }
+        if selectedIndex != nil { selectedIndex = nil }
+        openedByHover = false
+        cardHovered = false
+        triggerHovered = false
+    }
+
+    func beginKeyboardSelection() {
+        pending?.cancel()
+        openedByHover = false
+    }
+
+    func hoverTrigger(_ inside: Bool, enabled: Bool) {
+        triggerHovered = inside
+        pending?.cancel()
+        guard enabled else { return }
+        if inside && !isPresented {
+            schedule(after: 180_000_000) { menu in
+                guard menu.triggerHovered else { return }
+                menu.openedByHover = true
+                menu.isPresented = true
+            }
+        } else if !inside { closeAfterLeaving() }
+    }
+
+    func hoverCard(_ inside: Bool) {
+        cardHovered = inside
+        pending?.cancel()
+        if !inside { closeAfterLeaving() }
+    }
+
+    private func closeAfterLeaving() {
+        guard openedByHover, !triggerHovered, !cardHovered else { return }
+        // Bridge the small gap between the arrow and the card.
+        schedule(after: 300_000_000) { menu in
+            if !menu.triggerHovered && !menu.cardHovered { menu.dismiss() }
+        }
+    }
+
+    private func schedule(after delay: UInt64, action: @escaping (BrowserMenuInteraction) -> Void) {
+        pending?.cancel()
+        pending = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: delay) } catch { return }
+            guard let self else { return }
+            action(self)
+        }
+    }
+}
+
+private struct BrowserMenuRegion: NSViewRepresentable {
+    let menu: BrowserMenuInteraction
+    let isTrigger: Bool
+    func makeNSView(context: Context) -> BrowserMenuRegionView {
+        let view = BrowserMenuRegionView()
+        view.setAccessibilityElement(false)
+        if isTrigger { menu.triggerView = view } else { menu.cardView = view }
+        return view
+    }
+    func updateNSView(_ view: BrowserMenuRegionView, context: Context) {}
+}
+
+private final class BrowserMenuRegionView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct BrowserMenuEventBridge: NSViewRepresentable {
+    let menu: BrowserMenuInteraction
+    let targets: [BrowserTarget]
+    let onOpen: (BrowserTarget) -> Void
+    func makeNSView(context: Context) -> BrowserMenuEventView { BrowserMenuEventView(menu: menu) }
+    func updateNSView(_ view: BrowserMenuEventView, context: Context) {
+        view.targets = targets
+        view.onOpen = onOpen
+    }
+    static func dismantleNSView(_ view: BrowserMenuEventView, coordinator: ()) { view.stopObserving() }
+}
+
+final class BrowserMenuEventView: NSView {
+    private let interaction: BrowserMenuInteraction
+    var targets: [BrowserTarget] = []
+    var onOpen: ((BrowserTarget) -> Void)?
+    private var monitor: Any?
+    private var resignObserver: NSObjectProtocol?
+
+    init(menu: BrowserMenuInteraction) {
+        self.interaction = menu
+        super.init(frame: .zero)
+        setAccessibilityElement(false)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopObserving()
+        guard let window else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
+            self?.handle(event) == true ? nil : event
+        }
+        resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+            object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.interaction.dismiss() }
+            }
+    }
+    func stopObserving() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        monitor = nil; resignObserver = nil
+    }
+    func handle(_ event: NSEvent) -> Bool {
+        guard interaction.isPresented else { return false }
+        guard event.window === window else {
+            if event.type != .keyDown { interaction.dismiss() }
+            return false
+        }
+        if event.type != .keyDown {
+            let inside = [interaction.triggerView, interaction.cardView].compactMap { $0 }.contains { region in
+                region.bounds.contains(region.convert(event.locationInWindow, from: nil))
+            }
+            if !inside { interaction.dismiss() }
+            return false
+        }
+        guard window?.isKeyWindow == true, window?.attachedSheet == nil else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers.isEmpty {
+            switch event.keyCode {
+            case 53: interaction.dismiss(); return true
+            case 125, 126:
+                interaction.beginKeyboardSelection()
+                guard !targets.isEmpty else { return true }
+                let step = event.keyCode == 125 ? 1 : -1
+                interaction.selectedIndex = interaction.selectedIndex.map { ($0 + step + targets.count) % targets.count }
+                    ?? (step == 1 ? 0 : targets.count - 1)
+                return true
+            case 36, 76:
+                if let index = interaction.selectedIndex, targets.indices.contains(index), !event.isARepeat {
+                    onOpen?(targets[index])
+                }
+                return true
+            case 48: interaction.dismiss()
+            default: break
+            }
+        }
+        return false
+    }
+}
+
 struct PreviewOpenInToolbarView: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var model: AppModel
     @ObservedObject var session: PreviewSession
-    @State private var isPickerPresented = false
+    @ObservedObject var menu: BrowserMenuInteraction
     @State private var isHovered = false
 
     private var targets: [BrowserTarget] {
@@ -396,7 +607,7 @@ struct PreviewOpenInToolbarView: View {
         Group {
             if !model.showsOpenInButton {
                 pickerButton
-                    .background(Color.primary.opacity(isHovered ? PreviewLayout.toolbarHoverOpacity : 0))
+                    .background(Color.primary.opacity(isHovered || menu.isPresented ? PreviewLayout.toolbarHoverOpacity : 0))
                     .clipShape(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius, style: .continuous))
                     .onHover { isHovered = $0 }
             } else if let preferredTarget = targets.first {
@@ -406,7 +617,7 @@ struct PreviewOpenInToolbarView: View {
                     pickerButton
                 }
                 .frame(height: PreviewLayout.controlHeight)
-                .background(Color.primary.opacity(isHovered ? PreviewLayout.toolbarHoverOpacity : 0))
+                .background(Color.primary.opacity(isHovered || menu.isPresented ? PreviewLayout.toolbarHoverOpacity : 0))
                 .clipShape(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius, style: .continuous))
                 .onHover { isHovered = $0 }
             } else {
@@ -419,7 +630,7 @@ struct PreviewOpenInToolbarView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
-        }.onChange(of: model.showsOpenInButton) { _ in isPickerPresented = false }
+        }
     }
 
     private func primaryButton(for target: BrowserTarget) -> some View {
@@ -449,7 +660,7 @@ struct PreviewOpenInToolbarView: View {
 
     private var pickerButton: some View {
         Button {
-            isPickerPresented.toggle()
+            menu.toggle()
         } label: {
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .semibold))
@@ -461,23 +672,9 @@ struct PreviewOpenInToolbarView: View {
         .help(L("Open browser menu"))
         .accessibilityLabel(L("Open browser menu"))
         .accessibilityIdentifier("preview-browser-menu")
-        .popover(isPresented: $isPickerPresented, arrowEdge: .top) {
-            if targets.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Button(L("Find browsers")) { isPickerPresented = false; model.refreshTargets() }
-                    Button(L("Choose browsers")) { isPickerPresented = false; model.showSettings(page: .search) }
-                }.buttonStyle(.plain).padding(12).frame(width: 220, alignment: .leading)
-                    .accessibilityIdentifier("preview-browser-picker-empty")
-            } else {
-                BrowserTargetPicker(
-                    targets: model.showsOpenInButton ? Array(targets.dropFirst()) : targets,
-                    firstShortcutNumber: model.showsOpenInButton ? 2 : 1,
-                    onOpen: { target in
-                        isPickerPresented = false
-                        model.openOriginalURL(in: target, session: session)
-                    }
-                )
-            }
+        .background { BrowserMenuRegion(menu: menu, isTrigger: true).accessibilityHidden(true) }
+        .onHover { inside in
+            menu.hoverTrigger(inside, enabled: model.opensBrowserMenuOnHover && !(model.showsOpenInButton && targets.count < 2))
         }
     }
 }
@@ -486,20 +683,65 @@ private struct BrowserTargetPicker: View {
     @ObservedObject private var language = AppLanguage.shared
     let targets: [BrowserTarget]
     let firstShortcutNumber: Int
+    @ObservedObject var menu: BrowserMenuInteraction
     let onOpen: (BrowserTarget) -> Void
+    let onFind: () -> Void
+    let onChoose: () -> Void
 
     var body: some View {
-        VStack(spacing: 2) {
-            ForEach(Array(targets.enumerated()), id: \.element.id) { index, target in
-                BrowserTargetPickerRow(
-                    target: target,
-                    shortcutNumber: index + firstShortcutNumber <= 9 ? index + firstShortcutNumber : nil,
-                    action: { onOpen(target) }
-                )
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(L("Open in browser"))
+                    .font(.system(size: 11, weight: .medium))
+                Spacer()
+                Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10).padding(.top, 7).padding(.bottom, 5)
+
+            if targets.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button(L("Find browsers"), action: onFind)
+                    Button(L("Choose browsers"), action: onChoose)
+                }.buttonStyle(.plain).font(.system(size: 12)).padding(10)
+                    .accessibilityIdentifier("preview-browser-picker-empty")
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(Array(targets.enumerated()), id: \.element.id) { index, target in
+                                BrowserTargetPickerRow(
+                                    target: target,
+                                    shortcutNumber: index + firstShortcutNumber <= 9 ? index + firstShortcutNumber : nil,
+                                    isSelected: menu.selectedIndex == index,
+                                    onHover: { menu.selectedIndex = $0 ? index : nil },
+                                    action: { onOpen(target) }
+                                ).id(index)
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                    .frame(height: CGFloat(min(targets.count, 7)) * 38 - 2)
+                    .onChange(of: menu.selectedIndex) { index in
+                        if let index { proxy.scrollTo(index) }
+                    }
+                }
             }
         }
-        .padding(5)
-        .frame(width: 280)
+        .padding(6)
+        .frame(width: 256)
+        .background { PreviewWindowMaterial() }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .shadow(color: .black.opacity(0.20), radius: 14, y: 5)
+        .background { BrowserMenuRegion(menu: menu, isTrigger: false).accessibilityHidden(true) }
+        .onHover { menu.hoverCard($0) }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("preview-browser-card")
     }
 }
 
@@ -507,9 +749,9 @@ private struct BrowserTargetPickerRow: View {
     @ObservedObject private var language = AppLanguage.shared
     let target: BrowserTarget
     let shortcutNumber: Int?
+    let isSelected: Bool
+    let onHover: (Bool) -> Void
     let action: () -> Void
-
-    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
@@ -544,15 +786,15 @@ private struct BrowserTargetPickerRow: View {
                 }
             }
             .padding(.horizontal, 7)
-            .frame(maxWidth: .infinity, minHeight: 32)
+            .frame(maxWidth: .infinity, minHeight: 36)
             .background(
-                isHovered ? Color.accentColor.opacity(0.14) : Color.clear,
+                isSelected ? Color.primary.opacity(0.075) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 7, style: .continuous)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
+        .onHover(perform: onHover)
         .applyShortcut(shortcutNumber)
         .help(L("Open in %@", target.displayName))
         .accessibilityIdentifier("preview-browser-target-\(target.id)")

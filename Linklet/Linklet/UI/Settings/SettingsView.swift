@@ -321,6 +321,11 @@ struct BrowserSettingsSections: View {
             Toggle(L("Show Open in browser button"), isOn: Binding(
                 get: { model.showsOpenInButton }, set: model.setShowsOpenInButton))
                 .accessibilityIdentifier("settings-show-open-in-button")
+            Picker(L("Open browser list"), selection: Binding(
+                get: { model.opensBrowserMenuOnHover }, set: model.setOpensBrowserMenuOnHover)) {
+                Text(L("On click")).tag(false)
+                Text(L("On hover")).tag(true)
+            }.accessibilityIdentifier("settings-browser-menu-trigger")
             if !model.visibleTargets.isEmpty {
                 Picker(L("Browser for sending links"), selection: Binding(
                     get: { model.preferredTarget?.id ?? "" }, set: model.setPreferredTarget)) {
