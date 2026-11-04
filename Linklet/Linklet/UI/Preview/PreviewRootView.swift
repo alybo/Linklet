@@ -299,16 +299,18 @@ private struct PreviewLoadingProgressStyle: ProgressViewStyle {
 }
 
 struct PreviewWindowMaterial: NSViewRepresentable {
+    var state: NSVisualEffectView.State = .followsWindowActiveState
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .underWindowBackground
         view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
+        view.state = state
         view.isEmphasized = false
         return view
     }
 
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ view: NSVisualEffectView, context: Context) { view.state = state }
 }
 
 private struct PreviewWindowControls: View {
@@ -420,23 +422,27 @@ private struct PreviewBrowserMenuLayer: View {
     }
 
     var body: some View {
-        BrowserTargetPicker(
-            targets: targets,
-            firstShortcutNumber: model.showsOpenInButton ? 2 : 1,
-            menu: menu,
-            onOpen: openBrowser,
-            onFind: { menu.dismiss(); model.refreshTargets() },
-            onChoose: { menu.dismiss(); model.showSettings(page: .search) }
-        )
-        .modifier(BrowserDrawerSlide(progress: menu.isPresented ? 1 : 0))
-        .clipped()
-        .animation(reduceMotion ? nil : .timingCurve(0.22, 0.7, 0.25, 1,
-            duration: BrowserDrawerLayout.animationDuration), value: menu.isPresented)
-        .allowsHitTesting(menu.isPresented)
-        .disabled(!menu.isPresented)
-        .accessibilityHidden(!menu.isPresented)
+        BrowserDrawerHost(isPresented: menu.isPresented, content: AnyView(
+            BrowserTargetPicker(
+                targets: targets,
+                firstShortcutNumber: model.showsOpenInButton ? 2 : 1,
+                menu: menu,
+                onOpen: openBrowser,
+                onFind: { menu.dismiss(); model.refreshTargets() },
+                onChoose: { menu.dismiss(); model.showSettings(page: .search) }
+            )
+            .modifier(BrowserDrawerSlide(progress: menu.isPresented ? 1 : 0))
+            .clipped()
+            .animation(reduceMotion ? nil : .timingCurve(0.22, 0.7, 0.25, 1,
+                duration: BrowserDrawerLayout.animationDuration), value: menu.isPresented)
+            .allowsHitTesting(menu.isPresented)
+            .disabled(!menu.isPresented)
+            .accessibilityHidden(!menu.isPresented)
+        ))
+        .fixedSize()
         .padding(.top, PreviewLayout.topBarHeight)
-        .background { BrowserMenuEventBridge(menu: menu, targets: targets, onOpen: openBrowser).accessibilityHidden(true) }
+        .background { BrowserMenuEventBridge(menu: menu, targets: targets,
+            firstShortcutNumber: model.showsOpenInButton ? 2 : 1, onOpen: openBrowser).accessibilityHidden(true) }
         .onChange(of: model.showsOpenInButton) { _ in menu.dismiss() }
         .onChange(of: model.opensBrowserMenuOnHover) { _ in menu.dismiss() }
     }
@@ -444,6 +450,165 @@ private struct PreviewBrowserMenuLayer: View {
     private func openBrowser(_ target: BrowserTarget) {
         menu.dismiss()
         model.openOriginalURL(in: target, session: session)
+    }
+}
+
+/// Uses the page's own surface while it fits. A taller drawer keeps the same
+/// hosting view in an attached child panel, so a short page window cannot clip it.
+private struct BrowserDrawerHost: NSViewRepresentable {
+    let isPresented: Bool
+    let content: AnyView
+
+    func makeNSView(context: Context) -> BrowserDrawerHostView { BrowserDrawerHostView(content: content) }
+    func updateNSView(_ view: BrowserDrawerHostView, context: Context) {
+        view.update(content: content, isPresented: isPresented)
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: BrowserDrawerHostView, context: Context) -> CGSize? {
+        nsView.intrinsicContentSize
+    }
+    static func dismantleNSView(_ view: BrowserDrawerHostView, coordinator: ()) { view.stopObserving() }
+}
+
+private final class BrowserDrawerPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class BrowserDrawerHostView: NSView {
+    private let hosting: NSHostingView<AnyView>
+    private var panel: BrowserDrawerPanel?
+    private weak var parentWindow: NSWindow?
+    private var observers: [NSObjectProtocol] = []
+    private var concealTask: Task<Void, Never>?
+    private var isPresented = false
+
+    init(content: AnyView) {
+        hosting = NSHostingView(rootView: content)
+        super.init(frame: .zero)
+        setAccessibilityElement(false)
+        addSubview(hosting)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { hosting.fittingSize }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isPresented, hosting.window === window else { return nil }
+        return super.hitTest(point)
+    }
+
+    func update(content: AnyView, isPresented: Bool) {
+        observeParentIfNeeded()
+        hosting.rootView = content
+        self.isPresented = isPresented
+        panel?.ignoresMouseEvents = !isPresented
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        observeParentIfNeeded()
+        updatePlacement()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeParentIfNeeded()
+    }
+
+    private func observeParentIfNeeded() {
+        guard parentWindow !== window else { return }
+        stopObserving()
+        guard let window else { return }
+        parentWindow = window
+        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.didChangeScreenNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updatePlacement() }
+            })
+        }
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+            object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.stopObserving() }
+            })
+        needsLayout = true
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        panel?.appearance = effectiveAppearance
+    }
+
+    func stopObserving() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        concealTask?.cancel(); concealTask = nil
+        if let panel {
+            panel.orderOut(nil)
+            panel.parent?.removeChildWindow(panel)
+            panel.contentView = nil
+            if hosting.superview !== self { addSubview(hosting) }
+        }
+        parentWindow = nil
+    }
+
+    private func updatePlacement() {
+        guard let parent = parentWindow, let content = parent.contentView, bounds.width > 0 else { return }
+        let size = intrinsicContentSize
+        let anchor = parent.convertToScreen(convert(bounds, to: nil))
+        let parentBounds = parent.convertToScreen(content.convert(content.bounds, to: nil))
+        let needsOverflow = anchor.maxY - size.height < parentBounds.minY - 0.5
+        guard needsOverflow else {
+            concealTask?.cancel(); concealTask = nil
+            if let panel {
+                panel.orderOut(nil)
+                panel.parent?.removeChildWindow(panel)
+                panel.contentView = nil
+            }
+            if hosting.superview !== self { addSubview(hosting) }
+            hosting.frame = NSRect(origin: .zero, size: size)
+            return
+        }
+        let overflow: BrowserDrawerPanel
+        if let panel { overflow = panel }
+        else {
+            overflow = BrowserDrawerPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                                          backing: .buffered, defer: false)
+            overflow.identifier = NSUserInterfaceItemIdentifier("preview-browser-overflow")
+            overflow.isReleasedWhenClosed = false
+            overflow.isRestorable = false
+            overflow.isExcludedFromWindowsMenu = true
+            overflow.hidesOnDeactivate = false
+            overflow.isFloatingPanel = false
+            overflow.backgroundColor = .clear
+            overflow.isOpaque = false
+            overflow.hasShadow = false
+            overflow.acceptsMouseMovedEvents = true
+            overflow.animationBehavior = .none
+            overflow.collectionBehavior = [.fullScreenAuxiliary]
+            panel = overflow
+        }
+        if overflow.contentView !== hosting {
+            hosting.removeFromSuperview()
+            overflow.contentView = hosting
+        }
+        overflow.appearance = parent.effectiveAppearance
+        overflow.level = parent.level
+        let screen = parent.screen?.visibleFrame
+        let bottom = max(anchor.maxY - size.height, screen?.minY ?? -CGFloat.greatestFiniteMagnitude)
+        overflow.setFrame(NSRect(x: anchor.maxX - size.width, y: bottom, width: size.width, height: size.height), display: true)
+        if isPresented, parent.isVisible {
+            concealTask?.cancel(); concealTask = nil
+            overflow.ignoresMouseEvents = false
+            if overflow.parent !== parent { parent.addChildWindow(overflow, ordered: .above) }
+            overflow.orderFront(nil)
+        } else {
+            overflow.ignoresMouseEvents = true
+            guard overflow.isVisible, concealTask == nil else { return }
+            concealTask = Task { @MainActor [weak self] in
+                let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : BrowserDrawerLayout.animationDuration
+                do { try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000)) } catch { return }
+                guard let self, !self.isPresented else { return }
+                self.panel?.orderOut(nil)
+                self.concealTask = nil
+            }
+        }
     }
 }
 
@@ -535,10 +700,12 @@ private final class BrowserMenuRegionView: NSView {
 private struct BrowserMenuEventBridge: NSViewRepresentable {
     let menu: BrowserMenuInteraction
     let targets: [BrowserTarget]
+    let firstShortcutNumber: Int
     let onOpen: (BrowserTarget) -> Void
     func makeNSView(context: Context) -> BrowserMenuEventView { BrowserMenuEventView(menu: menu) }
     func updateNSView(_ view: BrowserMenuEventView, context: Context) {
         view.targets = targets
+        view.firstShortcutNumber = firstShortcutNumber
         view.onOpen = onOpen
     }
     static func dismantleNSView(_ view: BrowserMenuEventView, coordinator: ()) { view.stopObserving() }
@@ -547,6 +714,7 @@ private struct BrowserMenuEventBridge: NSViewRepresentable {
 final class BrowserMenuEventView: NSView {
     private let interaction: BrowserMenuInteraction
     var targets: [BrowserTarget] = []
+    var firstShortcutNumber = 1
     var onOpen: ((BrowserTarget) -> Void)?
     private var monitor: Any?
     private var resignObserver: NSObjectProtocol?
@@ -577,19 +745,27 @@ final class BrowserMenuEventView: NSView {
     }
     func handle(_ event: NSEvent) -> Bool {
         guard interaction.isPresented else { return false }
-        guard event.window === window else {
+        guard event.window === window || event.window === interaction.cardView?.window else {
             if event.type != .keyDown { interaction.dismiss() }
             return false
         }
         if event.type != .keyDown {
             let inside = [interaction.triggerView, interaction.cardView].compactMap { $0 }.contains { region in
-                region.bounds.contains(region.convert(event.locationInWindow, from: nil))
+                region.window === event.window && region.bounds.contains(region.convert(event.locationInWindow, from: nil))
             }
             if !inside { interaction.dismiss() }
             return false
         }
         guard window?.isKeyWindow == true, window?.attachedSheet == nil else { return false }
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers == .command, let character = event.charactersIgnoringModifiers,
+           let number = Int(character), (1...9).contains(number) {
+            let index = number - firstShortcutNumber
+            if targets.indices.contains(index) {
+                if !event.isARepeat { onOpen?(targets[index]) }
+                return true
+            }
+        }
         if modifiers.isEmpty {
             switch event.keyCode {
             case 53: interaction.dismiss(); return true
@@ -725,31 +901,23 @@ private struct BrowserTargetPicker: View {
                 }.buttonStyle(.plain).font(.system(size: 12)).padding(10)
                     .accessibilityIdentifier("preview-browser-picker-empty")
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 2) {
-                            ForEach(Array(targets.enumerated()), id: \.element.id) { index, target in
-                                BrowserTargetPickerRow(
-                                    target: target,
-                                    shortcutNumber: index + firstShortcutNumber <= 9 ? index + firstShortcutNumber : nil,
-                                    isSelected: menu.selectedIndex == index,
-                                    onHover: { menu.selectedIndex = $0 ? index : nil },
-                                    action: { onOpen(target) }
-                                ).id(index)
-                            }
-                        }
-                    }
-                    .scrollIndicators(.hidden)
-                    .frame(height: CGFloat(min(targets.count, 7)) * 38 - 2)
-                    .onChange(of: menu.selectedIndex) { index in
-                        if let index { proxy.scrollTo(index) }
+                VStack(spacing: 2) {
+                    ForEach(Array(targets.enumerated()), id: \.element.id) { index, target in
+                        BrowserTargetPickerRow(
+                            target: target,
+                            shortcutNumber: index + firstShortcutNumber <= 9 ? index + firstShortcutNumber : nil,
+                            isSelected: menu.selectedIndex == index,
+                            onHover: { menu.selectedIndex = $0 ? index : nil },
+                            action: { onOpen(target) }
+                        )
                     }
                 }
             }
         }
         .padding(6)
         .frame(width: BrowserDrawerLayout.width)
-        .background { PreviewWindowMaterial() }
+        .fixedSize(horizontal: false, vertical: true)
+        .background { PreviewWindowMaterial(state: .active) }
         .overlay(alignment: .leading) {
             Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 0.5)
                 .allowsHitTesting(false)

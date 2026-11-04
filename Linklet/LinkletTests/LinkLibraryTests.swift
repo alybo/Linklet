@@ -3257,7 +3257,7 @@ final class WebPopupTests: XCTestCase {
             content.layoutSubtreeIfNeeded()
             if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
                 content.cacheDisplay(in: content.bounds, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-43-toolbar-\(name).png"))
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-44-toolbar-\(name).png"))
             }
         }
         var animationFrames: [(image: CGImage, pixels: Data, delay: Double)] = []
@@ -3309,7 +3309,7 @@ final class WebPopupTests: XCTestCase {
             let rect = NSRect(x: content.bounds.width - 340, y: content.isFlipped ? 0 : content.bounds.height - 220, width: 340, height: 220)
             if let bitmap = content.bitmapImageRepForCachingDisplay(in: rect) {
                 content.cacheDisplay(in: rect, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-43-menu-\(name).png"))
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-44-menu-\(name).png"))
             }
         }
         window.appearance = NSAppearance(named: .aqua)
@@ -3336,7 +3336,7 @@ final class WebPopupTests: XCTestCase {
         }
         animationFrames[animationFrames.count - 1].delay = 0.4
         let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
-            URL(fileURLWithPath: "/tmp/linklet-1.8-43-drawer-animation.gif") as CFURL,
+            URL(fileURLWithPath: "/tmp/linklet-1.8-44-drawer-animation.gif") as CFURL,
             "com.compuserve.gif" as CFString, animationFrames.count, nil))
         CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary:
             [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
@@ -3375,6 +3375,104 @@ final class WebPopupTests: XCTestCase {
         model.setTargetVisible(preferred, isVisible: false)
         XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
         try await waitUntil { menuNode("preview-browser-picker-empty") != nil }
+    }
+
+    func testBrowserDrawerHasNaturalHeightAndKeepsAllRowsVisibleInShortWindow() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "BrowserDrawerNaturalHeight.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let targets = (1...12).map { BrowserTarget.browser(name: "Browser \($0)",
+            applicationURL: URL(fileURLWithPath: "/Applications/DrawerFixture\($0).app")) }
+        let model = AppModel(defaults: defaults, discoverTargets: { targets })
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.refreshTargets()
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
+        try await waitUntil { model.previewSession.pageTitle == "Downloads fixture" }
+        let window = try XCTUnwrap(model.previewSession.webView?.window)
+        let content = try XCTUnwrap(window.contentView)
+        let screen = try XCTUnwrap(window.screen).visibleFrame
+        window.setFrame(NSRect(x: screen.midX - 320, y: screen.maxY - 460, width: 640, height: 440), display: true)
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow }
+        let originalFrame = window.frame
+        let trigger = try XCTUnwrap(accessibilityNode(in: content, identifier: "preview-browser-menu"))
+        XCTAssertEqual(trigger.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil {
+            window.childWindows?.contains { $0.identifier?.rawValue == "preview-browser-overflow" && $0.isVisible } == true
+        }
+        let overflow = try XCTUnwrap(window.childWindows?.first { $0.identifier?.rawValue == "preview-browser-overflow" })
+        let overflowContent = try XCTUnwrap(overflow.contentView)
+        try await Task.sleep(nanoseconds: 280_000_000)
+        func frame(_ object: NSObject) throws -> NSRect {
+            try XCTUnwrap(object.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        }
+        let card = try XCTUnwrap(accessibilityNode(in: overflowContent, identifier: "preview-browser-card"))
+        let tallFrame = try frame(card)
+        XCTAssertGreaterThan(tallFrame.height, 440 - PreviewLayout.topBarHeight)
+        XCTAssertEqual(tallFrame.maxX, originalFrame.maxX, accuracy: 1)
+        XCTAssertEqual(tallFrame.maxY, originalFrame.maxY - PreviewLayout.topBarHeight, accuracy: 1)
+        for target in targets {
+            let row = try XCTUnwrap(accessibilityNode(in: overflowContent, identifier: "preview-browser-target-\(target.id)"))
+            let rowFrame = try frame(row)
+            XCTAssertGreaterThanOrEqual(rowFrame.minY, tallFrame.minY)
+            XCTAssertLessThanOrEqual(rowFrame.maxY, tallFrame.maxY)
+        }
+        func containsScrollView(_ view: NSView) -> Bool {
+            view is NSScrollView || view.subviews.contains(where: containsScrollView)
+        }
+        XCTAssertFalse(containsScrollView(overflowContent), "Every row fits without an internal scrolling viewport")
+        XCTAssertEqual(window.frame, originalFrame, "Opening the menu does not resize or move the page")
+        XCTAssertTrue(window.isKeyWindow, "The attached menu does not take keyboard focus")
+        XCTAssertEqual(model.windowRegistry.windows.count, 1, "The menu is not a browser tab")
+        overflowContent.layoutSubtreeIfNeeded()
+        if let bitmap = overflowContent.bitmapImageRepForCachingDisplay(in: overflowContent.bounds) {
+            overflowContent.cacheDisplay(in: overflowContent.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to:
+                URL(fileURLWithPath: "/tmp/linklet-1.8-44-overflow-menu.png"))
+        }
+        // Clicking the overflow header must not be mistaken for an outside click.
+        let headerPoint = NSPoint(x: overflow.frame.midX, y: overflow.frame.maxY - 12)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: overflow.convertPoint(fromScreen: headerPoint),
+                modifierFlags: [], timestamp: 0, windowNumber: overflow.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+            NSApp.sendEvent(event)
+        }
+        XCTAssertNotNil(accessibilityNode(in: overflowContent, identifier: "preview-browser-card"))
+        // Fewer entries immediately reduce the drawer height and restore it inside the page.
+        for target in targets.suffix(8) { model.setTargetVisible(target, isVisible: false) }
+        try await waitUntil { !overflow.isVisible && self.accessibilityNode(in: content, identifier: "preview-browser-card") != nil }
+        let shorter = try XCTUnwrap(accessibilityNode(in: content, identifier: "preview-browser-card"))
+        XCTAssertLessThan(try frame(shorter).height, tallFrame.height)
+        XCTAssertEqual(window.frame, originalFrame)
+        for target in targets.suffix(8) { model.setTargetVisible(target, isVisible: true) }
+        try await waitUntil { overflow.isVisible }
+        window.setFrameOrigin(NSPoint(x: originalFrame.minX + 24, y: originalFrame.minY))
+        try await waitUntil { abs(overflow.frame.maxX - window.frame.maxX) < 1 }
+        window.setContentSize(NSSize(width: 640, height: 650))
+        try await waitUntil { !overflow.isVisible && self.accessibilityNode(in: content, identifier: "preview-browser-target-\(targets.last!.id)") != nil }
+        let fittingCard = try XCTUnwrap(accessibilityNode(in: content, identifier: "preview-browser-card"))
+        XCTAssertEqual(try frame(fittingCard).height, tallFrame.height, accuracy: 1,
+                       "Resizing the page does not compress the list")
+        window.setContentSize(NSSize(width: 640, height: 440))
+        try await waitUntil { overflow.isVisible }
+        window.setFrameOrigin(NSPoint(x: window.frame.minX, y: screen.minY))
+        try await waitUntil { abs(overflow.frame.minY - screen.minY) < 1 }
+        XCTAssertEqual(overflow.frame.height, tallFrame.height, accuracy: 1,
+                       "The screen edge repositions the menu without adding a scroller")
+        model.closeAllWindows()
+        XCTAssertFalse(overflow.isVisible)
+        XCTAssertNil(overflow.parent)
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
+        try await waitUntil { model.previewSession.pageTitle == "Downloads fixture" }
+        let reopened = try XCTUnwrap(model.previewSession.webView?.window)
+        reopened.setFrame(originalFrame, display: true)
+        let reopenedTrigger = try XCTUnwrap(accessibilityNode(in: try XCTUnwrap(reopened.contentView), identifier: "preview-browser-menu"))
+        XCTAssertEqual(reopenedTrigger.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { reopened.childWindows?.contains { $0.isVisible && $0.identifier?.rawValue == "preview-browser-overflow" } == true }
+        model.closeAllWindows()
     }
 
     func testBrowserMenuHoverDelayTransitionAndOptionalClickMode() async throws {
@@ -3436,6 +3534,15 @@ final class WebPopupTests: XCTestCase {
         XCTAssertTrue(view.handle(try key(36)))
         XCTAssertEqual(opened, view.targets.first?.id)
         XCTAssertFalse(menu.isPresented)
+        menu.toggle()
+        let commandTwo = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2", charactersIgnoringModifiers: "2",
+            isARepeat: false, keyCode: 19))
+        XCTAssertTrue(view.handle(commandTwo))
+        XCTAssertEqual(opened, view.targets[1].id)
+        menu.toggle(); view.firstShortcutNumber = 2
+        XCTAssertTrue(view.handle(commandTwo))
+        XCTAssertEqual(opened, view.targets[0].id, "Full-button mode numbers alternate browsers starting at 2")
         menu.toggle()
         XCTAssertTrue(view.handle(try key(53)))
         XCTAssertFalse(menu.isPresented)
