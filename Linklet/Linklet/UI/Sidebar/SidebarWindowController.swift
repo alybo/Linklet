@@ -128,6 +128,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
                 return
             }
             self.library.cancelHistoryClear()
+            self.windows.downloads.cancelHistoryClear()
             // A form opened during the reveal must remain anchored while the user types.
             self.stopAnimation()
             self.reveal.progress = 1
@@ -192,6 +193,7 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         suppressedUntil = Date().addingTimeInterval(0.8)
         editor.cancel()
         library.cancelHistoryClear()
+        windows.downloads.cancelHistoryClear()
         window?.ignoresMouseEvents = true
         clearIndicators()
         isResizing = false
@@ -490,7 +492,9 @@ final class SidebarWindowController: NSWindowController, NSWindowDelegate {
         editor.activeSection = selected
         waitsForPointerEntry = manual
         library.resetRecentDisplayLimit()
+        windows.downloads.resetHistoryDisplayLimit()
         library.cancelHistoryClear()
+        windows.downloads.cancelHistoryClear()
         leftPanelAt = nil
         if selected != nil { showSectionIndicators(on: screen) }
         else { clearIndicators() }

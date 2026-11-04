@@ -116,7 +116,7 @@ final class AppModel: ObservableObject {
         let data = siteData ?? SiteDataService(defaults: defaults)
         self.siteData = data
         self.windowGeometry = windowGeometry ?? WindowGeometryService(defaults: defaults)
-        let registry = windowRegistry ?? BrowserWindowRegistry()
+        let registry = windowRegistry ?? BrowserWindowRegistry(downloads: DownloadManager(defaults: defaults))
         self.windowRegistry = registry
         let blocker = AdBlockService(defaults: defaults)
         adBlockService = blocker

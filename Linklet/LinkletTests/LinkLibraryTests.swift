@@ -3220,6 +3220,115 @@ final class WebPopupTests: XCTestCase {
         }
     }
 
+    private func seedDownloadHistory(_ defaults: UserDefaults, count: Int, state: String = "finished", destination: URL? = nil) throws {
+        let records: [[String: Any]] = (0..<count).map { index in
+            ["id": UUID().uuidString, "createdAt": Double(index), "filename": "file-\(index).txt",
+             "state": state, "received": 12, "expected": 100,
+             "sourceURL": "https://example.com/download/\(index)",
+             "destination": destination?.absoluteString ?? URL(fileURLWithPath: "/tmp/history-\(index).txt").absoluteString]
+        }
+        defaults.set(try JSONSerialization.data(withJSONObject: records), forKey: "downloadHistory")
+    }
+
+    func testDownloadHistoryPersistsPagesSearchAndClearWithoutRemovingFiles() async throws {
+        let suite = "DownloadHistoryUI.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("keep downloaded file".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try seedDownloadHistory(defaults, count: 23, destination: file)
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        let manager = model.downloads
+        XCTAssertEqual(manager.items.count, 23)
+        XCTAssertFalse(manager.hasActiveDownloads)
+        XCTAssertEqual(manager.visibleItems.map(\.filename), (13...22).reversed().map { "file-\($0).txt" })
+        manager.showMoreHistory()
+        XCTAssertEqual(manager.visibleItems.count, 20)
+        manager.showMoreHistory()
+        XCTAssertEqual(manager.visibleItems.count, 23)
+        XCTAssertFalse(manager.hasMoreHistory)
+        let sidebar = SidebarWindowController(model: model, reduceMotion: { true })
+        defer { sidebar.hide(animated: false) }
+        sidebar.showDownloads()
+        XCTAssertEqual(manager.historyDisplayLimit, 10)
+        let view = SidebarView(model: model, dismiss: {}, editor: sidebar.editor)
+        XCTAssertEqual(view.matchingDownloads.count, 10)
+        model.linkLibrary.setShowsSidebarSearch(true)
+        sidebar.editor.query = "file-0.txt"
+        XCTAssertEqual(view.matchingDownloads.map(\.filename), ["file-0.txt"], "Search includes older hidden records")
+        sidebar.editor.endSearch()
+        let content = try XCTUnwrap(sidebar.window?.contentView)
+        try await waitUntil { self.accessibilityNode(in: content, identifier: "sidebar-downloads-show-more") != nil }
+        XCTAssertNotNil(accessibilityNode(in: content, identifier: "sidebar-downloads-clear-history"))
+        manager.requestHistoryClear()
+        try await waitUntil { self.accessibilityNode(in: content, identifier: "sidebar-download-history-confirmation") != nil }
+        manager.cancelHistoryClear()
+        manager.confirmHistoryClear()
+        XCTAssertEqual(manager.items.count, 23)
+        manager.requestHistoryClear()
+        manager.confirmHistoryClear()
+        XCTAssertTrue(manager.items.isEmpty)
+        XCTAssertTrue(DownloadManager(defaults: defaults).items.isEmpty)
+        XCTAssertNil(defaults.data(forKey: "downloadHistory"))
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "keep downloaded file")
+    }
+
+    func testDownloadHistoryRetainsLimitAndRestoresInterruptedTransfersAsInactive() throws {
+        let suite = "DownloadHistoryRecovery.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try seedDownloadHistory(defaults, count: 205)
+        let manager = DownloadManager(defaults: defaults)
+        XCTAssertEqual(manager.items.count, DownloadManager.historyLimit)
+        XCTAssertEqual(manager.items.first?.filename, "file-5.txt")
+        for _ in 0..<30 { manager.showMoreHistory() }
+        XCTAssertEqual(manager.visibleItems.count, 200)
+        XCTAssertFalse(manager.hasMoreHistory)
+        for state in ["choosing", "downloading", "finishing"] {
+            try seedDownloadHistory(defaults, count: 1, state: state)
+            let restored = DownloadManager(defaults: defaults)
+            XCTAssertEqual(restored.items.first?.state, .failed)
+            XCTAssertNotNil(restored.items.first?.error)
+            XCTAssertFalse(restored.hasActiveDownloads)
+            XCTAssertFalse(restored.hasPendingWork)
+        }
+        defaults.set(Data("broken".utf8), forKey: "downloadHistory")
+        XCTAssertTrue(DownloadManager(defaults: defaults).items.isEmpty)
+        XCTAssertTrue(DownloadManager().items.isEmpty, "A standalone ephemeral manager must not read another profile")
+    }
+
+    func testClearingDownloadHistoryKeepsLiveTransferAndDoesNotResurrectOldRecords() async throws {
+        let suite = "DownloadHistoryLive.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try seedDownloadHistory(defaults, count: 12)
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let manager = DownloadManager(defaults: defaults) { folder.appendingPathComponent($0) }
+        defer { manager.cancelAll() }
+        let page = DownloadTestPage(manager: manager, url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
+        defer { page.close() }
+        try await waitUntil { page.session.pageTitle == "Downloads fixture" }
+        _ = try await page.view?.evaluateJavaScript("document.getElementById('slow').click();true")
+        try await waitUntil { manager.items.last?.state == .downloading && (manager.items.last?.received ?? 0) > 0 }
+        let live = try XCTUnwrap(manager.items.last)
+        XCTAssertEqual(manager.visibleItems.count, 11)
+        XCTAssertEqual(manager.visibleItems.first?.id, live.id)
+        manager.requestHistoryClear(); manager.confirmHistoryClear()
+        XCTAssertEqual(manager.items.map(\.id), [live.id])
+        XCTAssertTrue(manager.hasActiveDownloads)
+        XCTAssertEqual(DownloadManager(defaults: defaults).items.first?.state, .failed)
+        try await waitUntil { live.state == .finished }
+        let restored = DownloadManager(defaults: defaults)
+        XCTAssertEqual(restored.items.map(\.id), [live.id])
+        XCTAssertEqual(restored.items.first?.state, .finished)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(live.destination)).count, 524_288)
+    }
+
     func testDownloadsUseNativeRequestsForAttachmentsPOSTBlobDataAndSiteWindows() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
@@ -3227,8 +3336,11 @@ final class WebPopupTests: XCTestCase {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: folder) }
+        let historySuite = "NativeDownloadHistory.\(UUID())"
+        let historyDefaults = try XCTUnwrap(UserDefaults(suiteName: historySuite))
+        defer { historyDefaults.removePersistentDomain(forName: historySuite) }
         var choices = 0
-        let manager = DownloadManager { name in choices += 1; return folder.appendingPathComponent("\(choices)-\(name)") }
+        let manager = DownloadManager(defaults: historyDefaults) { name in choices += 1; return folder.appendingPathComponent("\(choices)-\(name)") }
         let page = DownloadTestPage(manager: manager, url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
         defer { page.close(); manager.cancelAll() }
         let view = try XCTUnwrap(page.view)
@@ -3257,6 +3369,14 @@ final class WebPopupTests: XCTestCase {
         try await waitUntil { manager.items.count == 6 && manager.items.last?.state == .finished }
         XCTAssertTrue(child.session.windowRegistry.downloads === manager)
         XCTAssertEqual(manager.items.last?.sourceURL?.path, "/attachment")
+        let restored = DownloadManager(defaults: historyDefaults)
+        XCTAssertEqual(restored.items.map(\.id), manager.items.map(\.id))
+        XCTAssertEqual(restored.items.map(\.destination), manager.items.map(\.destination))
+        XCTAssertEqual(restored.items.map(\.sourceURL), manager.items.map(\.sourceURL))
+        XCTAssertTrue(restored.items.allSatisfy { $0.state == .finished })
+        let savedMetadata = String(decoding: try XCTUnwrap(historyDefaults.data(forKey: "downloadHistory")), as: UTF8.self)
+        XCTAssertFalse(savedMetadata.contains("login=fixture"))
+        XCTAssertFalse(savedMetadata.contains("token=fixture"), "Never persist the original POST body")
         page.session.windowRegistry.closeAll()
 
         let suite = "DownloadSidebar.\(UUID())"

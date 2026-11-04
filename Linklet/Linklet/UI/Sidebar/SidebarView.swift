@@ -243,7 +243,7 @@ struct SidebarView: View {
         windows.windows.filter { LinkLibrary.matches(query, in: $0.title, $0.url?.absoluteString ?? "") }
     }
     var matchingDownloads: [DownloadItem] {
-        downloads.items.reversed().filter { LinkLibrary.matches(query, in: $0.filename) }
+        query.isEmpty ? downloads.visibleItems : downloads.items.reversed().filter { LinkLibrary.matches(query, in: $0.filename) }
     }
     var matchingRecentLinks: [RecentLink] {
         query.isEmpty ? library.visibleRecentLinks : library.recentLinks.filter { LinkLibrary.matches(query, in: $0.title, $0.address) }
@@ -307,6 +307,13 @@ struct SidebarView: View {
             if library.isHistoryClearPending {
                 HistoryClearConfirmation(library: library).padding(.horizontal, SidebarLayout.inset).padding(.bottom, 12)
             }
+            if downloads.isHistoryClearPending {
+                ClearHistoryPrompt(title: L("Clear download history?"),
+                    detail: L("Downloaded files will remain on disk. Active downloads will continue."),
+                    cancel: downloads.cancelHistoryClear, confirm: downloads.confirmHistoryClear)
+                    .accessibilityIdentifier("sidebar-download-history-confirmation")
+                    .padding(.horizontal, SidebarLayout.inset).padding(.bottom, 12)
+            }
             HStack {
                 Button { dismiss(); model.showSettings(page: .windows) } label: {
                     Image(systemName: "gearshape").font(.system(size: layout.footerIconSize))
@@ -330,6 +337,7 @@ struct SidebarView: View {
             if editor.isSearchVisible { editor.endSearch() }
             else if editor.isEditing { editor.cancel() }
             else if library.isHistoryClearPending { library.cancelHistoryClear() }
+            else if downloads.isHistoryClearPending { downloads.cancelHistoryClear() }
             else { dismiss() }
         }
     }
@@ -343,8 +351,8 @@ struct SidebarView: View {
                 count: section == .open ? windows.windows.count : section == .downloads ? downloads.activeCount : 0,
                 toggle: { if editor.activeSection != section { library.toggleSection(section) } },
                 addBookmark: section == .bookmarks ? { editor.showBookmark() } : nil,
-                clearDownloads: section == .downloads && downloads.items.contains(where: { !$0.isActive })
-                    ? { downloads.clearFinished() } : nil)
+                clearDownloads: section == .downloads && downloads.hasHistory
+                    ? { library.cancelHistoryClear(); downloads.requestHistoryClear() } : nil)
             .padding(.leading, -8)
             .onDrag {
                 draggedSection = section
@@ -388,6 +396,16 @@ struct SidebarView: View {
                 DownloadSidebarRow(item: item, manager: downloads, layout: layout)
             }
             if matchingDownloads.isEmpty { emptyMessage(query.isEmpty ? "No downloads." : "No results.") }
+            if downloads.hasHistory {
+                HStack(spacing: 12) {
+                    if query.isEmpty && downloads.hasMoreHistory {
+                        Button(L("Show more"), action: downloads.showMoreHistory)
+                            .accessibilityIdentifier("sidebar-downloads-show-more")
+                    }
+                    Button(L("Clear history")) { library.cancelHistoryClear(); downloads.requestHistoryClear() }
+                        .accessibilityIdentifier("sidebar-downloads-clear-history")
+                }.font(layout.groupFont).buttonStyle(.plain).foregroundStyle(.secondary).padding(.top, 8)
+            }
         }.padding(.top, layout.rowGap)
     }
 
@@ -443,7 +461,7 @@ struct SidebarView: View {
             } else {
                 HStack(spacing: 12) {
                     if query.isEmpty && library.hasMoreRecentLinks { Button(L("Show more"), action: library.showMoreRecentLinks) }
-                    Button(L("Clear history"), action: library.requestHistoryClear)
+                    Button(L("Clear history")) { downloads.cancelHistoryClear(); library.requestHistoryClear() }
                 }.font(layout.groupFont).buttonStyle(.plain).foregroundStyle(.secondary).padding(.top, 8)
             }
         }.padding(.top, layout.rowGap)
@@ -808,8 +826,8 @@ private struct SidebarSectionHeader: View {
                 .foregroundStyle(SidebarLayout.controlColor)
                 .shadow(color: .black.opacity(0.4), radius: 1, y: 1)
                 .focused($focusedControl, equals: .action)
-                .help(L(addBookmark != nil ? "Add bookmark" : "Clear completed downloads"))
-                .accessibilityLabel(L(addBookmark != nil ? "Add bookmark" : "Clear completed downloads"))
+                .help(L(addBookmark != nil ? "Add bookmark" : "Clear history"))
+                .accessibilityLabel(L(addBookmark != nil ? "Add bookmark" : "Clear history"))
                 .accessibilityIdentifier(addBookmark != nil ? "sidebar-add-bookmark" : "sidebar-clear-downloads")
                 .accessibilityHidden(false)
                 .opacity(showsControls ? 1 : 0)
@@ -1318,14 +1336,25 @@ struct SidebarContour: Shape {
 struct HistoryClearConfirmation: View {
     @ObservedObject var library: LinkLibrary
     var body: some View {
+        ClearHistoryPrompt(title: L("Clear all recent links?"), detail: L("This cannot be undone."),
+            cancel: library.cancelHistoryClear, confirm: library.confirmHistoryClear)
+    }
+}
+
+private struct ClearHistoryPrompt: View {
+    let title: String
+    let detail: String
+    let cancel: () -> Void
+    let confirm: () -> Void
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(L("Clear all recent links?"), systemImage: "exclamationmark.triangle")
+            Label(title, systemImage: "exclamationmark.triangle")
                 .font(.system(size: 12, weight: .semibold))
-            Text(L("This cannot be undone.")).font(.caption).foregroundStyle(.secondary)
+            Text(detail).font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button(L("Cancel"), action: library.cancelHistoryClear)
+                Button(L("Cancel"), action: cancel)
                 Spacer()
-                Button(L("Clear history"), role: .destructive, action: library.confirmHistoryClear)
+                Button(L("Clear history"), role: .destructive, action: confirm)
             }.buttonStyle(.bordered).controlSize(.small)
         }.padding(12).background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityElement(children: .contain)

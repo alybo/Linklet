@@ -6,8 +6,9 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class DownloadItem: ObservableObject, Identifiable {
-    enum State { case choosing, downloading, finishing, finished, cancelled, failed }
-    let id = UUID()
+    enum State: String, Codable { case choosing, downloading, finishing, finished, cancelled, failed }
+    let id: UUID
+    let createdAt: Date
     @Published var filename = L("Download")
     @Published var state: State = .choosing
     @Published var received: Int64 = 0
@@ -15,6 +16,11 @@ final class DownloadItem: ObservableObject, Identifiable {
     @Published var error: String?
     var sourceURL: URL?
     var destination: URL?
+
+    init(id: UUID = UUID(), createdAt: Date = Date()) {
+        self.id = id
+        self.createdAt = createdAt
+    }
 
     static func fileSymbol(for filename: String) -> String {
         let ext = (filename as NSString).pathExtension.lowercased()
@@ -53,12 +59,21 @@ final class DownloadItem: ObservableObject, Identifiable {
     }
 }
 
-/// Owns WebKit transfers independently of page/window lifetime. Neither URLs nor
-/// download history are persisted. WebKit retains the original POST/cookie context.
+/// Owns WebKit transfers independently of page/window lifetime. History stores
+/// only local metadata, never cookies, POST bodies or WebKit resume data.
 @MainActor
 final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
     @Published private(set) var items: [DownloadItem] = []
     @Published private(set) var activeCount = 0
+    static let historyLimit = 200
+    @Published private(set) var historyDisplayLimit = 10
+    @Published private(set) var isHistoryClearPending = false
+    var hasHistory: Bool { items.contains { !$0.isActive } }
+    var hasMoreHistory: Bool { items.filter { !$0.isActive }.count > historyDisplayLimit }
+    var visibleItems: [DownloadItem] {
+        let newest = items.reversed()
+        return newest.filter(\.isActive) + Array(newest.filter { !$0.isActive }.prefix(historyDisplayLimit))
+    }
     var hasActiveDownloads: Bool { activeCount > 0 }
     var hasPendingWork: Bool { !jobs.isEmpty || picking != nil || !cleanupTasks.isEmpty }
 
@@ -86,12 +101,49 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
     private var progressTimer: Timer?
     private var isStopping = false
     private var cleanupTasks: [UUID: Task<Void, Never>] = [:]
+    private let defaults: UserDefaults?
+    private static let historyKey = "downloadHistory"
+    private struct StoredItem: Codable {
+        let id: UUID
+        let createdAt: Date
+        let filename: String
+        let state: DownloadItem.State
+        let received: Int64
+        let expected: Int64
+        let sourceURL: URL?
+        let destination: URL?
+        let error: String?
+
+        @MainActor init(_ item: DownloadItem) {
+            id = item.id; createdAt = item.createdAt; filename = item.filename
+            state = item.state; received = item.received; expected = item.expected
+            sourceURL = item.sourceURL; destination = item.destination; error = item.error
+        }
+
+        @MainActor func restore() -> DownloadItem {
+            let item = DownloadItem(id: id, createdAt: createdAt)
+            item.filename = DownloadManager.safeFilename(filename)
+            let interrupted = [.choosing, .downloading, .finishing].contains(state)
+            item.state = interrupted ? .failed : state
+            item.received = max(0, received); item.expected = max(0, expected)
+            item.sourceURL = sourceURL.flatMap { URLPolicy.canPreview($0) ? $0 : nil }
+            item.destination = destination.flatMap { $0.isFileURL ? $0 : nil }
+            item.error = interrupted ? L("Download interrupted when Linklet closed.") : error
+            return item
+        }
+    }
     // Tests choose files in a temporary directory without driving a system dialog.
     private let chooseDestination: (@MainActor (String) async -> URL?)?
 
-    init(chooseDestination: (@MainActor (String) async -> URL?)? = nil) {
+    // AppModel supplies its profile. Standalone/test registries remain in memory.
+    init(defaults: UserDefaults? = nil, chooseDestination: (@MainActor (String) async -> URL?)? = nil) {
+        self.defaults = defaults
         self.chooseDestination = chooseDestination
         super.init()
+        if let data = defaults?.data(forKey: Self.historyKey),
+           let saved = try? JSONDecoder().decode([StoredItem].self, from: data) {
+            items = saved.suffix(Self.historyLimit).map { $0.restore() }
+        }
     }
 
     func adopt(_ download: WKDownload, from session: PreviewSession) {
@@ -103,6 +155,7 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
         items.append(job.item)
         download.delegate = self
         updateActivity()
+        persistHistory()
     }
 
     func cancel(_ id: UUID) {
@@ -111,6 +164,7 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
         if picking === job { savePanel?.cancel(nil) }
         job.resolveDestination(nil)
         updateActivity()
+        persistHistory()
         job.download.cancel { [weak self] _ in self?.finish(job, state: .cancelled) }
     }
 
@@ -127,7 +181,30 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
         for task in Array(cleanupTasks.values) { await task.value }
     }
 
-    func clearFinished() { items.removeAll { !$0.isActive } }
+    func showMoreHistory() { historyDisplayLimit = min(Self.historyLimit, historyDisplayLimit + 10) }
+    func resetHistoryDisplayLimit() { historyDisplayLimit = 10 }
+    func requestHistoryClear() { isHistoryClearPending = hasHistory }
+    func cancelHistoryClear() { isHistoryClearPending = false }
+    func confirmHistoryClear() {
+        guard isHistoryClearPending else { return }
+        clearFinished()
+    }
+    func clearFinished() {
+        items.removeAll { !$0.isActive }
+        isHistoryClearPending = false
+        resetHistoryDisplayLimit()
+        persistHistory()
+    }
+
+    private func persistHistory() {
+        let retained = Set(items.filter { !$0.isActive }.suffix(Self.historyLimit).map(\.id))
+        items.removeAll { !$0.isActive && !retained.contains($0.id) }
+        guard let defaults else { return }
+        if items.isEmpty { defaults.removeObject(forKey: Self.historyKey); return }
+        if let data = try? JSONEncoder().encode(items.map { StoredItem($0) }) {
+            defaults.set(data, forKey: Self.historyKey)
+        }
+    }
 
     func reveal(_ item: DownloadItem) {
         guard item.state == .finished, let url = item.destination else { return }
@@ -149,6 +226,7 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
             job.item.sourceURL = response.url.flatMap { URLPolicy.canPreview($0) ? $0 : nil }
         }
         job.item.filename = Self.safeFilename(suggestedFilename)
+        persistHistory()
         job.destinationHandler = completionHandler
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             job.item.error = L("The server returned HTTP %d.", http.statusCode)
@@ -184,6 +262,7 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
                             job.item.destination = selected
                             job.item.filename = selected.lastPathComponent
                             job.item.state = .downloading
+                            persistHistory()
                             job.resolveDestination(prepared.folder.appendingPathComponent(job.item.filename))
                         } else {
                             cleanup(prepared.folder)
@@ -263,6 +342,7 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
         job.releaseWebsiteData()
         if let folder = job.folder { cleanup(folder) }
         updateActivity()
+        persistHistory()
     }
 
     private func cleanup(_ folder: URL) {
