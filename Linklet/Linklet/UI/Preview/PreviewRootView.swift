@@ -243,6 +243,11 @@ final class PreviewPageCommandView: NSView {
         // Character matching supports other layouts; physical fallbacks also
         // keep these commands available when Russian letters are reported.
         let character = event.charactersIgnoringModifiers?.lowercased()
+        if modifiers == .command, character == "1" || event.keyCode == 18,
+           let openInBrowser = session.onContinueInBrowser {
+            if !event.isARepeat { openInBrowser() }
+            return true
+        }
         if modifiers == .command, character == "r" || event.keyCode == 15 {
             if !event.isARepeat { session.reload() }
             return true
@@ -388,26 +393,33 @@ struct PreviewOpenInToolbarView: View {
     }
 
     var body: some View {
-        if let preferredTarget = targets.first {
-            HStack(spacing: 0) {
-                primaryButton(for: preferredTarget)
-
+        Group {
+            if !model.showsOpenInButton {
                 pickerButton
+                    .background(Color.primary.opacity(isHovered ? PreviewLayout.toolbarHoverOpacity : 0))
+                    .clipShape(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius, style: .continuous))
+                    .onHover { isHovered = $0 }
+            } else if let preferredTarget = targets.first {
+                HStack(spacing: 0) {
+                    primaryButton(for: preferredTarget)
+
+                    pickerButton
+                }
+                .frame(height: PreviewLayout.controlHeight)
+                .background(Color.primary.opacity(isHovered ? PreviewLayout.toolbarHoverOpacity : 0))
+                .clipShape(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius, style: .continuous))
+                .onHover { isHovered = $0 }
+            } else {
+                Button(action: model.refreshTargets) {
+                    Label(model.targets.isEmpty ? L("Find browsers") : L("Choose browsers"), systemImage: "safari")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .frame(height: PreviewLayout.controlHeight)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .frame(height: PreviewLayout.controlHeight)
-            .background(Color.primary.opacity(isHovered ? PreviewLayout.toolbarHoverOpacity : 0))
-            .clipShape(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius, style: .continuous))
-            .onHover { isHovered = $0 }
-        } else {
-            Button(action: model.refreshTargets) {
-                Label(model.targets.isEmpty ? L("Find browsers") : L("Choose browsers"), systemImage: "safari")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .padding(.horizontal, 10)
-                    .frame(height: PreviewLayout.controlHeight)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
+        }.onChange(of: model.showsOpenInButton) { _ in isPickerPresented = false }
     }
 
     private func primaryButton(for target: BrowserTarget) -> some View {
@@ -432,6 +444,7 @@ struct PreviewOpenInToolbarView: View {
         .buttonStyle(.plain)
         .keyboardShortcut("1", modifiers: .command)
         .help(L("Open in %@", target.displayName) + " — ⌘1")
+        .accessibilityIdentifier("preview-open-in-button")
     }
 
     private var pickerButton: some View {
@@ -444,16 +457,27 @@ struct PreviewOpenInToolbarView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(targets.count < 2)
-        .help(targets.count < 2 ? L("No other browsers") : L("Choose another browser"))
+        .disabled(model.showsOpenInButton && targets.count < 2)
+        .help(L("Open browser menu"))
+        .accessibilityLabel(L("Open browser menu"))
+        .accessibilityIdentifier("preview-browser-menu")
         .popover(isPresented: $isPickerPresented, arrowEdge: .top) {
-            BrowserTargetPicker(
-                targets: Array(targets.dropFirst()),
-                onOpen: { target in
-                    isPickerPresented = false
-                    model.openOriginalURL(in: target, session: session)
-                }
-            )
+            if targets.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button(L("Find browsers")) { isPickerPresented = false; model.refreshTargets() }
+                    Button(L("Choose browsers")) { isPickerPresented = false; model.showSettings(page: .search) }
+                }.buttonStyle(.plain).padding(12).frame(width: 220, alignment: .leading)
+                    .accessibilityIdentifier("preview-browser-picker-empty")
+            } else {
+                BrowserTargetPicker(
+                    targets: model.showsOpenInButton ? Array(targets.dropFirst()) : targets,
+                    firstShortcutNumber: model.showsOpenInButton ? 2 : 1,
+                    onOpen: { target in
+                        isPickerPresented = false
+                        model.openOriginalURL(in: target, session: session)
+                    }
+                )
+            }
         }
     }
 }
@@ -461,6 +485,7 @@ struct PreviewOpenInToolbarView: View {
 private struct BrowserTargetPicker: View {
     @ObservedObject private var language = AppLanguage.shared
     let targets: [BrowserTarget]
+    let firstShortcutNumber: Int
     let onOpen: (BrowserTarget) -> Void
 
     var body: some View {
@@ -468,7 +493,7 @@ private struct BrowserTargetPicker: View {
             ForEach(Array(targets.enumerated()), id: \.element.id) { index, target in
                 BrowserTargetPickerRow(
                     target: target,
-                    shortcutNumber: index < 8 ? index + 2 : nil,
+                    shortcutNumber: index + firstShortcutNumber <= 9 ? index + firstShortcutNumber : nil,
                     action: { onOpen(target) }
                 )
             }
@@ -530,5 +555,6 @@ private struct BrowserTargetPickerRow: View {
         .onHover { isHovered = $0 }
         .applyShortcut(shortcutNumber)
         .help(L("Open in %@", target.displayName))
+        .accessibilityIdentifier("preview-browser-target-\(target.id)")
     }
 }

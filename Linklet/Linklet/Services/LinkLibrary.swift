@@ -102,7 +102,7 @@ final class LinkLibrary: ObservableObject {
         showsSidebarSearch = defaults.bool(forKey: "sidebarShowsSearch")
         sectionWidths = (defaults.dictionary(forKey: "sidebarSectionWidths") as? [String: Double] ?? [:])
             .filter { $0.value.isFinite && $0.value > 0 }
-        isEnabled = defaults.bool(forKey: "sidebarEnabled")
+        isEnabled = defaults.object(forKey: "sidebarEnabled") as? Bool ?? true
         sidebarAppearance = defaults.string(forKey: "sidebarAppearance").flatMap(SidebarAppearance.init(rawValue:)) ?? .black
         showsRevealIndicator = defaults.object(forKey: "sidebarShowsRevealIndicator") as? Bool ?? false
         hidesInFullScreen = defaults.bool(forKey: "sidebarHidesInFullScreen")

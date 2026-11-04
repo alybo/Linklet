@@ -222,15 +222,16 @@ struct WelcomeTutorialView: View {
                         feedback = "The other browser opens the original link. Sign-ins and page state are not transferred."
                     } label: {
                         HStack(spacing: 7) {
-                            if let target = model.preferredTarget {
+                            if model.showsOpenInButton, let target = model.preferredTarget {
                                 Image(nsImage: TargetIconCache.shared.icon(for: target.applicationURL))
                                     .resizable().scaledToFit().frame(width: 14, height: 14)
                                 Text(L("Open in %@", target.displayName)).lineLimit(1)
-                            } else { Label(L("Choose browser"), systemImage: "safari") }
+                            } else if model.showsOpenInButton { Label(L("Choose browser"), systemImage: "safari") }
                             Image(systemName: "chevron.down").font(.caption2)
-                        }.font(.system(size: 11.5, weight: .medium)).padding(.horizontal, 10)
-                            .frame(height: PreviewLayout.controlHeight)
+                        }.font(.system(size: 11.5, weight: .medium)).padding(.horizontal, model.showsOpenInButton ? 10 : 0)
+                            .frame(width: model.showsOpenInButton ? nil : 27, height: PreviewLayout.controlHeight)
                     }.buttonStyle(.plain)
+                        .accessibilityLabel(L("Open browser menu"))
                         .overlay(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius).stroke(Color.accentColor, lineWidth: 2))
                         .anchorPreference(key: PreviewControlAnchors.self, value: .bounds) { ["browser": $0] }
                 }
@@ -240,7 +241,7 @@ struct WelcomeTutorialView: View {
                     HStack(alignment: .top, spacing: 24) {
                         coach("Address and search", "Click the address control to enter a link or search query.")
                             .anchorPreference(key: PreviewControlAnchors.self, value: .bounds) { ["addressHint": $0] }
-                        coach("Another browser", "Click to open the original link in another browser.")
+                        coach("Another browser", "Choose a browser from the arrow menu to open the original link.")
                             .anchorPreference(key: PreviewControlAnchors.self, value: .bounds) { ["browserHint": $0] }
                     }
                     VStack(spacing: 12) {

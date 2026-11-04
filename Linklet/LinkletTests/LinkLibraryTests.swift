@@ -41,6 +41,31 @@ private let searchResultOrigins = [
 
 @MainActor
 final class LinkLibraryTests: XCTestCase {
+    func testSidebarOpensAtEdgeByDefaultAndPreservesExplicitDisable() throws {
+        let suite = "SidebarFirstLaunch.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        XCTAssertTrue(model.linkLibrary.isEnabled)
+        XCTAssertFalse(model.linkLibrary.separatesSections)
+        XCTAssertFalse(model.linkLibrary.showsSidebarSearch)
+        let screen = try XCTUnwrap(NSScreen.main)
+        let controller = SidebarWindowController(model: model, reduceMotion: { true }, presentationOptions: { [] })
+        defer { controller.hide(animated: false) }
+        let point = NSPoint(x: screen.frame.minX, y: screen.visibleFrame.midY)
+        let now = Date()
+        controller.pollMouse(at: point, now: now)
+        controller.pollMouse(at: point, now: now.addingTimeInterval(0.6))
+        XCTAssertTrue(controller.isPresented)
+        controller.hide(animated: false)
+        model.linkLibrary.setEnabled(false)
+        XCTAssertFalse(LinkLibrary(defaults: defaults).isEnabled)
+        controller.pollMouse(at: point, now: now.addingTimeInterval(2))
+        XCTAssertFalse(controller.isPresented)
+        model.linkLibrary.setEnabled(true)
+        XCTAssertTrue(LinkLibrary(defaults: defaults).isEnabled)
+    }
+
     func testSectionPanelsAndSearchAreOptInWithIndependentPersistedWidths() throws {
         let suite = "Sidebar18Preferences.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -393,6 +418,7 @@ final class LinkLibraryTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let library = LinkLibrary(defaults: defaults)
         let url = URL(string: "https://example.com/original")!
+        library.setEnabled(false)
         XCTAssertFalse(library.isEnabled)
         XCTAssertFalse(library.savesHistory)
         library.recordOpening(url)
@@ -916,6 +942,7 @@ final class LinkLibraryTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let library = LinkLibrary(defaults: defaults)
+        library.setEnabled(false)
         XCTAssertEqual(library.sidebarAppearance, .black)
         library.setSidebarWidth(240)
         library.setEdgeOpenDelay(0.7)
@@ -2118,6 +2145,7 @@ final class WebPopupTests: XCTestCase {
         defer { server.stop() }
         let suite = "VisitedHistory.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(false, forKey: "sidebarEnabled")
         defaults.set(true, forKey: "keepsPreviewVisibleWhenInactive")
         defaults.set(true, forKey: "sidebarSavesHistory")
         let settings = SearchSettings(defaults: defaults, fetchIcon: { _ in Data() })
@@ -3204,6 +3232,70 @@ final class WebPopupTests: XCTestCase {
         session.endSession()
     }
 
+    func testCompactBrowserMenuIncludesPrimaryAndSingleBrowserAndButtonIsOptional() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "BrowserToolbarMode.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let first = BrowserTarget.browser(name: "Fixture A", applicationURL: URL(fileURLWithPath: "/Applications/FixtureA.app"))
+        let preferred = BrowserTarget.browser(name: "Fixture B", applicationURL: URL(fileURLWithPath: "/Applications/FixtureB.app"))
+        let model = AppModel(defaults: defaults, discoverTargets: { [first, preferred] })
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.refreshTargets()
+        model.setPreferredTarget(preferred.id)
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/download-page")!)
+        try await waitUntil { model.previewSession.pageTitle == "Downloads fixture" }
+        let window = try XCTUnwrap(model.previewSession.webView?.window)
+        let content = try XCTUnwrap(window.contentView)
+        func node(_ id: String) -> NSObject? { self.accessibilityNode(in: content, identifier: id) }
+        func menuNode(_ id: String) -> NSObject? {
+            NSApp.windows.compactMap { $0.contentView.flatMap { self.accessibilityNode(in: $0, identifier: id) } }.first
+        }
+        func snapshot(_ name: String) throws {
+            content.layoutSubtreeIfNeeded()
+            if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-41-toolbar-\(name).png"))
+            }
+        }
+        try await waitUntil { node("preview-browser-menu") != nil }
+        XCTAssertNil(node("preview-open-in-button"))
+        try snapshot("compact")
+        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { menuNode("preview-browser-target-\(preferred.id)") != nil }
+        XCTAssertNotNil(menuNode("preview-browser-target-\(first.id)"))
+        XCTAssertEqual(model.previewOpenTargets.first?.id, preferred.id)
+        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        model.setShowsOpenInButton(true)
+        try await waitUntil { node("preview-open-in-button") != nil }
+        XCTAssertTrue(AppModel(defaults: defaults, discoverTargets: { [] }).showsOpenInButton)
+        try snapshot("button")
+        model.setShowsOpenInButton(false)
+        model.setTargetVisible(first, isVisible: false)
+        try await waitUntil { node("preview-open-in-button") == nil }
+        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityEnabled") as? Bool, true)
+        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { menuNode("preview-browser-target-\(preferred.id)") != nil }
+        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+
+        // ⌘1 continues to work with no primary button in the view hierarchy.
+        var handoffs = 0
+        model.previewSession.onContinueInBrowser = { handoffs += 1 }
+        let commands = PreviewPageCommandView(session: model.previewSession)
+        content.addSubview(commands)
+        defer { commands.stopObserving(); commands.removeFromSuperview() }
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "1", charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18))
+        XCTAssertTrue(commands.handle(event))
+        XCTAssertEqual(handoffs, 1)
+        model.setTargetVisible(preferred, isVisible: false)
+        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { menuNode("preview-browser-picker-empty") != nil }
+    }
+
     func testColdHTMLCapabilityFlagDoesNotDownloadDocumentsButPreservesAttachments() throws {
         let url = URL(string: "https://example.com/page")!
         for (mime, disposition, capable, download) in [
@@ -3381,6 +3473,7 @@ final class WebPopupTests: XCTestCase {
 
         let suite = "DownloadSidebar.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(false, forKey: "sidebarEnabled")
         defer { defaults.removePersistentDomain(forName: suite) }
         let model = AppModel(defaults: defaults, windowRegistry: page.session.windowRegistry, discoverTargets: { [] })
         let sidebar = SidebarWindowController(model: model, reduceMotion: { true })

@@ -318,6 +318,9 @@ struct BrowserSettingsSections: View {
 
     var body: some View {
         Section {
+            Toggle(L("Show Open in browser button"), isOn: Binding(
+                get: { model.showsOpenInButton }, set: model.setShowsOpenInButton))
+                .accessibilityIdentifier("settings-show-open-in-button")
             if !model.visibleTargets.isEmpty {
                 Picker(L("Browser for sending links"), selection: Binding(
                     get: { model.preferredTarget?.id ?? "" }, set: model.setPreferredTarget)) {
@@ -325,7 +328,7 @@ struct BrowserSettingsSections: View {
                 }
             }
         } header: { Text(L("Opening in Another Browser")) } footer: {
-            Text(L("The primary Open in button uses this browser. It opens the original link without transferring website data or page state."))
+            Text(L("The arrow beside the page address opens the browser menu. The selected browser appears first and opens the original link with ⌘1."))
         }
         Section {
             if model.targets.isEmpty {

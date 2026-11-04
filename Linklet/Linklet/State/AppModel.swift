@@ -31,6 +31,7 @@ enum PreviewWindowBehavior: String, CaseIterable, Identifiable {
 final class AppModel: ObservableObject {
     private enum PreferenceKey {
         static let showsFullURL = "showsFullURL"
+        static let showsOpenInButton = "showsOpenInButton"
         static let sortsTargetsByUsage = "sortsTargetsByUsage"
         static let hiddenTargetIDs = "hiddenTargetIDs"
         static let targetUsageCounts = "targetUsageCounts"
@@ -57,6 +58,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isDefaultBrowser = false
     @Published private(set) var isLaunchAtLoginEnabled = false
     @Published private(set) var showsFullURL: Bool
+    @Published private(set) var showsOpenInButton: Bool
     @Published private(set) var sortsTargetsByUsage: Bool
     @Published private(set) var keepsPreviewVisibleWhenInactive: Bool
     @Published private(set) var keepsPreviewAboveOtherWindows: Bool
@@ -123,6 +125,7 @@ final class AppModel: ObservableObject {
         previewSession = PreviewSession(adBlockService: blocker, siteData: data, windowRegistry: registry)
         isAdBlockingEnabled = blocker.isEnabled
         showsFullURL = defaults.bool(forKey: PreferenceKey.showsFullURL)
+        showsOpenInButton = defaults.bool(forKey: PreferenceKey.showsOpenInButton)
         sortsTargetsByUsage = Self.bool(
             in: defaults,
             forKey: PreferenceKey.sortsTargetsByUsage,
@@ -417,6 +420,11 @@ final class AppModel: ObservableObject {
     func setShowsFullURL(_ enabled: Bool) {
         showsFullURL = enabled
         defaults.set(enabled, forKey: PreferenceKey.showsFullURL)
+    }
+
+    func setShowsOpenInButton(_ enabled: Bool) {
+        allPreviewModels.forEach { $0.showsOpenInButton = enabled }
+        defaults.set(enabled, forKey: PreferenceKey.showsOpenInButton)
     }
 
     func setOpensLinksInNewWindows(_ enabled: Bool) {
