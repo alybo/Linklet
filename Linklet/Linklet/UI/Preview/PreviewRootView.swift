@@ -391,30 +391,51 @@ private struct PreviewBookmarkLocationView: View {
     }
 }
 
+enum BrowserDrawerLayout {
+    static let width: CGFloat = 184
+    static let animationDuration: TimeInterval = 0.22
+}
+
+/// The viewport stays fixed below the toolbar while the drawer slides through it.
+/// Keeping the view mounted also lets a quick reversal continue from its current position.
+private struct BrowserDrawerSlide: GeometryEffect {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: 0, y: -size.height * (1 - progress)))
+    }
+}
+
 private struct PreviewBrowserMenuLayer: View {
     @ObservedObject var model: AppModel
     @ObservedObject var session: PreviewSession
     @ObservedObject var menu: BrowserMenuInteraction
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var targets: [BrowserTarget] {
         model.showsOpenInButton ? Array(model.previewOpenTargets.dropFirst()) : model.previewOpenTargets
     }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            if menu.isPresented {
-                BrowserTargetPicker(
-                    targets: targets,
-                    firstShortcutNumber: model.showsOpenInButton ? 2 : 1,
-                    menu: menu,
-                    onOpen: openBrowser,
-                    onFind: { menu.dismiss(); model.refreshTargets() },
-                    onChoose: { menu.dismiss(); model.showSettings(page: .search) }
-                )
-                .padding(.top, PreviewLayout.topBarHeight + 2)
-                .padding(.trailing, PreviewLayout.contentInset + 2)
-            }
-        }
+        BrowserTargetPicker(
+            targets: targets,
+            firstShortcutNumber: model.showsOpenInButton ? 2 : 1,
+            menu: menu,
+            onOpen: openBrowser,
+            onFind: { menu.dismiss(); model.refreshTargets() },
+            onChoose: { menu.dismiss(); model.showSettings(page: .search) }
+        )
+        .modifier(BrowserDrawerSlide(progress: menu.isPresented ? 1 : 0))
+        .clipped()
+        .animation(reduceMotion ? nil : .timingCurve(0.22, 0.7, 0.25, 1,
+            duration: BrowserDrawerLayout.animationDuration), value: menu.isPresented)
+        .allowsHitTesting(menu.isPresented)
+        .disabled(!menu.isPresented)
+        .accessibilityHidden(!menu.isPresented)
+        .padding(.top, PreviewLayout.topBarHeight)
         .background { BrowserMenuEventBridge(menu: menu, targets: targets, onOpen: openBrowser).accessibilityHidden(true) }
         .onChange(of: model.showsOpenInButton) { _ in menu.dismiss() }
         .onChange(of: model.opensBrowserMenuOnHover) { _ in menu.dismiss() }
@@ -669,7 +690,6 @@ struct PreviewOpenInToolbarView: View {
         }
         .buttonStyle(.plain)
         .disabled(model.showsOpenInButton && targets.count < 2)
-        .help(L("Open browser menu"))
         .accessibilityLabel(L("Open browser menu"))
         .accessibilityIdentifier("preview-browser-menu")
         .background { BrowserMenuRegion(menu: menu, isTrigger: true).accessibilityHidden(true) }
@@ -693,8 +713,7 @@ private struct BrowserTargetPicker: View {
             HStack {
                 Text(L("Open in browser"))
                     .font(.system(size: 11, weight: .medium))
-                Spacer()
-                Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .medium))
+                Spacer(minLength: 0)
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 10).padding(.top, 7).padding(.bottom, 5)
@@ -729,15 +748,13 @@ private struct BrowserTargetPicker: View {
             }
         }
         .padding(6)
-        .frame(width: 256)
+        .frame(width: BrowserDrawerLayout.width)
         .background { PreviewWindowMaterial() }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 0.5)
                 .allowsHitTesting(false)
         }
-        .shadow(color: .black.opacity(0.20), radius: 14, y: 5)
+        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12))
         .background { BrowserMenuRegion(menu: menu, isTrigger: false).accessibilityHidden(true) }
         .onHover { menu.hoverCard($0) }
         .accessibilityElement(children: .contain)

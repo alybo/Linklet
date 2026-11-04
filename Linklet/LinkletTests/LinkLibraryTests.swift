@@ -3239,7 +3239,8 @@ final class WebPopupTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let first = BrowserTarget.browser(name: "Safari", applicationURL: URL(fileURLWithPath: "/Applications/Safari.app"))
         let preferred = BrowserTarget.browser(name: "Arc", applicationURL: URL(fileURLWithPath: "/Applications/Arc.app"))
-        let model = AppModel(defaults: defaults, discoverTargets: { [first, preferred] })
+        let duck = BrowserTarget.browser(name: "DuckDuckGo", applicationURL: URL(fileURLWithPath: "/Applications/DuckDuckGo.app"))
+        let model = AppModel(defaults: defaults, discoverTargets: { [first, preferred, duck] })
         defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
         model.refreshTargets()
         model.setPreferredTarget(preferred.id)
@@ -3256,25 +3257,59 @@ final class WebPopupTests: XCTestCase {
             content.layoutSubtreeIfNeeded()
             if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
                 content.cacheDisplay(in: content.bounds, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-42-toolbar-\(name).png"))
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-43-toolbar-\(name).png"))
             }
         }
+        var animationFrames: [(image: CGImage, pixels: Data, delay: Double)] = []
+        func captureAnimationFrame(delay: Double = 0.03) throws {
+            content.layoutSubtreeIfNeeded()
+            let rect = NSRect(x: content.bounds.width - 260, y: content.isFlipped ? 0 : content.bounds.height - 220,
+                              width: 260, height: 220)
+            let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: rect))
+            content.cacheDisplay(in: rect, to: bitmap)
+            let pixels = Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+            animationFrames.append((try XCTUnwrap(bitmap.cgImage), pixels, delay))
+        }
+        try await waitUntil { !model.previewSession.isLoading }
+        try captureAnimationFrame(delay: 0.4)
         try await waitUntil { node("preview-browser-menu") != nil }
         _ = try XCTUnwrap(node("preview-browser-menu"))
         XCTAssertNil(node("preview-open-in-button"))
         try snapshot("compact")
         XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        for _ in 0..<10 {
+            try await Task.sleep(nanoseconds: 30_000_000)
+            try captureAnimationFrame()
+        }
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertGreaterThan(Set(animationFrames.map(\.pixels)).count, 2,
+                                 "Opening must render intermediate frames, rather than just switch visibility")
+        }
+        animationFrames[animationFrames.count - 1].delay = 0.6
+        // Reverse an in-flight retraction: the drawer remains mounted and can reopen immediately.
+        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await Task.sleep(nanoseconds: 280_000_000)
         try await waitUntil { menuNode("preview-browser-target-\(preferred.id)") != nil }
         XCTAssertNotNil(menuNode("preview-browser-target-\(first.id)"))
         XCTAssertEqual(model.previewOpenTargets.first?.id, preferred.id)
         // The card belongs to the preview itself, rather than a native popover window.
-        XCTAssertNotNil(node("preview-browser-card"))
+        let card = try XCTUnwrap(node("preview-browser-card"))
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let cardFrame = try XCTUnwrap(card.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        let contentFrame = window.convertToScreen(content.convert(content.bounds, to: nil))
+        XCTAssertEqual(cardFrame.width, 184, accuracy: 1)
+        XCTAssertEqual(cardFrame.maxX, contentFrame.maxX, accuracy: 1, "Drawer shares the window's right edge")
+        XCTAssertEqual(cardFrame.maxY, contentFrame.maxY - PreviewLayout.topBarHeight, accuracy: 1,
+                       "Drawer meets the toolbar without a gap")
+        XCTAssertNotNil(node("preview-browser-target-\(duck.id)"))
         func menuSnapshot(_ name: String) throws {
             content.layoutSubtreeIfNeeded()
             let rect = NSRect(x: content.bounds.width - 340, y: content.isFlipped ? 0 : content.bounds.height - 220, width: 340, height: 220)
             if let bitmap = content.bitmapImageRepForCachingDisplay(in: rect) {
                 content.cacheDisplay(in: rect, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-42-menu-\(name).png"))
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-43-menu-\(name).png"))
             }
         }
         window.appearance = NSAppearance(named: .aqua)
@@ -3290,6 +3325,26 @@ final class WebPopupTests: XCTestCase {
             timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}",
             charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         NSApp.sendEvent(escape)
+        let closingStart = animationFrames.count
+        for _ in 0..<10 {
+            try await Task.sleep(nanoseconds: 30_000_000)
+            try captureAnimationFrame()
+        }
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertGreaterThan(Set(animationFrames[closingStart...].map(\.pixels)).count, 2,
+                                 "Closing also renders intermediate frames")
+        }
+        animationFrames[animationFrames.count - 1].delay = 0.4
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+            URL(fileURLWithPath: "/tmp/linklet-1.8-43-drawer-animation.gif") as CFURL,
+            "com.compuserve.gif" as CFString, animationFrames.count, nil))
+        CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary:
+            [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        for frame in animationFrames {
+            CGImageDestinationAddImage(destination, frame.image, [kCGImagePropertyGIFDictionary:
+                [kCGImagePropertyGIFDelayTime: frame.delay]] as CFDictionary)
+        }
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
         try await waitUntil { node("preview-browser-card") == nil }
         XCTAssertTrue(window.isVisible, "Escape is consumed before PreviewWindow closes the page")
         model.setShowsOpenInButton(true)
@@ -3298,6 +3353,7 @@ final class WebPopupTests: XCTestCase {
         try snapshot("button")
         model.setShowsOpenInButton(false)
         model.setTargetVisible(first, isVisible: false)
+        model.setTargetVisible(duck, isVisible: false)
         try await waitUntil { node("preview-open-in-button") == nil }
         XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityEnabled") as? Bool, true)
         XCTAssertEqual(node("preview-browser-menu")?.value(forKey: "accessibilityPerformPress") as? Bool, true)
