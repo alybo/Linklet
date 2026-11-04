@@ -1,6 +1,7 @@
 import AppKit
+import PublicSuffixList
 
-/// Stores only Linklet window geometry, keyed by the currently displayed website host.
+/// Stores only Linklet window geometry, shared by a site's subdomains.
 /// It never stores website content, cookies, or browsing history.
 final class WindowGeometryService {
     private struct StoredFrame: Codable {
@@ -27,14 +28,19 @@ final class WindowGeometryService {
     }
 
     func frame(for url: URL) -> NSRect? {
-        guard let host = Self.host(for: url), let stored = frames[host] else { return nil }
-        return stored.rect
+        guard let key = Self.siteKey(for: url), let host = Self.host(for: url) else { return nil }
+        let stored = frames
+        // Prefer the previous root/www frame over a conflicting subdomain frame.
+        if let frame = stored[key] ?? stored["www." + key] ?? stored[host] { return frame.rect }
+        // Retain a legacy subdomain-only preference until the next explicit save.
+        return stored.keys.sorted().first { Self.siteKey(host: $0) == key }.flatMap { stored[$0]?.rect }
     }
 
     func save(_ frame: NSRect, for url: URL) {
-        guard let host = Self.host(for: url), frame.width > 0, frame.height > 0 else { return }
+        guard let key = Self.siteKey(for: url), frame.width > 0, frame.height > 0 else { return }
         var next = frames
-        next[host] = StoredFrame(frame)
+        for host in next.keys where Self.siteKey(host: host) == key { next.removeValue(forKey: host) }
+        next[key] = StoredFrame(frame)
         guard let data = try? JSONEncoder().encode(next) else { return }
         defaults.set(data, forKey: Self.preferenceKey)
     }
@@ -163,7 +169,17 @@ final class WindowGeometryService {
 
     private static func host(for url: URL) -> String? {
         guard let host = url.host?.lowercased(), !host.isEmpty else { return nil }
-        return host
+        return host.hasSuffix(".") ? String(host.dropLast()) : host
+    }
+
+    static func siteKey(for url: URL) -> String? { host(for: url).map { siteKey(host: $0) } }
+
+    private static func siteKey(host: String) -> String {
+        let labels = host.lowercased().split(separator: ".").map(String.init)
+        // IP literals and single-label intranet hosts are never collapsed.
+        guard !host.contains(":"), labels.count > 1,
+              !(labels.count == 4 && labels.allSatisfy { UInt8($0) != nil }) else { return host }
+        return PublicSuffixList.effectiveTLDPlusOne(host) ?? host
     }
 }
 
@@ -195,7 +211,7 @@ final class WebsiteWindowGeometry {
         // Bing and some other engines commit a JavaScript redirect document.
         // Keep the destination geometry through that intermediate document too.
         let sizingURL = WindowGeometryService.searchRedirectDestination(in: destination) ?? destination
-        let changedHost = sizingURL.host?.lowercased() != url?.host?.lowercased()
+        let changedHost = WindowGeometryService.siteKey(for: sizingURL) != url.flatMap(WindowGeometryService.siteKey(for:))
         url = sizingURL
         if changedHost { _ = restore() }
     }

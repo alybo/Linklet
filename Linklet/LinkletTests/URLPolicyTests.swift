@@ -27,7 +27,7 @@ final class URLPolicyTests: XCTestCase {
 
 @MainActor
 final class AppModelPreferencesTests: XCTestCase {
-    func testWindowGeometryPersistsPerHostAndStaysWithinVisibleFrame() throws {
+    func testWindowGeometryPersistsPerSiteAndStaysWithinVisibleFrame() throws {
         let suiteName = "app.peekroute.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -37,7 +37,8 @@ final class AppModelPreferencesTests: XCTestCase {
         service.save(frame, for: try XCTUnwrap(URL(string: "https://example.com/a")))
 
         XCTAssertEqual(service.frame(for: try XCTUnwrap(URL(string: "https://example.com/b"))), frame)
-        XCTAssertNil(service.frame(for: try XCTUnwrap(URL(string: "https://other.example.com"))))
+        XCTAssertEqual(service.frame(for: try XCTUnwrap(URL(string: "https://other.example.com"))), frame)
+        XCTAssertNil(service.frame(for: try XCTUnwrap(URL(string: "https://another.com"))))
         XCTAssertEqual(
             WindowGeometryService.clamped(
                 NSRect(x: -100, y: 900, width: 1_200, height: 900),
@@ -45,6 +46,52 @@ final class AppModelPreferencesTests: XCTestCase {
             ),
             NSRect(x: 0, y: 0, width: 800, height: 600)
         )
+    }
+
+    func testGeometrySiteKeysRespectPublicPrivateAndWildcardSuffixes() throws {
+        for (host, expected) in [
+            ("www.youtube.com", "youtube.com"), ("studio.youtube.com", "youtube.com"),
+            ("music.youtube.com.", "youtube.com"), ("studio.example.co.uk", "example.co.uk"),
+            ("www.other.co.uk", "other.co.uk"), ("a.first.github.io", "first.github.io"),
+            ("a.second.github.io", "second.github.io"), ("a.b.ck", "a.b.ck"),
+            ("a.www.ck", "www.ck"), ("127.0.0.1", "127.0.0.1"), ("localhost", "localhost")
+        ] {
+            XCTAssertEqual(WindowGeometryService.siteKey(for: try XCTUnwrap(URL(string: "https://" + host))), expected, host)
+        }
+    }
+
+    func testLegacySubdomainFramesPreferRootAndMigrateOnSaveWithoutMovingOpenWindow() throws {
+        let suite = "GeometrySiteMigration.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let screen = try XCTUnwrap(NSScreen.main)
+        let root = WindowGeometryService.clamped(NSRect(x: screen.visibleFrame.minX + 20,
+            y: screen.visibleFrame.minY + 20, width: 750, height: 500), to: screen.visibleFrame)
+        let studio = NSRect(x: root.minX + 40, y: root.minY + 20, width: 690, height: 460)
+        func stored(_ frame: NSRect) -> [String: CGFloat] {
+            ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height]
+        }
+        defaults.set(try JSONEncoder().encode(["www.youtube.com": stored(root), "studio.youtube.com": stored(studio)]),
+                     forKey: "websiteWindowFrames")
+        let service = WindowGeometryService(defaults: defaults)
+        let youtube = URL(string: "https://youtube.com")!
+        let destination = URL(string: "https://studio.youtube.com")!
+        XCTAssertEqual(service.frame(for: destination), root)
+        let window = NSWindow(contentRect: root, styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        PreviewWindowAppearance.apply(to: window)
+        defer { window.close() }
+        let geometry = WebsiteWindowGeometry(window: window, service: service)
+        XCTAssertTrue(geometry.begin(at: youtube))
+        window.makeKeyAndOrderFront(nil)
+        // A user's unsaved current frame must survive a same-site navigation.
+        window.setFrame(studio, display: false)
+        geometry.committed(destination)
+        XCTAssertEqual(window.frame, studio)
+        geometry.save()
+        XCTAssertEqual(WindowGeometryService(defaults: defaults).frame(for: youtube), studio)
+        XCTAssertEqual(service.frame(for: URL(string: "https://music.youtube.com")!), studio)
+        let migrated = try JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: "websiteWindowFrames"))) as? [String: Any]
+        XCTAssertEqual(Set(migrated?.keys.map { $0 } ?? []), ["youtube.com"])
     }
 
     func testWindowBehaviorRestoresLegacySettingsAndUpdatesTheOpenPanel() throws {

@@ -3204,6 +3204,22 @@ final class WebPopupTests: XCTestCase {
         session.endSession()
     }
 
+    func testColdHTMLCapabilityFlagDoesNotDownloadDocumentsButPreservesAttachments() throws {
+        let url = URL(string: "https://example.com/page")!
+        for (mime, disposition, capable, download) in [
+            ("text/html; charset=utf-8", "inline", false, false),
+            ("application/xhtml+xml", "inline", false, false),
+            ("text/html", "attachment; filename=export.html", false, true),
+            ("text/html", "ATTACHMENT; filename=export.html", true, true),
+            ("application/octet-stream", "inline", false, true),
+            ("text/plain", "inline", true, false)
+        ] {
+            let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": mime, "Content-Disposition": disposition]))
+            XCTAssertEqual(WebPreview.shouldDownload(response, canShowMIMEType: capable), download, "\(mime) \(disposition)")
+        }
+    }
+
     func testDownloadsUseNativeRequestsForAttachmentsPOSTBlobDataAndSiteWindows() async throws {
         let server = try PopupHTTPFixture()
         let port = try await server.start()
@@ -3749,109 +3765,6 @@ final class WebUploadTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTFail("Upload fixture did not complete within 10 seconds")
-    }
-}
-
-@MainActor
-final class DiagnosticUploadTransportTests: XCTestCase {
-    func testConnectTunnelRejectsForeignHostsAndPlainHTTP() async throws {
-        let tunnel = UploadConnectTunnel()
-        let port = try await tunnel.start()
-        defer { tunnel.stop() }
-        for line in ["CONNECT example.com:443 HTTP/1.1", "CONNECT upload.youtube.com.evil:443 HTTP/1.1",
-                     "CONNECT upload.youtube.com:80 HTTP/1.1", "GET / HTTP/1.1"] {
-            let client = TunnelTestClient(port: port)
-            defer { client.close() }
-            try await client.send(Data((line + "\r\nHost: upload.youtube.com\r\n\r\n").utf8))
-            let response = try await client.readToEnd()
-            XCTAssertTrue(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 403"))
-        }
-        let oversized = TunnelTestClient(port: port)
-        defer { oversized.close() }
-        try await oversized.send(Data(repeating: 65, count: 8193))
-        let response = try await oversized.readToEnd()
-        XCTAssertTrue(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 403"))
-    }
-
-    func testConnectTunnelForwardsLargeBodyAndResponseWithoutRewritingBytes() async throws {
-        let server = try UploadHTTPFixture()
-        let upstreamPort = try await server.start()
-        defer { server.stop() }
-        let tunnel = UploadConnectTunnel(upstream: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: upstreamPort)!))
-        let port = try await tunnel.start()
-        defer { tunnel.stop() }
-        let client = TunnelTestClient(port: port)
-        defer { client.close() }
-        // Fragmented CONNECT headers must not be mistaken for the stream body.
-        try await client.send(Data("CONNECT upload.you".utf8))
-        try await client.send(Data("tube.com:443 HTTP/1.1\r\nHost: upload.youtube.com:443\r\n\r\n".utf8))
-        let handshake = try await client.readHeader()
-        XCTAssertEqual(String(decoding: handshake, as: UTF8.self), "HTTP/1.1 200 Connection Established\r\n\r\n")
-        // Synthetic payload only. The tunnel does not interpret the inner protocol;
-        // production WebKit supplies TLS here; this local fixture records bytes.
-        let payload = Data(repeating: 0xa5, count: 3 * 1024 * 1024 + 17)
-        let header = "POST /upload HTTP/1.1\r\nHost: fixture\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
-        try await client.send(Data(header.utf8) + payload)
-        let response = try await client.readToEnd()
-        XCTAssertTrue(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 200"))
-        XCTAssertTrue(response.suffix(2) == Data("ok".utf8))
-        XCTAssertEqual(server.uploads.count, 1)
-        XCTAssertEqual(server.uploads.first?.body, payload)
-    }
-
-    func testTransportOnlyScopesUploadHostAndPreservesExistingStoreProxy() async throws {
-        let tunnel = UploadConnectTunnel()
-        defer { tunnel.stop() }
-        let transport = DiagnosticUploadTransport(tunnel: tunnel)
-        let store = WKWebsiteDataStore.nonPersistent()
-        await transport.prepare(store)
-        let proxy = try XCTUnwrap(store.proxyConfigurations.first)
-        XCTAssertEqual(proxy.matchDomains, ["upload.youtube.com"])
-        XCTAssertFalse(proxy.allowFailover)
-        await transport.prepare(store)
-        XCTAssertEqual(store.proxyConfigurations.count, 1)
-
-        let existingStore = WKWebsiteDataStore.nonPersistent()
-        var existing = ProxyConfiguration(httpCONNECTProxy: .hostPort(host: .ipv4(.loopback), port: 12345))
-        existing.matchDomains = ["example.org"]
-        existingStore.proxyConfigurations = [existing]
-        await transport.prepare(existingStore)
-        XCTAssertEqual(existingStore.proxyConfigurations.first?.matchDomains, ["example.org"])
-    }
-}
-
-private final class TunnelTestClient: @unchecked Sendable {
-    private let connection: NWConnection
-    private let queue = DispatchQueue(label: "Linklet.TunnelTestClient")
-    init(port: NWEndpoint.Port) {
-        connection = NWConnection(host: .ipv4(.loopback), port: port, using: .tcp)
-        connection.start(queue: queue)
-    }
-    func close() { connection.cancel() }
-    func send(_ data: Data) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-            })
-        }
-    }
-    func readHeader() async throws -> Data { try await read(marker: Data("\r\n\r\n".utf8)) }
-    func readToEnd() async throws -> Data { try await read(marker: nil) }
-    private func read(marker: Data?) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            receive(Data(), marker: marker, continuation: continuation)
-        }
-    }
-    private func receive(_ accumulated: Data, marker: Data?, continuation: CheckedContinuation<Data, Error>) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [self] bytes, _, complete, error in
-            if let error { continuation.resume(throwing: error); return }
-            var data = accumulated; data.append(bytes ?? Data())
-            if complete || marker.map({ data.range(of: $0) != nil }) == true {
-                continuation.resume(returning: data)
-            } else if data.count > 8_388_608 {
-                continuation.resume(throwing: URLError(.dataLengthExceedsMaximum))
-            } else { receive(data, marker: marker, continuation: continuation) }
-        }
     }
 }
 

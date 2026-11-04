@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-        AK10000000000000000000001 = {isa = PBXBuildFile; fileRef = AK20000000000000000000001; };
+        AL10000000000000000000001 = {isa = PBXBuildFile; productRef = AL30000000000000000000001; };
         AJ10000000000000000000001 = {isa = PBXBuildFile; fileRef = AJ20000000000000000000001; };
         AH10000000000000000000001 = {isa = PBXBuildFile; fileRef = AH20000000000000000000001; };
         AG10000000000000000000002 = {isa = PBXBuildFile; fileRef = AG20000000000000000000002; };
@@ -71,7 +71,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-        AK20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticUploadTransport.swift; sourceTree = "<group>"; };
         AJ20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
         AH20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Services/NativeLocationProvider.m; sourceTree = "<group>"; };
         AH20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Services/NativeLocationProvider.h; sourceTree = "<group>"; };
@@ -136,6 +135,7 @@
 				A10000000000000000000012 /* WebKit.framework in Frameworks */,
                 B10000000000000000000003,
                 C10000000000000000000002,
+                AL10000000000000000000001,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -218,7 +218,6 @@
 			sourceTree = "<group>";
 			children = (
 				F20000000000000000000002,
-                AK20000000000000000000001,
 				A20000000000000000000004 /* URLPolicy.swift */,
  D20000000000000000000001,
                 B20000000000000000000001,
@@ -320,7 +319,7 @@
 			);
 			dependencies = (
 			);
-			packageProductDependencies = (B30000000000000000000001, C30000000000000000000001,);
+			packageProductDependencies = (B30000000000000000000001, C30000000000000000000001, AL30000000000000000000001,);
             name = Linklet;
 			productName = Linklet;
 			productReference = A20000000000000000000014 /* Linklet.app */;
@@ -347,17 +346,19 @@
 /* End PBXNativeTarget section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+        AL40000000000000000000001 = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/ameshkov/swift-psl"; requirement = {kind = exactVersion; version = 1.1.169; }; };
         C40000000000000000000001 = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/sparkle-project/Sparkle"; requirement = {kind = exactVersion; version = 2.9.6; }; };
         B40000000000000000000001 = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/AdguardTeam/SafariConverterLib.git"; requirement = {kind = revision; revision = 10543ff46807c5b4cea9a4a9c7794924f7400e44; }; };
 /* End XCRemoteSwiftPackageReference section */
 /* Begin XCSwiftPackageProductDependency section */
+        AL30000000000000000000001 = {isa = XCSwiftPackageProductDependency; package = AL40000000000000000000001; productName = PublicSuffixList; };
         C30000000000000000000001 = {isa = XCSwiftPackageProductDependency; package = C40000000000000000000001; productName = Sparkle; };
         B30000000000000000000001 = {isa = XCSwiftPackageProductDependency; package = B40000000000000000000001; productName = ContentBlockerConverter; };
 /* End XCSwiftPackageProductDependency section */
 /* Begin PBXProject section */
 		A40000000000000000000001 /* Project object */ = {
 			isa = PBXProject;
-            packageReferences = (B40000000000000000000001, C40000000000000000000001,);
+            packageReferences = (B40000000000000000000001, C40000000000000000000001, AL40000000000000000000001,);
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1600;
@@ -436,7 +437,6 @@
                 E10000000000000000000003,
                 E10000000000000000000004,
                 E10000000000000000000006,
-                AK10000000000000000000001,
                 A10000000000000000000001 /* LinkletApp.swift in Sources */,
 				A10000000000000000000002 /* AppDelegate.swift in Sources */,
 				A10000000000000000000003 /* BrowserTarget.swift in Sources */,
@@ -605,7 +605,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 38;
+				CURRENT_PROJECT_VERSION = 39;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -630,7 +630,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 38;
+				CURRENT_PROJECT_VERSION = 39;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;

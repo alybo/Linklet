@@ -26,24 +26,21 @@ struct WebPreview: NSViewRepresentable {
         Coordinator(session: session)
     }
 
-    /// Explicit diagnostic builds only; ordinary builds keep inspection off.
-    static func configureInspection(_ webView: WKWebView) {
-        #if LINKLET_WEB_INSPECTOR
-        webView.isInspectable = true
-        // WebKit SPI adds the local Inspect Element menu. Public isInspectable
-        // also permits inspection from Safari's Develop menu if SPI is absent.
-        let preferences = webView.configuration.preferences
-        if preferences.responds(to: NSSelectorFromString("_setDeveloperExtrasEnabled:")) {
-            preferences.setValue(true, forKey: "developerExtrasEnabled")
-        }
-        #endif
+    static func shouldDownload(_ response: URLResponse, canShowMIMEType: Bool) -> Bool {
+        let attachment = (response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Disposition")?
+            .split(separator: ";", maxSplits: 1).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "attachment"
+        // Built-in HTML documents belong in the web view even when the
+        // capability flag is false. Explicit attachments still download.
+        let htmlDocument = ["text/html", "application/xhtml+xml"].contains(response.mimeType?.lowercased() ?? "")
+        return attachment || (!canShowMIMEType && !htmlDocument)
     }
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = Self.configuration(websiteDataStore: session.websiteDataStore)
         // Let WebKit own scrolling, including macOS preferences and site CSS.
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        Self.configureInspection(webView)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsMagnification = true
@@ -416,11 +413,7 @@ struct WebPreview: NSViewRepresentable {
         func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                      decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
             guard session?.webView === webView else { decisionHandler(.cancel); return }
-            let attachment = (navigationResponse.response as? HTTPURLResponse)?
-                .value(forHTTPHeaderField: "Content-Disposition")?
-                .split(separator: ";", maxSplits: 1).first?
-                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "attachment"
-            if attachment || !navigationResponse.canShowMIMEType {
+            if WebPreview.shouldDownload(navigationResponse.response, canShowMIMEType: navigationResponse.canShowMIMEType) {
                 decisionHandler(.download)
                 return
             }
