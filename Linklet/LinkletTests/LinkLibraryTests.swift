@@ -1,5 +1,6 @@
 import XCTest
 import WebKit
+import Translation
 import SwiftUI
 import Network
 import Carbon
@@ -3475,6 +3476,230 @@ final class WebPopupTests: XCTestCase {
         model.closeAllWindows()
     }
 
+    private func waitForTranslationScript(_ script: String, in view: WKWebView) async throws {
+        for _ in 0..<120 {
+            if (try await view.evaluateJavaScript(script)) as? Bool == true { return }
+            try await Task.sleep(nanoseconds: 40_000_000)
+        }
+        XCTFail("Translation page did not reach the expected state")
+    }
+
+    func testPageTranslationPreservesFormsLinksAndRestoresDynamicText() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "PageTranslation.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let preferences = PageTranslationPreferences(defaults: defaults)
+        let translator = PageTranslationController(preferences: preferences,
+            languageProvider: { ["en", "ru", "he"] }, translator: { $0.map { "RU: " + $0 } })
+        let model = AppModel(defaults: defaults, pageTranslation: translator, discoverTargets: { [] })
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let original = URL(string: "http://127.0.0.1:\(port)/translation")!
+        model.showPreview(url: original)
+        try await waitUntil { model.previewSession.pageTitle == "Translation fixture" && !model.previewSession.isLoading }
+        let view = try XCTUnwrap(model.previewSession.webView)
+        let window = try XCTUnwrap(view.window), content = try XCTUnwrap(window.contentView)
+        func node(_ id: String) -> NSObject? { self.accessibilityNode(in: content, identifier: id) }
+        XCTAssertNil(node("preview-translate"))
+        let beforeAddress = try XCTUnwrap(node("preview-address-disclosure")?.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        let menu = NSMenu()
+        let coordinator = WebPreview.Coordinator(session: model.previewSession)
+        coordinator.appendTranslationItem(to: menu, in: view)
+        XCTAssertEqual(menu.items.first?.title, L("Translate"))
+        menu.performActionForItem(at: 0)
+        try await waitUntil { translator.isPresented && translator.detectedSource == "en" }
+        translator.setTarget("ru")
+        translator.requestTranslation()
+        try await waitUntil { translator.isTranslated && !translator.isBusy }
+        XCTAssertNil(translator.error)
+        try await waitForTranslationScript("document.getElementById('article').textContent.startsWith('RU: ')", in: view)
+        let stable = try await view.evaluateJavaScript("""
+        document.getElementById('link')===window.savedLink && document.getElementById('link').getAttribute('href')==='/site'
+        && document.getElementById('draft').value==='Private draft' && document.getElementById('textarea').value==='A private message'
+        && document.getElementById('editable').textContent==='User writing' && document.getElementById('code').textContent==='const value = 42;'
+        && document.getElementById('excluded').textContent==='Do not translate' && document.getElementById('hidden').textContent==='Hidden text'
+        """) as? Bool
+        XCTAssertEqual(stable, true)
+        _ = try await view.evaluateJavaScript("document.getElementById('button').click();true")
+        let clicks = try await view.evaluateJavaScript("window.clicks") as? Int
+        XCTAssertEqual(clicks, 1)
+        XCTAssertGreaterThanOrEqual(translator.translatedCount, 6, "Frames and open web components are translated too")
+        try await waitForTranslationScript("document.getElementById('shadow-host').shadowRoot.querySelector('p').textContent.startsWith('RU: ')", in: view)
+        try await waitUntil { node("preview-translate") != nil }
+        let icon = try XCTUnwrap(node("preview-translate") as? NSButton)
+        XCTAssertEqual(icon.alphaValue, 1)
+        XCTAssertFalse(icon.isHidden)
+        let iconFrame = try XCTUnwrap(icon.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        let bookmarkFrame = try XCTUnwrap(node("preview-bookmark")?.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        let afterAddress = try XCTUnwrap(node("preview-address-disclosure")?.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        XCTAssertGreaterThan(iconFrame.minX, bookmarkFrame.maxX)
+        XCTAssertLessThan(iconFrame.maxX, afterAddress.minX)
+        XCTAssertEqual(afterAddress, beforeAddress, "Only the left icon group grows; the address stays in place")
+        translator.close()
+        XCTAssertTrue(translator.isTranslated)
+        XCTAssertEqual(icon.alphaValue, 1)
+        XCTAssertEqual(icon.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { translator.isPresented }
+        try await Task.sleep(nanoseconds: 280_000_000)
+        content.layoutSubtreeIfNeeded()
+        if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-45-translation.png"))
+        }
+        _ = try await view.evaluateJavaScript("const p=document.createElement('p');p.id='dynamic';p.textContent='A new English paragraph appeared after the translation.';document.body.appendChild(p);true")
+        try await waitForTranslationScript("document.getElementById('dynamic').textContent.startsWith('RU: ')", in: view)
+        _ = try await view.evaluateJavaScript("document.getElementById('article').textContent='The website replaced this paragraph with new English content.';true")
+        try await waitForTranslationScript("document.getElementById('article').textContent.startsWith('RU: The website')", in: view)
+        model.previewSession.pageFind.show()
+        try await waitUntil { !translator.isPresented && model.previewSession.pageFind.isPresented }
+        model.previewSession.pageFind.setQuery("RU:")
+        try await waitUntil { (model.previewSession.pageFind.matchCount ?? 0) >= 5 && !model.previewSession.pageFind.isSearching }
+        try await Task.sleep(nanoseconds: 250_000_000)
+        if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-45-find.png"))
+        }
+        translator.restoreOriginal()
+        try await waitUntil { !translator.isTranslated }
+        try await waitForTranslationScript("document.getElementById('dynamic').textContent==='A new English paragraph appeared after the translation.' && document.getElementById('article').textContent==='The website replaced this paragraph with new English content.'", in: view)
+        try await waitUntil { node("preview-translate") == nil }
+        XCTAssertEqual(model.previewSession.originalURL, original)
+        let restored = PageTranslationController(preferences: PageTranslationPreferences(defaults: defaults), languageProvider: { ["en", "ru", "he"] })
+        await restored.loadLanguages()
+        XCTAssertEqual(restored.target, "ru")
+        XCTAssertNil(defaults.data(forKey: "translatedPageText"))
+    }
+
+    func testPageTranslationDropsLateResultsAfterNavigationAndCanRetryFailures() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "TranslationCancellation.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        var failed = true, delayed = false, started = false
+        let translator = PageTranslationController(preferences: PageTranslationPreferences(defaults: defaults),
+            languageProvider: { ["en", "ru"] }, translator: { texts in
+                started = true
+                if delayed { try await Task.sleep(nanoseconds: 300_000_000) }
+                return failed ? [] : texts.map { "Translated: " + $0 }
+            })
+        let model = AppModel(defaults: defaults, pageTranslation: translator, discoverTargets: { [] })
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/translation")!)
+        try await waitUntil { model.previewSession.pageTitle == "Translation fixture" && !model.previewSession.isLoading }
+        let view = try XCTUnwrap(model.previewSession.webView)
+        await translator.loadLanguages(); translator.setSource("en"); translator.setTarget("ru")
+        translator.requestTranslation()
+        try await waitUntil { !translator.isBusy && translator.error != nil }
+        XCTAssertFalse(translator.isTranslated)
+        failed = false
+        translator.requestTranslation()
+        try await waitUntil { translator.isTranslated && !translator.isBusy }
+        translator.restoreOriginal()
+        try await waitUntil { !translator.isTranslated }
+        delayed = true; started = false
+        translator.requestTranslation()
+        try await waitUntil { started }
+        view.load(URLRequest(url: URL(string: "http://127.0.0.1:\(port)/site")!))
+        try await waitUntil { model.previewSession.pageTitle == "Original site" && !model.previewSession.isLoading }
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertFalse(translator.isTranslated)
+        XCTAssertFalse(translator.isBusy)
+        XCTAssertEqual(translator.source, "auto")
+        XCTAssertEqual(translator.target, "ru")
+        let late = try await view.evaluateJavaScript("document.body.textContent.includes('Translated:')") as? Bool
+        XCTAssertEqual(late, false)
+    }
+
+    func testPageTranslationDetectsUnsupportedLanguageWithoutSendingWrongSource() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "UnsupportedTranslation.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        var calls = 0
+        let translation = PageTranslationController(preferences: PageTranslationPreferences(defaults: defaults),
+            languageProvider: { ["en", "ru"] }, translator: { texts in calls += 1; return texts })
+        let model = AppModel(defaults: defaults, pageTranslation: translation, discoverTargets: { [] })
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/translation-hebrew")!)
+        try await waitUntil { model.previewSession.pageTitle == "Hebrew translation fixture" && !model.previewSession.isLoading }
+        translation.show()
+        try await waitUntil { translation.detectedSource == "he" }
+        translation.setTarget("ru"); translation.requestTranslation()
+        try await waitUntil { !translation.isBusy && translation.error != nil }
+        XCTAssertEqual(calls, 0)
+        XCTAssertFalse(translation.isTranslated)
+        XCTAssertEqual(translation.error, L("This page language is not supported by macOS on this Mac."))
+    }
+
+    func testAppleHebrewPageTranslationWithInstalledModels() async throws {
+        guard #available(macOS 15, *) else { throw XCTSkip("Apple Translation requires macOS 15") }
+        guard await LanguageAvailability().status(from: Locale.Language(identifier: "he"), to: Locale.Language(identifier: "ru")) == .installed else {
+            throw XCTSkip("Hebrew models have not been installed")
+        }
+        try await checkNativeHebrewTranslation()
+    }
+
+    private func checkNativeHebrewTranslation() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "NativeHebrewQA.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/translation-hebrew")!)
+        try await waitUntil { model.previewSession.pageTitle == "Hebrew translation fixture" && !model.previewSession.isLoading }
+        let translation = model.previewSession.pageTranslation
+        translation.show()
+        try await waitUntil { translation.detectedSource == "he" }
+        translation.setTarget("ru"); translation.requestTranslation()
+        let end = Date().addingTimeInterval(150)
+        while translation.isBusy && Date() < end { try await Task.sleep(nanoseconds: 100_000_000) }
+        XCTAssertNil(translation.error)
+        XCTAssertTrue(translation.isTranslated)
+        let view = try XCTUnwrap(model.previewSession.webView)
+        let text = try await view.evaluateJavaScript("document.getElementById('article').textContent") as? String ?? ""
+        XCTAssertNotNil(text.range(of: "[А-Яа-яЁё]", options: .regularExpression))
+        let direction = try await view.evaluateJavaScript("document.getElementById('article').getAttribute('dir')") as? String
+        XCTAssertEqual(direction, "auto")
+        if let content = view.window?.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/linklet-1.8-45-native-hebrew.png"))
+        }
+    }
+
+    func testTranslationDistinguishesStandardModelsFromAppleIntelligenceLanguages() async throws {
+        let suite = "TranslationAvailability.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let translation = PageTranslationController(preferences: PageTranslationPreferences(defaults: defaults), languageProvider: { ["en", "ru", "he"] },
+            standardLanguageProvider: { ["en", "ru"] })
+        await translation.loadLanguages()
+        translation.setSource("en"); translation.setTarget("ru")
+        XCTAssertFalse(translation.requiresAppleIntelligence)
+        translation.setSource("he")
+        XCTAssertTrue(translation.requiresAppleIntelligence)
+        translation.setSource("ru"); translation.setTarget("he")
+        XCTAssertTrue(translation.requiresAppleIntelligence)
+    }
+
+    func testAppleTranslationWithAlreadyInstalledModels() async throws {
+        guard #available(macOS 26, *) else { throw XCTSkip("Noninteractive installed-model sessions require macOS 26") }
+        let source = Locale.Language(identifier: "en"), target = Locale.Language(identifier: "ru")
+        guard await LanguageAvailability().status(from: source, to: target) == .installed else {
+            throw XCTSkip("Apple language packs are not installed; tests never request model downloads")
+        }
+        let session = TranslationSession(installedSource: source, target: target)
+        let result = try await session.translate("The mountains are beautiful today.")
+        XCTAssertEqual(result.sourceLanguage.languageCode, source.languageCode)
+        XCTAssertEqual(result.targetLanguage.languageCode, target.languageCode)
+        XCTAssertNotEqual(result.targetText, result.sourceText)
+        XCTAssertNotNil(result.targetText.range(of: "[А-Яа-яЁё]", options: .regularExpression))
+    }
+
     func testBrowserMenuHoverDelayTransitionAndOptionalClickMode() async throws {
         let menu = BrowserMenuInteraction()
         menu.hoverTrigger(true, enabled: false)
@@ -4579,7 +4804,29 @@ private final class PopupHTTPFixture: @unchecked Sendable {
         let status: String
         var extraHeaders = ""
         let html: String
-        if firstLine.hasPrefix("GET /recovery ") {
+        if firstLine.hasPrefix("GET /translation-hebrew ") {
+            status = "200 OK"
+            html = """
+            <!doctype html><html lang="he" dir="rtl"><meta charset="utf-8"><title>Hebrew translation fixture</title>
+            <h1>טיול בהרים</h1><p id="article">זהו עמוד בעברית על הרים יפים, הליכה ביער והנאה מיום שקט בטבע. אפשר לקרוא את המאמר ולגלות מקומות חדשים.</p></html>
+            """
+        } else if firstLine.hasPrefix("GET /translation ") {
+            status = "200 OK"
+            html = """
+            <!doctype html><html lang="en"><meta charset="utf-8"><title>Translation fixture</title>
+            <body><h1>Hello mountains</h1><p id="article">This is a complete English paragraph about beautiful mountains, walking through the forest and enjoying a peaceful day outside.</p>
+            <a id="link" href="/site">Read the article</a><button id="button" onclick="window.clicks=(window.clicks||0)+1">Press button</button>
+            <input id="draft" value="Private draft"><textarea id="textarea">A private message</textarea>
+            <div contenteditable="true" id="editable">User writing</div><pre id="code">const value = 42;</pre>
+            <p translate="no" id="excluded">Do not translate</p><p hidden id="hidden">Hidden text</p>
+            <iframe src="http://localhost:\(port)/translation-frame"></iframe>
+            <div id="shadow-host"></div><script>window.savedLink=document.getElementById('link');
+            document.getElementById('shadow-host').attachShadow({mode:'open'}).innerHTML='<p>This is English text inside a web component.</p>';</script></body></html>
+            """
+        } else if firstLine.hasPrefix("GET /translation-frame ") {
+            status = "200 OK"
+            html = "<html lang='en'><p id='child'>This is English text inside another frame.</p></html>"
+        } else if firstLine.hasPrefix("GET /recovery ") {
             if !canRecover { connection.cancel(); return }
             status = "200 OK"
             html = "<title>Recovered</title><p>The website is available again.</p>"

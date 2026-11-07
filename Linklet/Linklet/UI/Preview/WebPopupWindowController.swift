@@ -21,7 +21,7 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         openerURL = parent.currentURL
         openerID = parent.windowID
         session = PreviewSession(adBlockService: parent.adBlockService, siteData: parent.siteData,
-                                 windowRegistry: parent.windowRegistry)
+                                 windowRegistry: parent.windowRegistry, translationPreferences: parent.pageTranslation.preferences)
         if let model {
             session.onContinueInBrowser = { [weak model, weak session] in
                 guard let model, let session, let target = model.preferredTarget else { return }

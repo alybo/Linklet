@@ -243,22 +243,31 @@ struct PreviewFindOverlay: View {
     @ObservedObject var controller: PageFindController
     @ObservedObject private var language = AppLanguage.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        PreviewFindPanel(controller: controller)
-            .frame(width: 340, height: 38)
-            .background(Color(nsColor: .windowBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.75)
-                    .allowsHitTesting(false)
+        BrowserDrawerHost(isPresented: controller.isPresented, content: AnyView(
+            VStack(spacing: 3) {
+                HStack {
+                    Text(L("Find on page")).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { controller.close() } label: {
+                        Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).frame(width: 22, height: 22)
+                    }.buttonStyle(.plain).help(L("Close search"))
+                        .accessibilityIdentifier("preview-find-close")
+                }.padding(.horizontal, 12).padding(.top, 7)
+                PreviewFindPanel(controller: controller).frame(height: 38).padding(.horizontal, 5)
             }
-            .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
-            .padding(10)
-            .opacity(controller.isPresented ? 1 : 0)
+            .padding(.bottom, 7).frame(width: 340)
+            .background { PreviewWindowMaterial(state: .active) }
+            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12))
+            .modifier(BrowserDrawerSlide(progress: controller.isPresented ? 1 : 0))
+            .clipped()
+            .animation(reduceMotion ? nil : .easeOut(duration: BrowserDrawerLayout.animationDuration), value: controller.isPresented)
             .allowsHitTesting(controller.isPresented)
+            .disabled(!controller.isPresented)
             .accessibilityHidden(!controller.isPresented)
+        )).fixedSize()
             .onChange(of: colorScheme) { _ in controller.refreshHighlightAppearance() }
     }
 }
@@ -322,8 +331,9 @@ final class PreviewFindControlView: NSView, NSSearchFieldDelegate {
     override func layout() {
         super.layout()
         let buttonWidth: CGFloat = 25
-        closeButton.frame = NSRect(x: bounds.width - 30, y: 5, width: buttonWidth, height: 28)
-        nextButton.frame = closeButton.frame.offsetBy(dx: -buttonWidth, dy: 0)
+        closeButton.isHidden = true
+        closeButton.frame = .zero
+        nextButton.frame = NSRect(x: bounds.width - 30, y: 5, width: buttonWidth, height: 28)
         previousButton.frame = nextButton.frame.offsetBy(dx: -buttonWidth, dy: 0)
         let counterWidth = min(110, max(50, ceil((counter.stringValue as NSString)
             .size(withAttributes: [.font: counter.font!]).width) + 4))

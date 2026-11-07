@@ -42,6 +42,7 @@ private final class TemporaryWebsiteData {
 final class PreviewSession: ObservableObject {
     let windowID = UUID()
     let pageFind = PageFindController()
+    let pageTranslation: PageTranslationController
     let windowRegistry: BrowserWindowRegistry
     @Published private(set) var navigationID = UUID()
     // Browser handoff keeps the incoming link even after redirects and navigation.
@@ -103,7 +104,10 @@ final class PreviewSession: ObservableObject {
     }
 
     init(adBlockService: AdBlockService, siteData: SiteDataService? = nil,
-         windowRegistry: BrowserWindowRegistry? = nil) {
+         windowRegistry: BrowserWindowRegistry? = nil,
+         translationPreferences: PageTranslationPreferences? = nil,
+         pageTranslation: PageTranslationController? = nil) {
+        self.pageTranslation = pageTranslation ?? PageTranslationController(preferences: translationPreferences ?? PageTranslationPreferences())
         self.adBlockService = adBlockService
         self.siteData = siteData ?? SiteDataService()
         self.windowRegistry = windowRegistry ?? BrowserWindowRegistry()
@@ -114,6 +118,7 @@ final class PreviewSession: ObservableObject {
         if let webView { PreviewPageStateBridge.shared.detach(webView) }
         if let webView { siteData.mediaPermissions.detach(webView) }
         pageFind.detach()
+        pageTranslation.detach()
         requestGeneration = UUID()
         let wasActive = isActive
         webView?.stopLoading()
@@ -186,6 +191,7 @@ final class PreviewSession: ObservableObject {
         PreviewPageStateBridge.shared.attach(webView, session: self)
         webView.pageZoom = pageZoom
         pageFind.attach(webView)
+        pageTranslation.attach(webView)
         if isWelcome {
             webView.loadHTMLString(Self.welcomeHTML, baseURL: nil)
         } else if let pendingURL {
@@ -223,6 +229,7 @@ final class PreviewSession: ObservableObject {
         PreviewPageStateBridge.shared.attach(view, session: self)
         view.pageZoom = pageZoom
         pageFind.attach(view)
+        pageTranslation.attach(view)
         synchronize(from: view)
     }
 
@@ -249,6 +256,7 @@ final class PreviewSession: ObservableObject {
         isWelcome = false
         errorMessage = nil
         pageFind.detach()
+        pageTranslation.detach()
         webView?.stopLoading()
         webView = nil
         requestedURL = url
@@ -274,6 +282,7 @@ final class PreviewSession: ObservableObject {
         restoration = nil
         pageFailure = nil
         pageFind.detach()
+        pageTranslation.detach()
         requestGeneration = UUID()
         startSessionIfNeeded()
         webView?.stopLoading()
@@ -455,6 +464,7 @@ final class PreviewSession: ObservableObject {
         navigationIsPending = true
         pageFailure = nil
         pageFind.navigationStarted()
+        pageTranslation.navigationStarted()
         if let url = attemptedRequest?.url, URLPolicy.canPreview(url) {
             requestedURL = url
             currentURL = url
@@ -500,6 +510,7 @@ final class PreviewSession: ObservableObject {
         isPreparingNewPage = false
         isLoading = false
         pageFind.navigationStarted()
+        pageTranslation.navigationStarted()
         if let url, URLPolicy.canPreview(url) {
             currentURL = url
             addressText = url.absoluteString

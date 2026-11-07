@@ -104,6 +104,7 @@ final class AppModel: ObservableObject {
         searchSettings: SearchSettings? = nil,
         linkLibrary: LinkLibrary? = nil,
         windowRegistry: BrowserWindowRegistry? = nil,
+        pageTranslation: PageTranslationController? = nil,
         discoverTargets: (() -> [BrowserTarget])? = nil,
         discoverTargetsAsync: (@Sendable () async -> [BrowserTarget])? = nil
     ) {
@@ -124,7 +125,8 @@ final class AppModel: ObservableObject {
         self.windowRegistry = registry
         let blocker = AdBlockService(defaults: defaults)
         adBlockService = blocker
-        previewSession = PreviewSession(adBlockService: blocker, siteData: data, windowRegistry: registry)
+        previewSession = PreviewSession(adBlockService: blocker, siteData: data, windowRegistry: registry,
+                                        translationPreferences: PageTranslationPreferences(defaults: defaults), pageTranslation: pageTranslation)
         isAdBlockingEnabled = blocker.isEnabled
         showsFullURL = defaults.bool(forKey: PreferenceKey.showsFullURL)
         showsOpenInButton = defaults.bool(forKey: PreferenceKey.showsOpenInButton)

@@ -12,6 +12,7 @@ struct WebPreview: NSViewRepresentable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         PageFindHighlighter.shared.install(in: configuration.userContentController)
+        PageTranslationDOM.shared.install(in: configuration.userContentController)
         PreviewPageStateBridge.shared.install(in: configuration.userContentController)
         // Preserve WebKit's native Macintosh/engine tokens and add Safari's
         // browser identity. Generic WKWebView UA lacks these tokens, so sites
@@ -127,6 +128,7 @@ struct WebPreview: NSViewRepresentable {
         func webView(_ view: WKWebView, getContextMenuFromProposedMenu menu: NSMenu,
                      forElement element: AnyObject, userInfo: AnyObject?, completionHandler: @escaping (NSMenu) -> Void) {
             appendAdGuardItem(to: menu, in: view)
+            appendTranslationItem(to: menu, in: view)
             completionHandler(menu)
         }
 
@@ -140,6 +142,21 @@ struct WebPreview: NSViewRepresentable {
             // Never let an old open menu toggle a different document/site.
             item.representedObject = url
             menu.addItem(item)
+        }
+
+        func appendTranslationItem(to menu: NSMenu, in view: WKWebView) {
+            guard let session, session.isActive, !session.isWelcome, session.webView === view,
+                  let url = view.url, URLPolicy.canPreview(url) else { return }
+            let item = NSMenuItem(title: L("Translate"), action: #selector(showTranslation(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = url
+            item.image = NSImage(systemSymbolName: "translate", accessibilityDescription: nil)
+            item.isEnabled = session.pageTranslation.isSupported
+            item.identifier = NSUserInterfaceItemIdentifier("preview-context-translate")
+            menu.addItem(item)
+        }
+        @objc private func showTranslation(_ item: NSMenuItem) {
+            guard let session, let url = item.representedObject as? URL, session.webView?.url == url else { return }
+            session.pageTranslation.show()
         }
 
         @objc private func toggleAdGuard(_ item: NSMenuItem) {

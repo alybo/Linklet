@@ -58,6 +58,9 @@
         E10000000000000000000006 = {isa = PBXBuildFile; fileRef = E20000000000000000000006; };
         F10000000000000000000001 = {isa = PBXBuildFile; fileRef = F20000000000000000000001; };
         F10000000000000000000002 = {isa = PBXBuildFile; fileRef = F20000000000000000000002; };
+        AM10000000000000000000001 = {isa = PBXBuildFile; fileRef = AM20000000000000000000001; };
+        AM10000000000000000000002 = {isa = PBXBuildFile; fileRef = AM20000000000000000000002; };
+        AM10000000000000000000003 = {isa = PBXBuildFile; fileRef = AM20000000000000000000003; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -125,6 +128,9 @@
         E20000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Search/SearchEngineControl.swift; sourceTree = "<group>"; };
         F20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/FavoriteSiteIconService.swift; sourceTree = "<group>"; };
         F20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowGeometryService.swift; sourceTree = "<group>"; };
+        AM20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PageTranslation.swift; sourceTree = "<group>"; };
+        AM20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PageTranslationDOM.swift; sourceTree = "<group>"; };
+        AM20000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Preview/PreviewTranslationView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -184,6 +190,9 @@
                 E20000000000000000000003,
                 E20000000000000000000004,
                 E20000000000000000000006,
+                AM20000000000000000000001,
+                AM20000000000000000000002,
+                AM20000000000000000000003,
                 A70000000000000000000003 /* App */,
 				A70000000000000000000004 /* Models */,
 				A70000000000000000000005 /* Services */,
@@ -437,6 +446,9 @@
                 E10000000000000000000003,
                 E10000000000000000000004,
                 E10000000000000000000006,
+                AM10000000000000000000001,
+                AM10000000000000000000002,
+                AM10000000000000000000003,
                 A10000000000000000000001 /* LinkletApp.swift in Sources */,
 				A10000000000000000000002 /* AppDelegate.swift in Sources */,
 				A10000000000000000000003 /* BrowserTarget.swift in Sources */,
@@ -605,7 +617,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 44;
+				CURRENT_PROJECT_VERSION = 45;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -630,7 +642,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 44;
+				CURRENT_PROJECT_VERSION = 45;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;

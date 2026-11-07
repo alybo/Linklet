@@ -189,6 +189,26 @@ final class AppLanguage: ObservableObject {
     }
     static let russian: [String: String] = 
 [
+        "Find a language": "Найти язык",
+        "This page language is not supported by macOS on this Mac.": "Эта версия macOS не поддерживает перевод с языка этой страницы.",
+        "Translate": "Перевести",
+        "Translate page": "Перевод страницы",
+        "Close translation": "Закрыть перевод",
+        "From language": "С языка",
+        "To language": "На язык",
+        "Detect automatically": "Автоопределение",
+        "Detected: %@": "Определён язык: %@",
+        "Show original": "Показать оригинал",
+        "Show translation controls": "Параметры перевода",
+        "Translating…": "Переводим…",
+        "Loading languages…": "Загрузка языков…",
+        "Page translation requires macOS 15 or later.": "Для перевода страниц нужна macOS 15 или новее.",
+        "This language pair requires Apple Intelligence.": "Для этой языковой пары требуется Apple Intelligence.",
+        "Choose a supported source and target language.": "Выберите поддерживаемые исходный язык и язык перевода.",
+        "The source and target languages are the same.": "Исходный язык совпадает с языком перевода.",
+        "No translatable text was found on this page.": "На этой странице не найден текст для перевода.",
+        "The translator returned an incomplete result. Try again.": "Переводчик вернул неполный результат. Попробуйте ещё раз.",
+
         "Opening links, launch, and language.": "Открытие ссылок, запуск и язык приложения.",
         "Choose how windows and the sidebar work.": "Настройте окна и боковую панель.",
         "Quick Search and opening links in other browsers.": "Быстрый поиск и открытие ссылок в других браузерах.",

@@ -61,10 +61,26 @@ struct PreviewPageView: View {
         }
         .background { PreviewWindowMaterial() }
         .background { PreviewPageKeyboardCommands(session: session) }
+        .background { PageTranslationEngine(controller: session.pageTranslation) }
         .overlay(alignment: .topTrailing) {
             if let model {
                 PreviewBrowserMenuLayer(model: model, session: session, menu: browserMenu)
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            PreviewTranslationDrawer(controller: session.pageTranslation)
+        }
+        .overlay(alignment: .topTrailing) {
+            PreviewFindOverlay(controller: session.pageFind).padding(.top, PreviewLayout.topBarHeight)
+        }
+        .onReceive(session.pageTranslation.$isPresented) { presented in
+            if presented { browserMenu.dismiss(); session.pageFind.close(returnFocus: false) }
+        }
+        .onReceive(session.pageFind.$isPresented) { presented in
+            if presented { browserMenu.dismiss(); session.pageTranslation.close() }
+        }
+        .onChange(of: browserMenu.isPresented) { presented in
+            if presented { session.pageTranslation.close(); session.pageFind.close(returnFocus: false) }
         }
         .onChange(of: session.navigationID) { _ in browserMenu.dismiss() }
         .onChange(of: session.currentURL) { _ in browserMenu.dismiss() }
@@ -150,9 +166,6 @@ struct PreviewPageView: View {
             RoundedRectangle(cornerRadius: PreviewLayout.contentCornerRadius, style: .continuous)
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 1)
                 .allowsHitTesting(false)
-        }
-        .overlay(alignment: .topTrailing) {
-            if session.pageFailure == nil { PreviewFindOverlay(controller: session.pageFind) }
         }
         .animation(.easeOut(duration: 0.13), value: session.isPreparingNewPage)
     }
@@ -249,6 +262,15 @@ final class PreviewPageCommandView: NSView {
               window?.attachedSheet == nil, let session, session.isActive,
               !session.isWelcome, session.webView != nil else { return false }
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if event.keyCode == 53, let editor = window?.firstResponder as? NSTextView,
+           let field = editor.delegate as? NSTextField,
+           field.accessibilityIdentifier() == "preview-full-address" { return false }
+        if event.keyCode == 53, modifiers.isEmpty,
+           (window?.firstResponder as? NSTextView)?.hasMarkedText() != true {
+            if session.pageTranslation.isPresented { session.pageTranslation.close(); return true }
+            if session.pageFind.isPresented { session.pageFind.close(); return true }
+        }
+
         guard modifiers == .command || modifiers == [.command, .shift] else { return false }
         // Character matching supports other layouts; physical fallbacks also
         // keep these commands available when Russian letters are reported.
@@ -400,7 +422,7 @@ enum BrowserDrawerLayout {
 
 /// The viewport stays fixed below the toolbar while the drawer slides through it.
 /// Keeping the view mounted also lets a quick reversal continue from its current position.
-private struct BrowserDrawerSlide: GeometryEffect {
+struct BrowserDrawerSlide: GeometryEffect {
     var progress: CGFloat
     var animatableData: CGFloat {
         get { progress }
@@ -455,7 +477,7 @@ private struct PreviewBrowserMenuLayer: View {
 
 /// Uses the page's own surface while it fits. A taller drawer keeps the same
 /// hosting view in an attached child panel, so a short page window cannot clip it.
-private struct BrowserDrawerHost: NSViewRepresentable {
+struct BrowserDrawerHost: NSViewRepresentable {
     let isPresented: Bool
     let content: AnyView
 
@@ -474,7 +496,7 @@ private final class BrowserDrawerPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-private final class BrowserDrawerHostView: NSView {
+final class BrowserDrawerHostView: NSView {
     private let hosting: NSHostingView<AnyView>
     private var panel: BrowserDrawerPanel?
     private weak var parentWindow: NSWindow?

@@ -13,6 +13,7 @@ struct PreviewControlAnchors: PreferenceKey {
 /// controls and the live WKWebView keep their identity and state.
 struct PreviewLocationView: View {
     @ObservedObject var session: PreviewSession
+    @ObservedObject private var translation: PageTranslationController
     let title: String
     var isToolbarHovered = false
     var highlightsAddress = false
@@ -21,6 +22,15 @@ struct PreviewLocationView: View {
     var editBookmark: (() -> Void)? = nil
     let submitAddress: (String) -> Bool
     @State private var showsFullAddress = false
+
+    init(session: PreviewSession, title: String, isToolbarHovered: Bool = false, highlightsAddress: Bool = false,
+         isBookmarked: Bool = false, isBookmarkEditorPresented: Bool = false,
+         editBookmark: (() -> Void)? = nil, submitAddress: @escaping (String) -> Bool) {
+        self.session = session; translation = session.pageTranslation; self.title = title
+        self.isToolbarHovered = isToolbarHovered; self.highlightsAddress = highlightsAddress
+        self.isBookmarked = isBookmarked; self.isBookmarkEditorPresented = isBookmarkEditorPresented
+        self.editBookmark = editBookmark; self.submitAddress = submitAddress
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -38,11 +48,12 @@ struct PreviewLocationView: View {
                                          isToolbarHovered: isToolbarHovered,
                                          isBookmarked: isBookmarked,
                                          isBookmarkEditorPresented: isBookmarkEditorPresented,
-                                         editBookmark: editBookmark, submitAddress: submitAddress) { [weak session] in
+                                         editBookmark: editBookmark, isTranslated: translation.isTranslated,
+                                         showTranslation: { translation.toggle() }, submitAddress: submitAddress) { [weak session] in
                     guard let view = session?.webView else { return }
                     view.window?.makeFirstResponder(view)
                 }
-                .frame(width: showsFullAddress ? nil : PreviewAddressControlView.compactWidth(for: url, includesBookmark: editBookmark != nil),
+                .frame(width: showsFullAddress ? nil : PreviewAddressControlView.compactWidth(for: url, includesBookmark: editBookmark != nil, includesTranslation: translation.isTranslated),
                        height: PreviewLayout.controlHeight)
                 .frame(maxWidth: showsFullAddress ? .infinity : nil)
                 .layoutPriority(1)
@@ -149,6 +160,8 @@ private struct PreviewAddressDisclosure: NSViewRepresentable {
     let isBookmarked: Bool
     let isBookmarkEditorPresented: Bool
     let editBookmark: (() -> Void)?
+    let isTranslated: Bool
+    let showTranslation: () -> Void
     let submitAddress: (String) -> Bool
     let returnFocusToPage: () -> Void
 
@@ -163,6 +176,8 @@ private struct PreviewAddressDisclosure: NSViewRepresentable {
         view.returnFocusToPage = returnFocusToPage
         view.onSubmit = submitAddress
         view.onEditBookmark = editBookmark
+        view.onShowTranslation = showTranslation
+        view.setTranslationVisible(isTranslated)
         view.updateActions(hovered: isToolbarHovered, bookmarked: isBookmarked, editingBookmark: isBookmarkEditorPresented)
         view.update(url: url, expanded: isExpanded)
     }
@@ -178,6 +193,7 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     private(set) var isExpanded = false
     let copyButton = PreviewToolbarIconButton(title: "", target: nil, action: nil)
     let bookmarkButton = PreviewToolbarIconButton(title: "", target: nil, action: nil)
+    let translationButton = PreviewToolbarIconButton(title: "", target: nil, action: nil)
     let addressButton = NSButton(title: "", target: nil, action: nil)
     let addressField = NSTextField(labelWithString: "")
     private(set) var isShowingCopyFeedback = false
@@ -186,6 +202,8 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     var returnFocusToPage: (() -> Void)?
     var onSubmit: ((String) -> Bool)?
     var onEditBookmark: (() -> Void)?
+    var onShowTranslation: (() -> Void)?
+    private(set) var isTranslationVisible = false
 
     private var fullAddress = ""
     private var eventMonitor: Any?
@@ -196,12 +214,12 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
     private var isBookmarkEditorPresented = false
     private static let horizontalInset = PreviewLayout.toolbarContentInset
 
-    private static func actionsWidth(includesBookmark: Bool) -> CGFloat {
-        let count: CGFloat = includesBookmark ? 2 : 1
+    private static func actionsWidth(includesBookmark: Bool, includesTranslation: Bool = false) -> CGFloat {
+        let count: CGFloat = (includesBookmark ? 2 : 1) + (includesTranslation ? 1 : 0)
         return count * (PreviewLayout.controlHeight + PreviewLayout.toolbarItemSpacing)
     }
 
-    private var addressStart: CGFloat { Self.actionsWidth(includesBookmark: onEditBookmark != nil) }
+    private var addressStart: CGFloat { Self.actionsWidth(includesBookmark: onEditBookmark != nil, includesTranslation: isTranslationVisible) }
 
     static func compactAddress(for url: URL) -> String {
         guard var host = url.host, !host.isEmpty else { return url.absoluteString }
@@ -211,11 +229,11 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         return url.scheme?.lowercased() == "http" ? "http://" + host : host
     }
 
-    static func compactWidth(for url: URL, includesBookmark: Bool = true) -> CGFloat {
+    static func compactWidth(for url: URL, includesBookmark: Bool = true, includesTranslation: Bool = false) -> CGFloat {
         let text = compactAddress(for: url) as NSString
         let font: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11)]
         return min(180, ceil(text.size(withAttributes: font).width) + 2 * horizontalInset)
-            + actionsWidth(includesBookmark: includesBookmark)
+            + actionsWidth(includesBookmark: includesBookmark, includesTranslation: includesTranslation)
     }
 
     override init(frame frameRect: NSRect) {
@@ -260,6 +278,14 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         addressField.setAccessibilityIdentifier("preview-full-address")
         addressField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addressField.isHidden = true
+        translationButton.target = self
+        translationButton.action = #selector(showTranslation)
+        translationButton.image = NSImage(systemSymbolName: "translate", accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: "character.bubble", accessibilityDescription: nil)
+        translationButton.setAccessibilityIdentifier("preview-translate")
+        translationButton.setAccessibilityLabel(L("Show translation controls"))
+        translationButton.toolTip = L("Show translation controls")
+        translationButton.isHidden = true
         addSubview(copyButton)
         addSubview(bookmarkButton)
         addSubview(addressButton)
@@ -279,6 +305,17 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         needsLayout = true
         updateActionVisibility()
     }
+
+    func setTranslationVisible(_ visible: Bool) {
+        isTranslationVisible = visible
+        translationButton.isHidden = !visible
+        if visible {
+            if translationButton.superview == nil { addSubview(translationButton) }
+        } else { translationButton.removeFromSuperview() }
+        translationButton.alphaValue = 1
+        needsLayout = true
+    }
+    @objc private func showTranslation() { onShowTranslation?() }
 
     @objc private func editBookmark() { onEditBookmark?() }
 
@@ -321,6 +358,8 @@ final class PreviewAddressControlView: NSView, NSTextFieldDelegate {
         let size = PreviewLayout.controlHeight
         copyButton.frame = NSRect(x: 0, y: (bounds.height - size) / 2, width: size, height: size)
         bookmarkButton.frame = NSRect(x: size + PreviewLayout.toolbarItemSpacing, y: copyButton.frame.minY, width: size, height: size)
+        translationButton.frame = NSRect(x: Self.actionsWidth(includesBookmark: onEditBookmark != nil),
+                                         y: copyButton.frame.minY, width: size, height: size)
         addressButton.frame = NSRect(x: addressStart + Self.horizontalInset, y: 0,
                                      width: max(0, bounds.width - addressStart - 2 * Self.horizontalInset), height: bounds.height)
         // A borderless native field places its editor at the top of its frame.
