@@ -116,16 +116,16 @@ struct PreviewTranslationDrawer: View {
                     }
                 }
                 Button {
-                    if controller.isBusy { controller.cancel() }
-                    else if controller.showsOriginalAction { controller.restoreOriginal() }
-                    else { controller.requestTranslation() }
+                    if controller.error != nil, !controller.isBusy { controller.requestTranslation() }
+                    else { controller.restoreOriginal() }
                 } label: {
-                    Text(L(controller.isBusy ? "Cancel" : (controller.showsOriginalAction ? "Show original" : "Translate")))
+                    Text(L(controller.isBusy ? "Cancel" : (controller.error != nil ? "Translation failed" : "Show original")))
                         .font(.system(size: 12, weight: .medium))
                         .frame(maxWidth: .infinity, minHeight: 30)
                         .foregroundStyle(Color(nsColor: .windowBackgroundColor))
                         .background(Color.primary.opacity(0.88), in: RoundedRectangle(cornerRadius: 7))
-                }.buttonStyle(.plain).disabled(!controller.isBusy && controller.target.isEmpty)
+                }.buttonStyle(.plain)
+                    .help(controller.error != nil ? L("Retry translation") : L("Show original"))
                     .accessibilityIdentifier("preview-translation-action")
             }
         }

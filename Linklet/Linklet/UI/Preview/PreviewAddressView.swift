@@ -48,12 +48,12 @@ struct PreviewLocationView: View {
                                          isToolbarHovered: isToolbarHovered,
                                          isBookmarked: isBookmarked,
                                          isBookmarkEditorPresented: isBookmarkEditorPresented,
-                                         editBookmark: editBookmark, isTranslated: translation.isTranslated,
+                                         editBookmark: editBookmark, isTranslationEnabled: translation.isEnabled,
                                          showTranslation: { translation.toggle() }, submitAddress: submitAddress) { [weak session] in
                     guard let view = session?.webView else { return }
                     view.window?.makeFirstResponder(view)
                 }
-                .frame(width: showsFullAddress ? nil : PreviewAddressControlView.compactWidth(for: url, includesBookmark: editBookmark != nil, includesTranslation: translation.isTranslated),
+                .frame(width: showsFullAddress ? nil : PreviewAddressControlView.compactWidth(for: url, includesBookmark: editBookmark != nil, includesTranslation: translation.isEnabled),
                        height: PreviewLayout.controlHeight)
                 .frame(maxWidth: showsFullAddress ? .infinity : nil)
                 .layoutPriority(1)
@@ -160,7 +160,7 @@ private struct PreviewAddressDisclosure: NSViewRepresentable {
     let isBookmarked: Bool
     let isBookmarkEditorPresented: Bool
     let editBookmark: (() -> Void)?
-    let isTranslated: Bool
+    let isTranslationEnabled: Bool
     let showTranslation: () -> Void
     let submitAddress: (String) -> Bool
     let returnFocusToPage: () -> Void
@@ -177,7 +177,7 @@ private struct PreviewAddressDisclosure: NSViewRepresentable {
         view.onSubmit = submitAddress
         view.onEditBookmark = editBookmark
         view.onShowTranslation = showTranslation
-        view.setTranslationVisible(isTranslated)
+        view.setTranslationVisible(isTranslationEnabled)
         view.updateActions(hovered: isToolbarHovered, bookmarked: isBookmarked, editingBookmark: isBookmarkEditorPresented)
         view.update(url: url, expanded: isExpanded)
     }

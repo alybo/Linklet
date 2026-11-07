@@ -38,10 +38,6 @@ final class PageTranslationDOM: NSObject, WKScriptMessageHandler {
         owners.removeObject(forKey: view)
         frames.removeValue(forKey: ObjectIdentifier(view))
     }
-    func navigationStarted(_ view: WKWebView) {
-        restore(view)
-        frames.removeValue(forKey: ObjectIdentifier(view))
-    }
     func restore(_ view: WKWebView) {
         for (id, frame) in frames[ObjectIdentifier(view)] ?? [:] {
             view.callAsyncJavaScript("if (globalThis.__linkletTranslation?.id === id) globalThis.__linkletTranslation.restore()",
@@ -51,6 +47,12 @@ final class PageTranslationDOM: NSObject, WKScriptMessageHandler {
     func restoreAndWait(_ view: WKWebView) async {
         for (id, frame) in frames[ObjectIdentifier(view)] ?? [:] {
             _ = try? await view.callAsyncJavaScript("if (globalThis.__linkletTranslation?.id === id) globalThis.__linkletTranslation.restore()",
+                                                   arguments: ["id": id], in: frame, contentWorld: Self.world)
+        }
+    }
+    func watch(_ view: WKWebView) async {
+        for (id, frame) in frames[ObjectIdentifier(view)] ?? [:] {
+            _ = try? await view.callAsyncJavaScript("if (globalThis.__linkletTranslation?.id === id) globalThis.__linkletTranslation.watch()",
                                                    arguments: ["id": id], in: frame, contentWorld: Self.world)
         }
     }
@@ -140,7 +142,7 @@ final class PageTranslationDOM: NSObject, WKScriptMessageHandler {
         }
         records.clear(); directions.clear(); roots.clear();
       };
-      globalThis.__linkletTranslation = {id, restore,
+      globalThis.__linkletTranslation = {id, restore, watch() { active = true; observe(); },
         take(limit) {
           const entries = [], pending = [document.body || document.documentElement];
           for (let index = 0; index < pending.length && entries.length < limit; index++) {

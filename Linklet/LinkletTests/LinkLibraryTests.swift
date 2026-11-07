@@ -3490,6 +3490,7 @@ final class WebPopupTests: XCTestCase {
         let suite = "PageTranslation.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let preferences = PageTranslationPreferences(defaults: defaults)
+        preferences.target = "ru"
         let translator = PageTranslationController(preferences: preferences,
             languageProvider: { ["en", "ru", "he"] }, translator: { $0.map { "RU: " + $0 } })
         let model = AppModel(defaults: defaults, pageTranslation: translator, discoverTargets: { [] })
@@ -3509,8 +3510,6 @@ final class WebPopupTests: XCTestCase {
         XCTAssertEqual(menu.items.first?.title, L("Translate"))
         menu.performActionForItem(at: 0)
         try await waitUntil { translator.isPresented && translator.detectedSource == "en" }
-        translator.setTarget("ru")
-        translator.requestTranslation()
         try await waitUntil { translator.isTranslated && !translator.isBusy }
         XCTAssertNil(translator.error)
         try await waitForTranslationScript("document.getElementById('article').textContent.startsWith('RU: ')", in: view)
@@ -3606,10 +3605,148 @@ final class WebPopupTests: XCTestCase {
         try await Task.sleep(nanoseconds: 400_000_000)
         XCTAssertFalse(translator.isTranslated)
         XCTAssertFalse(translator.isBusy)
-        XCTAssertEqual(translator.source, "auto")
+        XCTAssertEqual(translator.source, "en")
+        XCTAssertTrue(translator.isEnabled, "The same site keeps its selected translation mode")
         XCTAssertEqual(translator.target, "ru")
         let late = try await view.evaluateJavaScript("document.body.textContent.includes('Translated:')") as? Bool
         XCTAssertEqual(late, false)
+    }
+
+    func testTranslationAppliesImmediatelyChangesLanguageAndContinuesUntilDisabled() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "AutomaticTranslation.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let preferences = PageTranslationPreferences(defaults: defaults)
+        preferences.target = "ru"
+        var marker = "RU", batches: [[String]] = []
+        let translation = PageTranslationController(preferences: preferences,
+            languageProvider: { ["en", "ru", "fr"] }, translator: { texts in
+                batches.append(texts)
+                return texts.map { marker + ": " + $0 }
+            })
+        let model = AppModel(defaults: defaults, pageTranslation: translation, discoverTargets: { [] })
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        let original = URL(string: "http://127.0.0.1:\(port)/translation")!
+        model.showPreview(url: original)
+        try await waitUntil { model.previewSession.pageTitle == "Translation fixture" && !model.previewSession.isLoading }
+        let view = try XCTUnwrap(model.previewSession.webView)
+        let window = try XCTUnwrap(view.window), content = try XCTUnwrap(window.contentView)
+        let coordinator = WebPreview.Coordinator(session: model.previewSession)
+        let menu = NSMenu(); coordinator.appendTranslationItem(to: menu, in: view)
+        menu.performActionForItem(at: 0)
+        try await waitUntil { translation.isTranslated && !translation.isBusy }
+        XCTAssertTrue(translation.isEnabled)
+        XCTAssertTrue(translation.isPresented)
+        XCTAssertEqual(translation.target, "ru")
+        let action = try XCTUnwrap(accessibilityNode(in: content, identifier: "preview-translation-action"))
+        XCTAssertEqual(action.value(forKey: "accessibilityLabel") as? String, L("Show original"))
+        try await Task.sleep(nanoseconds: 250_000_000)
+        content.layoutSubtreeIfNeeded()
+        func click(at point: NSPoint) throws {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: content.convert(point, to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1))
+            coordinator.dismissTranslationControls(for: event, in: view)
+        }
+        try click(at: NSPoint(x: content.bounds.maxX - 50, y: content.bounds.maxY - 100))
+        XCTAssertTrue(translation.isPresented, "Clicks within the drawer do not dismiss its controls")
+        try click(at: NSPoint(x: 70, y: 60))
+        XCTAssertFalse(translation.isPresented, "A blank area of the page dismisses controls")
+        XCTAssertTrue(translation.isEnabled)
+        XCTAssertTrue(translation.isTranslated)
+        let icon = try XCTUnwrap(accessibilityNode(in: content, identifier: "preview-translate"))
+        XCTAssertEqual(icon.value(forKey: "accessibilityPerformPress") as? Bool, true)
+        try await waitUntil { translation.isPresented }
+        marker = "FR"
+        translation.setTarget("fr")
+        try await waitUntil { translation.appliedTarget == "fr" && !translation.isBusy }
+        try await waitForTranslationScript("document.getElementById('article').textContent.startsWith('FR: This is')", in: view)
+        XCTAssertFalse(batches.flatMap { $0 }.contains { $0.hasPrefix("RU: ") }, "Changing a language translates originals, never the previous translation")
+        translation.setSource("fr")
+        try await waitUntil { !translation.isBusy && !translation.isTranslated }
+        XCTAssertTrue(translation.isEnabled, "A page already in the target language keeps the mode for future pages")
+        XCTAssertNil(translation.error)
+        translation.setSource("auto")
+        try await waitUntil { translation.isTranslated && !translation.isBusy }
+        XCTAssertEqual(translation.appliedSource, "en")
+        translation.close()
+        _ = try await view.evaluateJavaScript("location.href='/translation-next';true")
+        try await waitUntil { model.previewSession.pageTitle == "Next translation page" && !translation.isBusy && translation.isTranslated }
+        XCTAssertTrue(translation.isEnabled)
+        XCTAssertFalse(translation.isPresented, "Navigation does not reopen dismissed controls")
+        XCTAssertEqual(translation.appliedTarget, "fr")
+        try await waitForTranslationScript("document.getElementById('article').textContent.startsWith('FR: The next')", in: view)
+        translation.navigationStarted()
+        XCTAssertTrue(translation.isTranslated, "A cancelled navigation or a download leaves the current page translated")
+        translation.navigationInterrupted()
+        try await waitUntil { !translation.isBusy }
+        XCTAssertTrue(translation.isTranslated)
+        translation.restoreOriginal()
+        try await waitUntil { !translation.isTranslated }
+        XCTAssertFalse(translation.isEnabled)
+        _ = try await view.evaluateJavaScript("location.href='/translation';true")
+        try await waitUntil { model.previewSession.pageTitle == "Translation fixture" && !model.previewSession.isLoading }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertFalse(translation.isTranslated)
+        let restored = try await view.evaluateJavaScript("document.getElementById('article').textContent.startsWith('This is')") as? Bool
+        XCTAssertEqual(restored, true)
+        translation.enable()
+        try await waitUntil { translation.isTranslated && !translation.isBusy }
+        view.load(URLRequest(url: URL(string: "http://localhost:\(port)/translation-next")!))
+        try await waitUntil { view.url?.host == "localhost" && model.previewSession.pageTitle == "Next translation page" && !model.previewSession.isLoading }
+        XCTAssertFalse(translation.isEnabled, "A different site is not translated implicitly")
+        XCTAssertFalse(translation.isTranslated)
+        XCTAssertEqual(model.previewSession.originalURL, original)
+    }
+
+    func testTranslationCancelsLanguageSwitchAndHandlesDelayedPageContent() async throws {
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "TranslationSwitch.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let preferences = PageTranslationPreferences(defaults: defaults); preferences.target = "ru"
+        var marker = "RU", delay = true, started = false
+        let translation = PageTranslationController(preferences: preferences,
+            languageProvider: { ["en", "ru", "fr"] }, translator: { texts in
+                let prefix = marker
+                started = true
+                if delay { try? await Task.sleep(nanoseconds: 350_000_000) }
+                return texts.map { prefix + ": " + $0 }
+            })
+        let model = AppModel(defaults: defaults, pageTranslation: translation, discoverTargets: { [] })
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/translation-next")!)
+        try await waitUntil { model.previewSession.pageTitle == "Next translation page" && !model.previewSession.isLoading }
+        let view = try XCTUnwrap(model.previewSession.webView)
+        translation.enable()
+        try await waitUntil { started }
+        marker = "FR"; delay = false
+        translation.setTarget("fr")
+        try await waitUntil { !translation.isBusy && translation.appliedTarget == "fr" }
+        try await Task.sleep(nanoseconds: 400_000_000)
+        try await waitForTranslationScript("document.getElementById('article').textContent.startsWith('FR: The next')", in: view)
+        translation.restoreOriginal()
+        try await waitUntil { !translation.isTranslated }
+        delay = true; started = false
+        translation.enable()
+        try await waitUntil { started }
+        translation.restoreOriginal()
+        try await Task.sleep(nanoseconds: 450_000_000)
+        XCTAssertFalse(translation.isEnabled)
+        XCTAssertFalse(translation.isBusy)
+        XCTAssertFalse(translation.isTranslated)
+        try await waitForTranslationScript("document.getElementById('article').textContent.startsWith('The next')", in: view)
+        // Client-side shells can finish loading before their article arrives.
+        _ = try await view.evaluateJavaScript("document.body.textContent='';true")
+        translation.enable()
+        try await waitUntil { !translation.isBusy && translation.error != nil }
+        _ = try await view.evaluateJavaScript("const p=document.createElement('p');p.id='article';p.textContent='The next English article arrived after loading.';document.body.appendChild(p);true")
+        try await waitUntil { translation.isTranslated && !translation.isBusy }
+        XCTAssertNil(translation.error)
+        try await waitForTranslationScript("document.getElementById('article').textContent.startsWith('FR: The next')", in: view)
     }
 
     func testPageTranslationDetectsUnsupportedLanguageWithoutSendingWrongSource() async throws {
@@ -4810,6 +4947,9 @@ private final class PopupHTTPFixture: @unchecked Sendable {
             <!doctype html><html lang="he" dir="rtl"><meta charset="utf-8"><title>Hebrew translation fixture</title>
             <h1>טיול בהרים</h1><p id="article">זהו עמוד בעברית על הרים יפים, הליכה ביער והנאה מיום שקט בטבע. אפשר לקרוא את המאמר ולגלות מקומות חדשים.</p></html>
             """
+        } else if firstLine.hasPrefix("GET /translation-next ") {
+            status = "200 OK"
+            html = "<html lang='en'><meta charset='utf-8'><title>Next translation page</title><p id='article'>The next English article describes beautiful mountains and forests for walking in the peaceful countryside.</p></html>"
         } else if firstLine.hasPrefix("GET /translation ") {
             status = "200 OK"
             html = """

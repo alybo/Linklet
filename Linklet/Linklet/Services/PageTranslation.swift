@@ -18,6 +18,7 @@ final class PageTranslationController: ObservableObject {
     let preferences: PageTranslationPreferences
     @Published private(set) var isPresented = false
     @Published private(set) var isTranslated = false
+    @Published private(set) var isEnabled = false
     @Published private(set) var isBusy = false
     @Published private(set) var languages: [String] = []
     @Published private(set) var standardLanguages: Set<String>?
@@ -38,6 +39,8 @@ final class PageTranslationController: ObservableObject {
     private var pendingSnapshot: PageTranslationDOM.Snapshot?
     private var needsDynamicPass = false
     private var automaticUpdatesEnabled = false
+    private var enabledSite: String?
+    private var isNavigating = false
     private let languageProvider: () async -> [String]
     private let standardLanguageProvider: () async -> [String]?
     private let translator: (([String]) async throws -> [String])?
@@ -86,12 +89,39 @@ final class PageTranslationController: ObservableObject {
         webView = nil
         isPresented = false; isTranslated = false; detectedSource = nil
         appliedSource = nil; appliedTarget = nil; source = "auto"; error = nil
+        isEnabled = false; enabledSite = nil; isNavigating = false
     }
     func navigationStarted() {
         cancel()
-        if let webView { PageTranslationDOM.shared.navigationStarted(webView) }
-        isPresented = false; isTranslated = false; source = "auto"; detectedSource = nil
-        appliedTarget = nil; appliedSource = nil; error = nil
+        // A provisional navigation may become a download or be cancelled.
+        // Keep the displayed document translated until another one commits.
+        isPresented = false; error = nil
+        isNavigating = true
+        if !isEnabled { source = "auto" }
+    }
+    func navigationCommitted(to url: URL?) {
+        isTranslated = false; detectedSource = nil
+        appliedTarget = nil; appliedSource = nil; translatedCount = 0
+        guard isEnabled else { return }
+        if url.flatMap(WindowGeometryService.siteKey(for:)) != enabledSite {
+            isEnabled = false; enabledSite = nil; source = "auto"
+        }
+    }
+    func navigationFinished() {
+        isNavigating = false
+        if isEnabled { requestTranslation() }
+    }
+    func navigationInterrupted() {
+        isNavigating = false
+        if isEnabled { requestTranslation(dynamic: isTranslated) }
+    }
+    func enable() {
+        guard let webView else { return }
+        isEnabled = true
+        enabledSite = webView.url.flatMap(WindowGeometryService.siteKey(for:))
+        isPresented = true
+        if isBusy { return }
+        requestTranslation()
     }
     func show() {
         guard webView != nil else { return }
@@ -105,8 +135,16 @@ final class PageTranslationController: ObservableObject {
     }
     func close() { isPresented = false }
     func toggle() { if isPresented { close() } else { show() } }
-    func setSource(_ value: String) { if isBusy { cancel() }; source = value; error = nil }
-    func setTarget(_ value: String) { if isBusy { cancel() }; target = value; preferences.target = value; error = nil }
+    func setSource(_ value: String) {
+        guard value != source else { return }
+        if isBusy { cancel() }; source = value; error = nil
+        if isEnabled, !isNavigating { requestTranslation() }
+    }
+    func setTarget(_ value: String) {
+        guard value != target else { return }
+        if isBusy { cancel() }; target = value; preferences.target = value; error = nil
+        if isEnabled, !isNavigating { requestTranslation() }
+    }
     func languageName(_ code: String) -> String {
         let name = Locale(identifier: AppLanguage.shared.code).localizedString(forIdentifier: code) ?? code
         return name.prefix(1).uppercased() + name.dropFirst()
@@ -147,16 +185,18 @@ final class PageTranslationController: ObservableObject {
         detectedSource = code
     }
     func pageChanged() {
-        guard isTranslated, automaticUpdatesEnabled, showsOriginalAction else { return }
+        guard isEnabled, !isNavigating, automaticUpdatesEnabled,
+              !isTranslated || showsOriginalAction else { return }
         if isBusy { needsDynamicPass = true; return }
-        requestTranslation(dynamic: true)
+        requestTranslation(dynamic: isTranslated)
     }
-    func cancel() {
+    private func cancel() {
         generation = UUID(); preparing?.cancel(); preparing = nil
         checking?.cancel(); checking = nil
         request = nil; isBusy = false; pendingSnapshot = nil; needsDynamicPass = false; automaticUpdatesEnabled = false
     }
     func restoreOriginal() {
+        isEnabled = false; enabledSite = nil
         cancel()
         guard let view = webView else { return }
         let token = generation
@@ -169,7 +209,11 @@ final class PageTranslationController: ObservableObject {
         }
     }
     func requestTranslation(dynamic: Bool = false) {
-        guard let view = webView, !isBusy else { return }
+        guard let view = webView, !isBusy, !isNavigating else { return }
+        if !dynamic {
+            isEnabled = true
+            enabledSite = view.url.flatMap(WindowGeometryService.siteKey(for:))
+        }
         cancel(); error = nil; isBusy = true
         let token = generation
         preparing = Task { @MainActor [weak self, weak view] in
@@ -180,18 +224,25 @@ final class PageTranslationController: ObservableObject {
                 await PageTranslationDOM.shared.restoreAndWait(view)
                 guard generation == token, webView === view else { return }
                 isTranslated = false; appliedSource = nil; appliedTarget = nil; translatedCount = 0
+                await PageTranslationDOM.shared.watch(view)
+                guard generation == token, webView === view else { return }
             }
             let snapshot = await PageTranslationDOM.shared.snapshot(view)
             let identified = dynamic ? appliedSource : await identify(snapshot)
             guard generation == token, webView === view else { return }
             detectedSource = identified
+            guard !snapshot.entries.isEmpty else {
+                isBusy = false
+                automaticUpdatesEnabled = true
+                if !dynamic { isTranslated = false; error = L("No translatable text was found on this page.") }
+                return
+            }
             let selected = source == "auto" ? identified : source
             guard let selected, !target.isEmpty else { fail(L("Choose a supported source and target language.")); return }
             guard languages.contains(selected) else { fail(L("This page language is not supported by macOS on this Mac.")); return }
-            guard Locale.Language(identifier: selected).languageCode != Locale.Language(identifier: target).languageCode else { fail(L("The source and target languages are the same.")); return }
-            guard !snapshot.entries.isEmpty else {
+            guard Locale.Language(identifier: selected).languageCode != Locale.Language(identifier: target).languageCode else {
                 isBusy = false
-                if !dynamic { isTranslated = false; error = L("No translatable text was found on this page.") }
+                automaticUpdatesEnabled = true
                 return
             }
             requestedSource = selected; requestedTarget = target
@@ -203,6 +254,7 @@ final class PageTranslationController: ObservableObject {
     func translationFailed(_ failure: Error, request id: UUID) {
         guard request == id else { return }
         isBusy = false
+        automaticUpdatesEnabled = false
         if !(failure is CancellationError) { error = failure.localizedDescription }
     }
     private func fail(_ message: String) { error = message; isBusy = false; request = nil }
@@ -236,6 +288,7 @@ final class PageTranslationController: ObservableObject {
         } catch {
             guard generation == token else { return }
             isBusy = false
+            automaticUpdatesEnabled = false
             if !(error is CancellationError) { self.error = error.localizedDescription }
         }
     }

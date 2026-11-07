@@ -192,6 +192,8 @@ final class AppLanguage: ObservableObject {
         "Find a language": "Найти язык",
         "This page language is not supported by macOS on this Mac.": "Эта версия macOS не поддерживает перевод с языка этой страницы.",
         "Translate": "Перевести",
+        "Translation failed": "Ошибка перевода",
+        "Retry translation": "Повторить перевод",
         "Translate page": "Перевод страницы",
         "Close translation": "Закрыть перевод",
         "From language": "С языка",

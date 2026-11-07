@@ -174,6 +174,7 @@ final class PreviewSession: ObservableObject {
 
     func navigationBecameDownload(in view: WKWebView) {
         guard webView === view else { return }
+        pageTranslation.navigationInterrupted()
         pageFind.navigationFinished()
         requestedURL = nil
         shouldRecordInitialTitle = false
@@ -402,6 +403,7 @@ final class PreviewSession: ObservableObject {
         isPreparingNewPage = false
         pageFind.navigationFinished()
         navigationIsPending = false
+        pageTranslation.navigationInterrupted()
         synchronizeFromLoadedPage()
     }
 
@@ -410,6 +412,7 @@ final class PreviewSession: ObservableObject {
         navigationIsPending = false
         requestedURL = nil
         if !isWelcome, lastCommittedURL != view.url { navigationDidCommit(in: view) }
+        pageTranslation.navigationFinished()
         synchronize(from: view)
         if let restoration, restoration.url == view.url, !restorationStarted {
             restorationStarted = true
@@ -431,6 +434,7 @@ final class PreviewSession: ObservableObject {
         requestedURL = nil
         pageFailure = nil
         lastCommittedURL = webView.url
+        pageTranslation.navigationCommitted(to: webView.url)
         if !isWelcome, let url = webView.url { onWindowURLCommitted?(url) }
         lastCommittedTitle = ""
         lastPosition = .top
@@ -447,6 +451,7 @@ final class PreviewSession: ObservableObject {
 
     func navigationDidFail(in webView: WKWebView) {
         guard self.webView === webView else { return }
+        pageTranslation.navigationInterrupted()
         pageFind.navigationFinished()
         requestedURL = nil
         isPreparingNewPage = false
@@ -534,6 +539,7 @@ final class PreviewSession: ObservableObject {
         pageFailure = nil
         synchronizeFromLoadedPage()
         pageFind.navigationFinished()
+        pageTranslation.navigationInterrupted()
     }
 
     private func synchronizeFromLoadedPage() {

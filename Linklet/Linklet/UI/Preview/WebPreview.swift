@@ -156,7 +156,7 @@ struct WebPreview: NSViewRepresentable {
         }
         @objc private func showTranslation(_ item: NSMenuItem) {
             guard let session, let url = item.representedObject as? URL, session.webView?.url == url else { return }
-            session.pageTranslation.show()
+            session.pageTranslation.enable()
         }
 
         @objc private func toggleAdGuard(_ item: NSMenuItem) {
@@ -193,6 +193,7 @@ struct WebPreview: NSViewRepresentable {
             cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .mouseEntered, .mouseExited]) { [weak self, weak webView] event in
                 guard let self, let webView else { return event }
                 if event.window === webView.window {
+                    if event.type == .leftMouseDown { self.dismissTranslationControls(for: event, in: webView) }
                     self.updateCursorOwnership(in: webView, at: event.locationInWindow)
                 } else { self.restoreCursorRects() }
                 return event
@@ -217,6 +218,17 @@ struct WebPreview: NSViewRepresentable {
                     self?.synchronize(webView)
                 }
             ]
+        }
+
+        /// Observe the real hit view so drawer controls and language popovers
+        /// remain interactive. Returning the event preserves the page's click.
+        func dismissTranslationControls(for event: NSEvent, in webView: WKWebView) {
+            guard event.type == .leftMouseDown, event.window === webView.window,
+                  let session, session.pageTranslation.isPresented,
+                  let content = webView.window?.contentView,
+                  let hit = content.hitTest(content.convert(event.locationInWindow, from: nil)),
+                  hit === webView || hit.isDescendant(of: webView) else { return }
+            session.pageTranslation.close()
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation?) {
