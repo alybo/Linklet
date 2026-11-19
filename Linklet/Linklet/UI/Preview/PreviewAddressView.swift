@@ -2,13 +2,6 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
-struct PreviewControlAnchors: PreferenceKey {
-    static var defaultValue: [String: Anchor<CGRect>] = [:]
-    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
 /// Uses the existing title typography. Only the address expands; the window
 /// controls and the live WKWebView keep their identity and state.
 struct PreviewLocationView: View {
@@ -62,9 +55,6 @@ struct PreviewLocationView: View {
                         RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius)
                             .stroke(Color.accentColor, lineWidth: 2).allowsHitTesting(false)
                     }
-                }
-                .anchorPreference(key: PreviewControlAnchors.self, value: .bounds) {
-                    highlightsAddress ? ["address": $0] : [:]
                 }
             }
         }

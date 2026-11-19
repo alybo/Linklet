@@ -80,7 +80,7 @@ struct WebPreview: NSViewRepresentable {
         var openExternalURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
         private var fileUpload: FileUploadRequest?
         private var cursorMonitor: Any?
-        private var cursorResignObserver: NSObjectProtocol?
+        private var cursorWindowObservers: [NSObjectProtocol] = []
         private weak var cursorOwner: NSWindow?
 
         /// Native hosting/field-editor cursor rectangles can cover WKWebView.
@@ -90,14 +90,27 @@ struct WebPreview: NSViewRepresentable {
         private func updateCursorOwnership(in view: WKWebView, at location: NSPoint) {
             guard let window = view.window, window.isKeyWindow, window.attachedSheet == nil,
                   pageReceivesPointer(view, at: location) else { restoreCursorRects(); return }
-            if cursorOwner !== window {
-                restoreCursorRects()
-                if window.areCursorRectsEnabled {
-                    window.disableCursorRects()
-                    cursorOwner = window
-                }
+            if cursorOwner !== window { restoreCursorRects() }
+            if window.areCursorRectsEnabled {
+                window.disableCursorRects()
+                cursorOwner = window
             }
-            window.acceptsMouseMovedEvents = true
+            if !window.acceptsMouseMovedEvents { window.acceptsMouseMovedEvents = true }
+        }
+
+        /// The first document can appear beneath a stationary pointer. Prepare
+        /// AppKit's cursor state at activation and page load as well as on
+        /// mouse movement so WebKit can set its cursor on the first update.
+        private func refreshPointerState(in view: WKWebView) {
+            guard session?.webView === view,
+                  let window = view.window, window.isKeyWindow, window.isVisible else { return }
+            if !window.acceptsMouseMovedEvents { window.acceptsMouseMovedEvents = true }
+            let location = NSEvent.mouseLocation
+            guard NSWindow.windowNumber(at: location, belowWindowWithWindowNumber: 0) == window.windowNumber else {
+                restoreCursorRects()
+                return
+            }
+            updateCursorOwnership(in: view, at: window.convertPoint(fromScreen: location))
         }
 
         private func restoreCursorRects() {
@@ -116,8 +129,8 @@ struct WebPreview: NSViewRepresentable {
 
         func stopCursorHandling() {
             if let cursorMonitor { NSEvent.removeMonitor(cursorMonitor) }
-            if let cursorResignObserver { NotificationCenter.default.removeObserver(cursorResignObserver) }
-            cursorResignObserver = nil
+            cursorWindowObservers.forEach(NotificationCenter.default.removeObserver)
+            cursorWindowObservers.removeAll()
             cursorMonitor = nil
             restoreCursorRects()
         }
@@ -128,7 +141,7 @@ struct WebPreview: NSViewRepresentable {
 
         deinit {
             if let cursorMonitor { NSEvent.removeMonitor(cursorMonitor) }
-            if let cursorResignObserver { NotificationCenter.default.removeObserver(cursorResignObserver) }
+            cursorWindowObservers.forEach(NotificationCenter.default.removeObserver)
             cursorOwner?.enableCursorRects()
         }
 
@@ -202,16 +215,24 @@ struct WebPreview: NSViewRepresentable {
         func startObserving(_ webView: WKWebView) {
             if #available(macOS 27.0, *) { _ = NativeLocationProvider.install(in: webView.configuration.processPool) }
             stopCursorHandling()
-            cursorResignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
-                object: nil, queue: .main) { [weak self] notification in
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                         NSWindow.willBeginSheetNotification, NSWindow.didEndSheetNotification] {
+                let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self, weak webView] notification in
                     MainActor.assumeIsolated {
-                        guard let self, notification.object as? NSWindow === self.cursorOwner else { return }
-                        self.restoreCursorRects()
+                        guard let self, let webView, let window = webView.window,
+                              notification.object as? NSWindow === window else { return }
+                        if notification.name == NSWindow.didResignKeyNotification || notification.name == NSWindow.willBeginSheetNotification {
+                            self.restoreCursorRects()
+                        } else {
+                            self.refreshPointerState(in: webView)
+                        }
                     }
                 }
+                cursorWindowObservers.append(observer)
+            }
             cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [
                 .mouseMoved, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
-                .mouseEntered, .mouseExited, .cursorUpdate
+                .mouseEntered, .mouseExited, .cursorUpdate, .scrollWheel
             ]) { [weak self, weak webView] event in
                 guard let self, let webView else { return event }
                 if event.window === webView.window {
@@ -264,6 +285,7 @@ struct WebPreview: NSViewRepresentable {
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrent(navigation) else { return }
                 self.session?.navigationDidCommit(in: webView)
+                self.refreshPointerState(in: webView)
             }
         }
 
@@ -271,6 +293,7 @@ struct WebPreview: NSViewRepresentable {
             guard isCurrent(navigation) else { return }
             synchronize(webView)
             session?.pageDidFinish(in: webView)
+            refreshPointerState(in: webView)
             if let session, session.webView === webView, !session.isWelcome, session.siteData.isEnabled {
                 Task { @MainActor in await session.siteData.refresh() }
             }

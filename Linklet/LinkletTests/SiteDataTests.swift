@@ -523,6 +523,15 @@ final class SiteDataTests: XCTestCase {
                 try snapshot(window, name: "welcome-\(step.rawValue)-\(code)")
             }
         }
+        AppLanguage.shared.set("ru")
+        window.appearance = NSAppearance(named: .darkAqua)
+        let darkWelcome = NSHostingView(rootView: WelcomeView(model: model))
+        darkWelcome.sizingOptions = []
+        window.contentView = darkWelcome
+        window.setContentSize(NSSize(width: 680, height: 590))
+        try await Task.sleep(for: .milliseconds(150))
+        try snapshot(window, name: "welcome-0-ru-dark")
+        window.appearance = NSAppearance(named: .aqua)
         let supportHost = NSHostingView(rootView: SupportDevelopmentView()
             .frame(width: 480, height: 410)
             .background(Color(nsColor: .windowBackgroundColor)))

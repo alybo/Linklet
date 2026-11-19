@@ -3122,6 +3122,13 @@ final class WebPopupTests: XCTestCase {
         var page = try XCTUnwrap(model.previewSession.webView), window = try XCTUnwrap(model.previewSession.webView?.window)
         try await waitUntil { window.isKeyWindow }
         XCTAssertEqual(window.alphaValue, 1, "The initial window is ready for the first mouse movement")
+        // A host or a panel can leave movement delivery disabled. Loading a
+        // document must restore it even before AppKit sends a pointer event.
+        let toolbarPoint = window.convertPoint(toScreen: page.convert(NSPoint(x: 200, y: -15), to: nil))
+        CGWarpMouseCursorPosition(CGPoint(x: toolbarPoint.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - toolbarPoint.y))
+        window.acceptsMouseMovedEvents = false
+        _ = page.reload()
+        try await waitUntil { !page.isLoading && window.acceptsMouseMovedEvents }
         func move(_ x: CGFloat, _ y: CGFloat) throws {
             let location = page.convert(NSPoint(x: x, y: y), to: nil)
             let screen = window.convertPoint(toScreen: location)
@@ -3150,6 +3157,19 @@ final class WebPopupTests: XCTestCase {
             }
         }
         try await checkHover("before-click")
+        try await waitUntil { NSCursor.current == .pointingHand }
+        let other = NSWindow(contentRect: window.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        other.isReleasedWhenClosed = false
+        defer { other.close() }
+        other.makeKeyAndOrderFront(nil)
+        try await waitUntil { other.isKeyWindow }
+        XCTAssertTrue(window.areCursorRectsEnabled, "A window leaving the foreground yields the system cursor")
+        window.acceptsMouseMovedEvents = false
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow && window.acceptsMouseMovedEvents }
+        other.orderOut(nil)
+        try await checkHover("after-window-switch")
+        try await waitUntil { NSCursor.current == .pointingHand }
         let address = try XCTUnwrap(accessibilityNode(in: try XCTUnwrap(window.contentView), identifier: "preview-address-disclosure") as? NSButton)
         address.performClick(nil)
         try await waitUntil {

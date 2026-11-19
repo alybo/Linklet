@@ -45,6 +45,7 @@ struct WelcomeView: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var model: AppModel
     @ObservedObject private var data: SiteDataService
+    @Environment(\.colorScheme) private var colorScheme
     @State private var step: WelcomeStep
     @State private var confirmsDeletingData = false
 
@@ -57,7 +58,7 @@ struct WelcomeView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: 18) {
                     switch step {
                     case .introduction: introduction
                     case .tutorial:
@@ -67,10 +68,11 @@ struct WelcomeView: View {
                     case .ready: ready
                     }
                 }
-                .padding(32).frame(maxWidth: 760).frame(maxWidth: .infinity)
+                .padding(.horizontal, 26).padding(.vertical, 20)
+                .frame(maxWidth: 860).frame(maxWidth: .infinity)
             }
             Divider()
-            HStack(spacing: 16) {
+            HStack(spacing: 14) {
                 if step == .ready {
                     Spacer()
                     Button(L("Open Settings")) { model.showSettings(page: .general) }
@@ -86,8 +88,8 @@ struct WelcomeView: View {
                     Spacer()
                     HStack(spacing: 6) {
                         ForEach(0..<3) { index in
-                            Circle().fill(index == step.rawValue ? Color.secondary : Color.secondary.opacity(0.25))
-                                .frame(width: 6, height: 6)
+                            Capsule().fill(index == step.rawValue ? Color.accentColor : Color.secondary.opacity(0.28))
+                                .frame(width: index == step.rawValue ? 17 : 6, height: 6)
                         }
                     }
                     .accessibilityElement(children: .ignore)
@@ -97,9 +99,12 @@ struct WelcomeView: View {
                         step = WelcomeStep(rawValue: step.rawValue + 1) ?? .ready
                     }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                 }
-            }.padding(20)
+            }
+            .controlSize(.large)
+            .padding(.horizontal, 26).padding(.vertical, 14)
+            .background(.bar)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(colorScheme == .dark ? Color(red: 0.08, green: 0.10, blue: 0.14) : Color(red: 0.96, green: 0.97, blue: 0.99))
         .environment(\.locale, Locale(identifier: language.code))
         .toolbar {
             ToolbarItem(placement: .automatic) {
@@ -123,77 +128,118 @@ struct WelcomeView: View {
     }
 
     private var introduction: some View {
-        VStack(spacing: 22) {
-            appIcon
-            heading("Welcome to Linklet", "Browse in a compact window alongside your work.")
-            VStack(alignment: .leading, spacing: 22) {
-                feature("macwindow", "Links alongside your work", "Pages open in a compact window.")
-                feature("magnifyingglass", "Search and bookmarks", "Search, save, and return to what matters.")
-                feature("arrow.up.forward.app", "Your other browsers, within reach", "Open the original link in your chosen browser.")
-            }.frame(maxWidth: 440).padding(.vertical, 12)
-            Text(L("You can skip the introduction.")).font(.caption).foregroundStyle(.secondary)
-        }.padding(.top, 8)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable().scaledToFit().frame(width: 54, height: 54)
+                    .accessibilityHidden(true)
+                heading("Welcome to Linklet", "Browse in a compact window alongside your work.")
+            }
+            WelcomeArtwork(.preview, height: 236) {
+                WelcomeInterfaceIllustration()
+            }
+            HStack(alignment: .top, spacing: 12) {
+                feature("macwindow", .preview, "Links alongside your work", "Pages open in a compact window.")
+                feature("magnifyingglass", .search, "Search and bookmarks", "Search, save, and return to what matters.")
+                feature("arrow.up.forward.app", .setup, "Another browser", "Open the original link in your chosen browser.")
+            }
+        }
     }
 
     private var setup: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 16) {
             heading("Start using Linklet", "You can change these settings later.")
-                .frame(maxWidth: .infinity)
-            GroupBox { DefaultBrowserSetting(model: model).padding(12) }
-            GroupBox {
-                Toggle(isOn: Binding(get: { data.isEnabled }, set: { enabled in
-                    if enabled { Task { await model.setSavesSiteData(true) } }
-                    else { confirmsDeletingData = true }
-                })) {
+            WelcomeArtwork(.setup, height: 150) {
+                WelcomeSymbolIllustration(primary: "lock.shield", leading: "link", trailing: "safari")
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                DefaultBrowserSetting(model: model)
+                    .labeledContentStyle(WelcomeSettingsRowStyle())
+                    .padding(16)
+                Divider().padding(.horizontal, 16)
+                LabeledContent {
+                    Toggle(L("Save website data"), isOn: Binding(get: { data.isEnabled }, set: { enabled in
+                        if enabled { Task { await model.setSavesSiteData(true) } }
+                        else { confirmsDeletingData = true }
+                    }))
+                    .labelsHidden().toggleStyle(.switch).disabled(data.isBusy)
+                } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(L("Save website data"))
                         Text(L("Stay signed in and keep website preferences.")).font(.caption).foregroundStyle(.secondary)
                     }
-                }.toggleStyle(.switch).padding(12).disabled(data.isBusy)
+                }
+                .labeledContentStyle(WelcomeSettingsRowStyle())
+                .padding(16)
             }
+            .welcomeCard()
             Text(L(data.isEnabled
                 ? "Website data is stored on this Mac. History has a separate setting."
                 : "Website data is temporary. History has a separate setting."))
                 .font(.caption).foregroundStyle(.secondary)
             Label(L("Find settings and this introduction in the Linklet menu bar icon."), systemImage: "menubar.arrow.up.rectangle")
-                .font(.callout).foregroundStyle(.secondary).padding(.top, 12)
-            if let message = model.statusMessage { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-        }.padding(.top, 18)
-    }
-
-    private var ready: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "checkmark.circle").font(.system(size: 54, weight: .light)).foregroundStyle(.secondary)
-            heading("You're ready", "Open an example page or find a website with Quick Search.")
-            if model.linkLibrary.isEnabled {
-                Text(L("Move the pointer to the left edge of the screen for open windows, bookmarks, history, and downloads."))
-                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 420)
+                .font(.callout).foregroundStyle(.secondary)
+            if let message = model.statusMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
-            if !model.isDefaultBrowser {
-                Text(L("To open links automatically, make Linklet your default browser in settings."))
-                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 420)
-            }
-        }.frame(maxWidth: .infinity).padding(.vertical, 70)
-    }
-
-    private var appIcon: some View {
-        Image(nsImage: NSApplication.shared.applicationIconImage).resizable().scaledToFit().frame(width: 76, height: 76)
-    }
-
-    private func heading(_ title: String, _ subtitle: String) -> some View {
-        VStack(spacing: 8) {
-            Text(L(title)).font(.title.bold())
-            Text(L(subtitle)).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
     }
 
-    private func feature(_ symbol: String, _ title: String, _ detail: String) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            Image(systemName: symbol).font(.title2).foregroundStyle(.secondary).frame(width: 30)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L(title)).fontWeight(.medium)
-                Text(L(detail)).font(.callout).foregroundStyle(.secondary)
+    private var ready: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            heading("You're ready", "Open an example page or find a website with Quick Search.")
+            WelcomeArtwork(.search, height: 212) {
+                WelcomeSymbolIllustration(primary: "checkmark", leading: "macwindow", trailing: "magnifyingglass")
             }
+            if model.linkLibrary.isEnabled {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.blue)
+                        .frame(width: 32, height: 32)
+                        .background(Color.blue.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("Sidebar")).font(.callout.weight(.semibold))
+                        Text(L("Move the pointer to the left edge of the screen for open windows, bookmarks, history, and downloads."))
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(16).welcomeCard()
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func heading(_ title: String, _ subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L(title)).font(.system(size: 31, weight: .bold)).tracking(-0.8)
+                .accessibilityAddTraits(.isHeader)
+            Text(L(subtitle)).font(.system(size: 14)).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func feature(_ symbol: String, _ tone: WelcomeTone, _ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tone.iconColor)
+                .frame(width: 32, height: 32)
+                .background(tone.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 9))
+                .accessibilityHidden(true)
+            Text(L(title)).font(.system(size: 13, weight: .semibold))
+            Text(L(detail)).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
+        .padding(12).welcomeCard()
+    }
+}
+
+private struct WelcomeSettingsRowStyle: LabeledContentStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 18) {
+            configuration.label
+                .frame(maxWidth: .infinity, alignment: .leading)
+            configuration.content
         }
     }
 }
@@ -217,7 +263,7 @@ struct WelcomeTutorialView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             VStack(spacing: 0) {
                 HStack(spacing: PreviewLayout.toolbarItemSpacing) {
                     WindowControlButton(imageName: "PreviewClose", help: L("Close preview"), action: { _ in close() })
@@ -233,66 +279,67 @@ struct WelcomeTutorialView: View {
                                 Image(nsImage: TargetIconCache.shared.icon(for: target.applicationURL))
                                     .resizable().scaledToFit().frame(width: 14, height: 14)
                                 Text(L("Open in %@", target.displayName)).lineLimit(1)
-                            } else if model.showsOpenInButton { Label(L("Choose browser"), systemImage: "safari") }
+                            } else if model.showsOpenInButton {
+                                Label(L("Choose browser"), systemImage: "safari")
+                            }
                             Image(systemName: "chevron.down").font(.caption2)
-                        }.font(.system(size: 11.5, weight: .medium)).padding(.horizontal, model.showsOpenInButton ? 10 : 0)
-                            .frame(width: model.showsOpenInButton ? nil : 27, height: PreviewLayout.controlHeight)
-                    }.buttonStyle(.plain)
-                        .accessibilityLabel(L("Open browser menu"))
-                        .overlay(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius).stroke(Color.accentColor, lineWidth: 2))
-                        .anchorPreference(key: PreviewControlAnchors.self, value: .bounds) { ["browser": $0] }
+                        }
+                        .font(.system(size: 11.5, weight: .medium))
+                        .padding(.horizontal, model.showsOpenInButton ? 10 : 0)
+                        .frame(width: model.showsOpenInButton ? nil : 27, height: PreviewLayout.controlHeight)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L("Open browser menu"))
+                    .overlay(RoundedRectangle(cornerRadius: PreviewLayout.toolbarCornerRadius).strokeBorder(Color.accentColor, lineWidth: 1.5))
                 }
                 .padding(.horizontal, 10).frame(height: PreviewLayout.topBarHeight)
                 .background { PreviewWindowMaterial() }
-                VStack(spacing: 24) {
-                    HStack(alignment: .top, spacing: 24) {
-                        coach("Address and search", "Click the address control to enter a link or search query.")
-                            .anchorPreference(key: PreviewControlAnchors.self, value: .bounds) { ["addressHint": $0] }
-                        coach("Another browser", "Choose a browser from the arrow menu to open the original link.")
-                            .anchorPreference(key: PreviewControlAnchors.self, value: .bounds) { ["browserHint": $0] }
-                    }
-                    VStack(spacing: 12) {
-                        Image(systemName: "globe").font(.system(size: 30, weight: .light)).foregroundStyle(.secondary)
-                        Text(L("Your first page")).font(.title3.weight(.medium))
+
+                HStack(spacing: 24) {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Image(systemName: "globe").font(.system(size: 19, weight: .medium)).foregroundStyle(Color.accentColor)
+                        Text(L("Your first page")).font(.system(size: 24, weight: .semibold))
                         Text(L("Read, search, and save links. Keep browsing here or in another browser."))
-                            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        Text("example.com").font(.caption).foregroundStyle(.tertiary)
-                    }.padding(.bottom, 20)
-                }.padding(16).frame(maxWidth: .infinity)
-                    .background(Color(nsColor: .textBackgroundColor))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary))
-            Label(L(feedback), systemImage: "lightbulb").font(.callout).foregroundStyle(.secondary)
-                .accessibilityAddTraits(.updatesFrequently)
-        }
-        .overlayPreferenceValue(PreviewControlAnchors.self) { anchors in
-            GeometryReader { geometry in
-                Path { path in
-                    for key in ["address", "browser"] {
-                        if let control = anchors[key], let hint = anchors[key + "Hint"] {
-                            let target = geometry[control], label = geometry[hint]
-                            let point = CGPoint(x: target.midX, y: target.maxY + 4)
-                            path.move(to: CGPoint(x: label.midX, y: label.minY + 16))
-                            path.addLine(to: CGPoint(x: point.x, y: point.y + 8))
-                            path.addLine(to: point)
-                            path.move(to: CGPoint(x: point.x - 4, y: point.y + 5))
-                            path.addLine(to: point)
-                            path.addLine(to: CGPoint(x: point.x + 4, y: point.y + 5))
-                        }
+                            .font(.callout).foregroundStyle(.secondary)
+                        Text("example.com").font(.caption.monospaced()).foregroundStyle(.secondary)
                     }
-                }.stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-            }.allowsHitTesting(false).accessibilityHidden(true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    WelcomeMiniCover()
+                        .frame(width: 235, height: 126)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity)
+                .background(Color(nsColor: .textBackgroundColor))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 15))
+            .overlay { RoundedRectangle(cornerRadius: 15).strokeBorder(Color.primary.opacity(0.12)).allowsHitTesting(false) }
+
+            HStack(alignment: .top, spacing: 12) {
+                coach("magnifyingglass", "Address and search", "Click the address control to enter a link or search query.")
+                coach("arrow.up.forward.app", "Another browser", "Choose a browser from the arrow menu to open the original link.")
+            }
+
+            Label(L(feedback), systemImage: "lightbulb")
+                .font(.callout).foregroundStyle(.secondary)
+                .accessibilityAddTraits(.updatesFrequently)
         }
         .onAppear { session.load(URL(string: "https://example.com")!) }
         .onDisappear { session.endSession() }
     }
 
-    private func coach(_ title: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Color.clear.frame(height: 16)
-            Text(L(title)).font(.callout.weight(.medium))
-            Text(L(detail)).font(.caption).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity, alignment: .leading)
+    private func coach(_ symbol: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 24, height: 24)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(L(title)).font(.callout.weight(.semibold))
+                Text(L(detail)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 62, alignment: .topLeading)
+        .padding(12).welcomeCard()
     }
 }
