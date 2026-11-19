@@ -14,7 +14,6 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
         window.contentMinSize = NSSize(width: 680, height: 590)
-        window.center()
         super.init(window: window)
         window.delegate = self
     }
@@ -28,6 +27,7 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         host.sizingOptions = []
         window.contentViewController = host
         window.setContentSize(NSSize(width: 760, height: 650))
+        PreviewWindowAppearance.place(window, on: PreviewWindowAppearance.screenAtPointer)
         model.makeAppVisibleInDock()
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -75,6 +75,9 @@ struct WelcomeView: View {
                     Spacer()
                     Button(L("Open Settings")) { model.showSettings(page: .general) }
                     Button(L("Open Quick Search"), action: model.openQuickSearch)
+                    Button(L("Open Example Page")) {
+                        model.showPreview(url: URL(string: "https://example.com/")!)
+                    }
                         .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                 } else {
                     Button(L(step == .introduction ? "Skip" : "Back")) {
@@ -122,7 +125,7 @@ struct WelcomeView: View {
     private var introduction: some View {
         VStack(spacing: 22) {
             appIcon
-            heading("Welcome to Linklet", "Open links without losing context.")
+            heading("Welcome to Linklet", "Browse in a compact window alongside your work.")
             VStack(alignment: .leading, spacing: 22) {
                 feature("macwindow", "Links alongside your work", "Pages open in a compact window.")
                 feature("magnifyingglass", "Search and bookmarks", "Search, save, and return to what matters.")
@@ -161,7 +164,11 @@ struct WelcomeView: View {
     private var ready: some View {
         VStack(spacing: 24) {
             Image(systemName: "checkmark.circle").font(.system(size: 54, weight: .light)).foregroundStyle(.secondary)
-            heading("You're ready", "Start with Quick Search or customize Linklet.")
+            heading("You're ready", "Open an example page or find a website with Quick Search.")
+            if model.linkLibrary.isEnabled {
+                Text(L("Move the pointer to the left edge of the screen for open windows, bookmarks, history, and downloads."))
+                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 420)
+            }
             if !model.isDefaultBrowser {
                 Text(L("To open links automatically, make Linklet your default browser in settings."))
                     .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 420)
@@ -213,7 +220,7 @@ struct WelcomeTutorialView: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(spacing: 0) {
                 HStack(spacing: PreviewLayout.toolbarItemSpacing) {
-                    WindowControlButton(imageName: "PreviewClose", help: L("Close preview"), action: close)
+                    WindowControlButton(imageName: "PreviewClose", help: L("Close preview"), action: { _ in close() })
                     PreviewLocationView(session: session, title: L("Sample page"), isToolbarHovered: true, highlightsAddress: true) { _ in
                         feedback = "Enter a website address or a search query."
                         return true

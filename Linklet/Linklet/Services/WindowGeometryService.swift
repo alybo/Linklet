@@ -198,12 +198,12 @@ final class WebsiteWindowGeometry {
     }
 
     @discardableResult
-    func begin(at url: URL?) -> Bool {
+    func begin(at url: URL?, fallbackScreen: NSScreen? = nil) -> Bool {
         self.url = url.flatMap { incoming in
             guard URLPolicy.canPreview(incoming) else { return nil }
             return WindowGeometryService.searchRedirectDestination(in: incoming) ?? incoming
         }
-        return restore()
+        return restore(fallbackScreen: fallbackScreen)
     }
 
     func committed(_ destination: URL) {
@@ -221,11 +221,13 @@ final class WebsiteWindowGeometry {
         service.save(window.frame, for: url)
     }
 
-    private func restore() -> Bool {
-        guard let url, let frame = service.frame(for: url), let window else { return false }
-        let screen = NSScreen.screens.first { $0.visibleFrame.contains(NSPoint(x: frame.midX, y: frame.midY)) }
-            ?? window.screen ?? NSScreen.main
+    private func restore(fallbackScreen: NSScreen? = nil) -> Bool {
+        guard let url, var frame = service.frame(for: url), let window else { return false }
+        let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: frame.midX, y: frame.midY)) }
+            ?? fallbackScreen ?? window.screen ?? NSScreen.main
         guard let screen else { return false }
+        frame.size.width = max(frame.width, window.minSize.width)
+        frame.size.height = max(frame.height, window.minSize.height)
         isApplying = true
         window.setFrame(WindowGeometryService.clamped(frame, to: screen.visibleFrame), display: false)
         isApplying = false

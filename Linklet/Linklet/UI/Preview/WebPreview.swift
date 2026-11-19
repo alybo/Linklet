@@ -80,6 +80,7 @@ struct WebPreview: NSViewRepresentable {
         var openExternalURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
         private var fileUpload: FileUploadRequest?
         private var cursorMonitor: Any?
+        private var cursorResignObserver: NSObjectProtocol?
         private weak var cursorOwner: NSWindow?
 
         /// Native hosting/field-editor cursor rectangles can cover WKWebView.
@@ -87,9 +88,8 @@ struct WebPreview: NSViewRepresentable {
         /// Yield rectangles only while the pointer hits this live web content;
         /// native address/find fields and resize edges retain normal behavior.
         private func updateCursorOwnership(in view: WKWebView, at location: NSPoint) {
-            guard let window = view.window, session?.webView === view, session?.isActive == true,
-                  let content = window.contentView, let hit = content.hitTest(content.convert(location, from: nil)),
-                  hit === view || hit.isDescendant(of: view) else { restoreCursorRects(); return }
+            guard let window = view.window, window.isKeyWindow, window.attachedSheet == nil,
+                  pageReceivesPointer(view, at: location) else { restoreCursorRects(); return }
             if cursorOwner !== window {
                 restoreCursorRects()
                 if window.areCursorRectsEnabled {
@@ -105,8 +105,19 @@ struct WebPreview: NSViewRepresentable {
             cursorOwner = nil
         }
 
+        private func pageReceivesPointer(_ view: WKWebView, at location: NSPoint) -> Bool {
+            guard session?.webView === view, session?.isActive == true, session?.pageFailure == nil,
+                  let content = view.window?.contentView else { return false }
+            // NSView.hitTest takes a point in the superview's coordinate space.
+            let point = content.superview?.convert(location, from: nil) ?? location
+            guard let hit = content.hitTest(point) else { return false }
+            return hit === view || hit.isDescendant(of: view)
+        }
+
         func stopCursorHandling() {
             if let cursorMonitor { NSEvent.removeMonitor(cursorMonitor) }
+            if let cursorResignObserver { NotificationCenter.default.removeObserver(cursorResignObserver) }
+            cursorResignObserver = nil
             cursorMonitor = nil
             restoreCursorRects()
         }
@@ -117,6 +128,7 @@ struct WebPreview: NSViewRepresentable {
 
         deinit {
             if let cursorMonitor { NSEvent.removeMonitor(cursorMonitor) }
+            if let cursorResignObserver { NotificationCenter.default.removeObserver(cursorResignObserver) }
             cursorOwner?.enableCursorRects()
         }
 
@@ -190,7 +202,17 @@ struct WebPreview: NSViewRepresentable {
         func startObserving(_ webView: WKWebView) {
             if #available(macOS 27.0, *) { _ = NativeLocationProvider.install(in: webView.configuration.processPool) }
             stopCursorHandling()
-            cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .mouseEntered, .mouseExited]) { [weak self, weak webView] event in
+            cursorResignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                object: nil, queue: .main) { [weak self] notification in
+                    MainActor.assumeIsolated {
+                        guard let self, notification.object as? NSWindow === self.cursorOwner else { return }
+                        self.restoreCursorRects()
+                    }
+                }
+            cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [
+                .mouseMoved, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+                .mouseEntered, .mouseExited, .cursorUpdate
+            ]) { [weak self, weak webView] event in
                 guard let self, let webView else { return event }
                 if event.window === webView.window {
                     if event.type == .leftMouseDown { self.dismissTranslationControls(for: event, in: webView) }
@@ -225,9 +247,7 @@ struct WebPreview: NSViewRepresentable {
         func dismissTranslationControls(for event: NSEvent, in webView: WKWebView) {
             guard event.type == .leftMouseDown, event.window === webView.window,
                   let session, session.pageTranslation.isPresented,
-                  let content = webView.window?.contentView,
-                  let hit = content.hitTest(content.convert(event.locationInWindow, from: nil)),
-                  hit === webView || hit.isDescendant(of: webView) else { return }
+                  pageReceivesPointer(webView, at: event.locationInWindow) else { return }
             session.pageTranslation.close()
         }
 

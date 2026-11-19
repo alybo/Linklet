@@ -88,14 +88,9 @@ final class WebPopupWindowController: NSWindowController, NSWindowDelegate {
         panel.setContentSize(PreviewWindowAppearance.initialContentSize)
         // An AppKit child window moves and orders with its parent. OAuth needs
         // only WebKit's opener/configuration, not a native window attachment.
-        if let frame = parent.webView?.window?.frame,
-           let screen = parent.webView?.window?.screen ?? NSScreen.main {
-            let proposed = NSRect(x: frame.minX + 28, y: frame.minY - 28,
-                                  width: panel.frame.width, height: panel.frame.height)
-            panel.setFrame(WindowGeometryService.clamped(proposed, to: screen.visibleFrame), display: false)
-        } else {
-            panel.center()
-        }
+        let openerWindow = parent.webView?.window
+        PreviewWindowAppearance.place(panel, on: openerWindow?.screen ?? PreviewWindowAppearance.screenAtPointer,
+                                      after: openerWindow?.frame)
         defaultFrame = panel.frame
     }
 

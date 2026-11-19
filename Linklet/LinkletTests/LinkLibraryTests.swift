@@ -3074,6 +3074,113 @@ final class WebPopupTests: XCTestCase {
         return nil
     }
 
+    func testCloseButtonAcceptsFirstClickAndTargetsItsOwnPreviewWindow() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "FirstMouse.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/site")!)
+        try await waitUntil { model.previewSession.pageTitle == "Original site" && !model.previewSession.isLoading }
+        let page = try XCTUnwrap(model.previewSession.webView)
+        let originalWindow = try XCTUnwrap(page.window)
+        _ = try await page.evaluateJavaScript("window.open('/hover-cards','first-mouse');true")
+        try await waitUntil { model.windowRegistry.windows.count == 2 && model.windowRegistry.windows.last?.title == "Hover cards" }
+        let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        let popupWindow = try XCTUnwrap(popup.window)
+        try await waitUntil { popupWindow.isKeyWindow && !originalWindow.isKeyWindow }
+
+        let content = try XCTUnwrap(originalWindow.contentView)
+        let closeButton = try XCTUnwrap(accessibilityNode(in: content, identifier: "PreviewClose") as? NSButton)
+        let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
+            location: closeButton.convert(NSPoint(x: closeButton.bounds.midX, y: closeButton.bounds.midY), to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: originalWindow.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        XCTAssertTrue(closeButton.acceptsFirstMouse(for: click))
+        XCTAssertFalse(closeButton.mouseDownCanMoveWindow)
+        XCTAssertTrue(closeButton.accessibilityPerformPress())
+        XCTAssertFalse(originalWindow.isVisible)
+        XCTAssertTrue(popupWindow.isVisible, "Closing the background preview must not close the key window")
+    }
+
+    func testWebCardHoverBeforeFirstClickAfterAddressEditingAndDrawerDismissal() async throws {
+        let pointer = CGEvent(source: nil)?.location
+        defer { if let pointer { CGWarpMouseCursorPosition(pointer) } }
+        let server = try PopupHTTPFixture(); let port = try await server.start()
+        defer { server.stop() }
+        let suite = "WebCardHover.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.setKeepsPreviewVisibleWhenInactive(true)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+        model.showPreview(url: URL(string: "http://127.0.0.1:\(port)/hover-cards")!)
+        try await waitUntil { model.previewSession.pageTitle == "Hover cards" && !model.previewSession.isLoading }
+        var page = try XCTUnwrap(model.previewSession.webView), window = try XCTUnwrap(model.previewSession.webView?.window)
+        try await waitUntil { window.isKeyWindow }
+        XCTAssertEqual(window.alphaValue, 1, "The initial window is ready for the first mouse movement")
+        func move(_ x: CGFloat, _ y: CGFloat) throws {
+            let location = page.convert(NSPoint(x: x, y: y), to: nil)
+            let screen = window.convertPoint(toScreen: location)
+            CGWarpMouseCursorPosition(CGPoint(x: screen.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - screen.y))
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: location,
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+            NSApp.postEvent(event, atStart: true)
+            while let queued = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02), inMode: .default, dequeue: true) {
+                NSApp.sendEvent(queued)
+            }
+        }
+        func checkHover(_ phase: String) async throws {
+            for (id, x, y) in [("a", 100.0, 100.0), ("b", page.bounds.width - 85, 100.0), ("c", 100.0, 330.0), ("d", page.bounds.width - 85, 330.0)] {
+                try move(300, 220)
+                try move(x, y)
+                try await waitUntil {
+                    (try? await page.evaluateJavaScript("document.getElementById('\(id)').dataset.trusted==='yes' && document.getElementById('\(id)').matches(':hover') && document.getElementById('\(id)').dataset.entered==='yes' && document.getElementById('\(id)').dataset.pointer==='yes' && getComputedStyle(document.querySelector('#\(id) .actions')).opacity==='1'")) as? Bool == true
+                }
+                if window.isKeyWindow {
+                    let moved = try await page.evaluateJavaScript("window.lastMove") as? String
+                    XCTAssertEqual(moved, id, "\(phase): continuous mouse movement reaches the focused page")
+                }
+                let visible = try await page.evaluateJavaScript("document.querySelectorAll('.card:hover').length") as? Int
+                XCTAssertEqual(visible, 1, "\(phase): only card \(id) remains hovered")
+            }
+        }
+        try await checkHover("before-click")
+        let address = try XCTUnwrap(accessibilityNode(in: try XCTUnwrap(window.contentView), identifier: "preview-address-disclosure") as? NSButton)
+        address.performClick(nil)
+        try await waitUntil {
+            guard let editor = window.firstResponder as? NSTextView,
+                  let field = editor.delegate as? NSTextField else { return false }
+            return field.accessibilityIdentifier() == "preview-full-address"
+        }
+        let firstResponder = window.firstResponder
+        try await checkHover("address-editor")
+        XCTAssertTrue(window.firstResponder === firstResponder, "Hover does not steal keyboard focus")
+        try sendAddressKey(to: window, code: 53, characters: "\u{1b}")
+        model.previewSession.pageFind.show()
+        try await waitUntil { model.previewSession.pageFind.isPresented }
+        model.previewSession.pageFind.close()
+        try await Task.sleep(nanoseconds: 260_000_000)
+        try await checkHover("find-closed")
+        model.previewSession.pageTranslation.show()
+        try await waitUntil { model.previewSession.pageTranslation.isPresented }
+        model.previewSession.pageTranslation.close()
+        try await Task.sleep(nanoseconds: 260_000_000)
+        try await checkHover("translation-closed")
+        try move(100, -20)
+        try await waitUntil { (try? await page.evaluateJavaScript("document.querySelectorAll('.card:hover,.card[data-entered=yes]').length")) as? Int == 0 }
+        _ = try await page.evaluateJavaScript("window.open('/hover-cards','hover-popup');true")
+        try await waitUntil { model.windowRegistry.windows.count == 2 && model.windowRegistry.windows.last?.title == "Hover cards" }
+        let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        page = popup.webView; window = try XCTUnwrap(popup.window)
+        try await waitUntil { window.alphaValue == 1 && window.isKeyWindow }
+        try await checkHover("popup-key")
+    }
+
     func testWebWindowDeliversMouseMovesAfterTextEntryAndMapDragging() async throws {
         let pointerPosition = CGEvent(source: nil)?.location
         defer { if let pointerPosition { CGWarpMouseCursorPosition(pointerPosition) } }
@@ -3644,15 +3751,16 @@ final class WebPopupTests: XCTestCase {
         XCTAssertEqual(action.value(forKey: "accessibilityLabel") as? String, L("Show original"))
         try await Task.sleep(nanoseconds: 250_000_000)
         content.layoutSubtreeIfNeeded()
-        func click(at point: NSPoint) throws {
-            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: content.convert(point, to: nil),
+        func click(atWindowPoint point: NSPoint) throws {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point,
                 modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
                 eventNumber: 0, clickCount: 1, pressure: 1))
             coordinator.dismissTranslationControls(for: event, in: view)
         }
-        try click(at: NSPoint(x: content.bounds.maxX - 50, y: content.bounds.maxY - 100))
+        let buttonFrame = try XCTUnwrap(action.value(forKey: "accessibilityFrame") as? NSValue).rectValue
+        try click(atWindowPoint: window.convertPoint(fromScreen: NSPoint(x: buttonFrame.midX, y: buttonFrame.midY)))
         XCTAssertTrue(translation.isPresented, "Clicks within the drawer do not dismiss its controls")
-        try click(at: NSPoint(x: 70, y: 60))
+        try click(atWindowPoint: view.convert(NSPoint(x: 70, y: 60), to: nil))
         XCTAssertFalse(translation.isPresented, "A blank area of the page dismisses controls")
         XCTAssertTrue(translation.isEnabled)
         XCTAssertTrue(translation.isTranslated)
@@ -5055,6 +5163,25 @@ private final class PopupHTTPFixture: @unchecked Sendable {
             <p hidden>needle is hidden</p><input id="draft" value="unchanged">
             <iframe src="http://localhost:\(port)/find-frame"></iframe>
             <div style="height:1400px"></div><p id="last-match">needle at the end</p>
+            """
+        } else if firstLine.hasPrefix("GET /hover-cards ") {
+            status = "200 OK"
+            html = """
+            <!doctype html><title>Hover cards</title><style>
+            body{margin:0;height:1800px}.card{position:absolute;width:200px;height:170px;background:#ddd;cursor:pointer}
+            #a{left:30px;top:30px}#b{right:30px;top:30px}#c{left:30px;top:260px}#d{right:30px;top:260px}
+            .actions{opacity:0}.card:hover .actions{opacity:1}
+            </style><div id="a" class="card"><button class="actions">Save A</button></div>
+            <div id="b" class="card"><button class="actions">Save B</button></div>
+            <div id="c" class="card"><button class="actions">Save C</button></div>
+            <div id="d" class="card"><button class="actions">Save D</button></div>
+            <script>window.lastMove='';document.addEventListener('mousemove',e=>{window.lastMove=e.target.id});
+            for(const card of document.querySelectorAll('.card')){
+              card.addEventListener('mouseenter',e=>{card.dataset.entered='yes';card.dataset.trusted=e.isTrusted?'yes':'no'});
+              card.addEventListener('mouseleave',()=>card.dataset.entered='no');
+              card.addEventListener('pointerenter',()=>card.dataset.pointer='yes');
+              card.addEventListener('pointerleave',()=>card.dataset.pointer='no');
+            }</script>
             """
         } else if firstLine.hasPrefix("GET /cursor ") {
             status = "200 OK"

@@ -7,6 +7,19 @@ enum PreviewWindowAppearance {
     static let initialContentSize = NSSize(width: 900, height: 650)
     static let minimumSize = NSSize(width: 640, height: 440)
 
+    static var screenAtPointer: NSScreen? {
+        let location = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(location) } ?? NSScreen.main
+    }
+
+    static func place(_ window: NSWindow, on screen: NSScreen?, after reference: NSRect? = nil) {
+        guard let visible = screen?.visibleFrame else { window.center(); return }
+        let size = window.frame.size
+        let origin = reference.map { NSPoint(x: $0.minX + 24, y: $0.maxY - size.height - 24) }
+            ?? NSPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2)
+        window.setFrame(WindowGeometryService.clamped(NSRect(origin: origin, size: size), to: visible), display: false)
+    }
+
     static func apply(to window: NSWindow) {
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
@@ -161,53 +174,27 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         // Become a regular app before activation so macOS records this open as
         // the latest Command-Tab activity rather than appending us to the end.
         model.makeAppVisibleInDock()
-        let animatesAppearance = !window.isVisible
-        if animatesAppearance {
+        if !window.isVisible {
             window.setContentSize(Self.initialContentSize)
-            if !geometry.begin(at: initialURL) { placeInitially(window) }
-            window.alphaValue = 0
-        }
-
-        if !animatesAppearance { _ = geometry.begin(at: initialURL) }
+            let reference = initialPositionReferenceFrame
+            initialPositionReferenceFrame = nil
+            let screen = reference.flatMap { frame in
+                NSScreen.screens.first { $0.frame.contains(NSPoint(x: frame.midX, y: frame.midY)) }
+            } ?? PreviewWindowAppearance.screenAtPointer
+            if !geometry.begin(at: initialURL, fallbackScreen: screen) {
+                PreviewWindowAppearance.place(window, on: screen, after: reference)
+            }
+        } else { _ = geometry.begin(at: initialURL) }
         load()
         window.contentView?.layoutSubtreeIfNeeded()
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(window.contentView)
+        if let page = model.previewSession.webView, page.window === window {
+            window.makeFirstResponder(page)
+        }
         model.windowRegistry.register(window, session: model.previewSession)
         model.updateDockVisibilitySoon()
-
-        if animatesAppearance {
-            DispatchQueue.main.async { [weak window] in
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.16
-                    window?.animator().alphaValue = 1
-                }
-            }
-        }
-    }
-
-    private func placeInitially(_ window: NSWindow) {
-        guard let referenceFrame = initialPositionReferenceFrame else {
-            window.center()
-            return
-        }
-        initialPositionReferenceFrame = nil
-        let screen = NSScreen.screens.first { $0.visibleFrame.intersects(referenceFrame) }
-            ?? NSScreen.main
-        guard let screen else {
-            window.center()
-            return
-        }
-        let visibleFrame = screen.visibleFrame
-        let size = window.frame.size
-        let proposed = NSPoint(x: referenceFrame.origin.x + 24, y: referenceFrame.origin.y - 24)
-        let origin = NSPoint(
-            x: min(max(proposed.x, visibleFrame.minX), visibleFrame.maxX - size.width),
-            y: min(max(proposed.y, visibleFrame.minY), visibleFrame.maxY - size.height)
-        )
-        window.setFrameOrigin(origin)
     }
 
     func windowDidMove(_ notification: Notification) {

@@ -232,7 +232,7 @@ struct DefaultBrowserSetting: View {
         } label: {
             VStack(alignment: .leading, spacing: SettingsDesignMetrics.labelSpacing) {
                 Text(L("Default browser"))
-                Text(L(model.isDefaultBrowser ? "Links open in Linklet." : "Links will open in Linklet."))
+                Text(L(model.isDefaultBrowser ? "Links open in Linklet." : "Optional. Opens links from other apps in Linklet."))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

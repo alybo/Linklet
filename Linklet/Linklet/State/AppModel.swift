@@ -486,7 +486,6 @@ final class AppModel: ObservableObject {
     }
 
     func showWelcome() {
-        refreshTargets()
         isWelcomeVisible = true
         welcomeWindowController.present()
         defaults.set(true, forKey: "hasShownWelcome")

@@ -80,6 +80,10 @@ struct PreviewLocationView: View {
 /// borderless avoids introducing a second button style beside the browser action.
 @MainActor
 final class PreviewToolbarIconButton: NSButton {
+    var acceptsClickThrough = false
+    var onPress: ((NSWindow?) -> Void)? {
+        didSet { target = self; action = #selector(press) }
+    }
     var onSecondaryClick: (() -> Void)?
     var onFocusChanged: (() -> Void)?
     private var hoverArea: NSTrackingArea?
@@ -97,6 +101,11 @@ final class PreviewToolbarIconButton: NSButton {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        (acceptsClickThrough && isEnabled && window?.attachedSheet == nil)
+            || super.acceptsFirstMouse(for: event)
+    }
+    @objc private func press() { onPress?(window) }
 
     override func accessibilityPerformPress() -> Bool {
         guard isEnabled, let action else { return false }

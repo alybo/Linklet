@@ -10,8 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = LinkletMenuBarController(model: model)
         model.startSearchShortcut()
         model.startSidebar()
-        model.refreshTargets()
         model.showWelcomeIfNeeded()
+        // Installed-browser discovery touches application bundles and can wait
+        // until the first window is visible. Settings shares this discovery task.
+        Task { await model.refreshTargetsForSettings() }
         model.appUpdates.start()
         model.startSiteDataMaintenance()
         model.updateDockVisibilitySoon()

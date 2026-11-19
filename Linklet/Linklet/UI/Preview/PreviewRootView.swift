@@ -153,6 +153,8 @@ struct PreviewPageView: View {
             if session.isPreparingNewPage {
                 Rectangle()
                     .fill(Color(nsColor: .windowBackgroundColor))
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
                     .transition(.opacity)
             }
             if let failure = session.pageFailure {
@@ -344,25 +346,25 @@ private struct PreviewWindowControls: View {
             WindowControlButton(
                 imageName: "PreviewClose",
                 help: L("Close preview"),
-                action: { NSApp.keyWindow?.performClose(nil) }
+                action: { window in window?.performClose(nil) }
             )
 
             if session.canGoBack {
                 WindowControlButton(
                     imageName: "PreviewBack",
                     help: L("Back — ⌘["),
-                    action: session.goBack
+                    shortcut: "[",
+                    action: { _ in session.goBack() }
                 )
-                .keyboardShortcut("[", modifiers: .command)
             }
 
             if session.canGoForward {
                 WindowControlButton(
                     imageName: "PreviewForward",
                     help: L("Forward — ⌘]"),
-                    action: session.goForward
+                    shortcut: "]",
+                    action: { _ in session.goForward() }
                 )
-                .keyboardShortcut("]", modifiers: .command)
             }
         }
         .offset(x: -4)
@@ -370,24 +372,39 @@ private struct PreviewWindowControls: View {
 }
 
 struct WindowControlButton: View {
-    @ObservedObject private var language = AppLanguage.shared
     let imageName: String
     let help: String
-    let action: () -> Void
+    var shortcut = ""
+    let action: (NSWindow?) -> Void
 
     var body: some View {
-        Button(action: action) {
-            Image(imageName)
-                .renderingMode(.original)
-                .resizable()
-                .scaledToFit()
-                .frame(width: PreviewLayout.windowControlSymbolSize, height: PreviewLayout.windowControlSymbolSize)
-                .frame(width: PreviewLayout.windowControlHitSize, height: PreviewLayout.windowControlHitSize)
-                .contentShape(Rectangle())
+        NativeControl(imageName: imageName, help: help, shortcut: shortcut, action: action)
+            .frame(width: PreviewLayout.windowControlHitSize, height: PreviewLayout.windowControlHitSize)
+    }
+
+    private struct NativeControl: NSViewRepresentable {
+        let imageName: String
+        let help: String
+        let shortcut: String
+        let action: (NSWindow?) -> Void
+
+        func makeNSView(context: Context) -> PreviewToolbarIconButton {
+            let button = PreviewToolbarIconButton(frame: .zero)
+            let image = NSImage(named: imageName)?.copy() as? NSImage
+            image?.size = NSSize(width: PreviewLayout.windowControlSymbolSize, height: PreviewLayout.windowControlSymbolSize)
+            button.image = image
+            button.acceptsClickThrough = true
+            button.keyEquivalent = shortcut
+            button.keyEquivalentModifierMask = .command
+            button.setAccessibilityIdentifier(imageName)
+            return button
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(help)
-        .help(help)
+
+        func updateNSView(_ button: PreviewToolbarIconButton, context: Context) {
+            button.onPress = action
+            button.setAccessibilityLabel(help)
+            button.toolTip = help
+        }
     }
 }
 
