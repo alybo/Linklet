@@ -43,9 +43,9 @@ enum SidebarSection: String, Codable, CaseIterable, Identifiable {
 }
 
 enum SidebarAppearance: String, CaseIterable, Identifiable {
-    case black, glass
+    case glass, black
     var id: String { rawValue }
-    var title: String { self == .black ? L("Black") : L("Glass (test)") }
+    var title: String { self == .glass ? L("Glass") : L("Black") }
     static var supportsGlass: Bool {
         if #available(macOS 26.0, *) { return true }
         return false
@@ -103,7 +103,8 @@ final class LinkLibrary: ObservableObject {
         sectionWidths = (defaults.dictionary(forKey: "sidebarSectionWidths") as? [String: Double] ?? [:])
             .filter { $0.value.isFinite && $0.value > 0 }
         isEnabled = defaults.object(forKey: "sidebarEnabled") as? Bool ?? true
-        sidebarAppearance = defaults.string(forKey: "sidebarAppearance").flatMap(SidebarAppearance.init(rawValue:)) ?? .black
+        sidebarAppearance = defaults.string(forKey: "sidebarAppearance").flatMap(SidebarAppearance.init(rawValue:))
+            ?? (SidebarAppearance.supportsGlass ? .glass : .black)
         showsRevealIndicator = defaults.object(forKey: "sidebarShowsRevealIndicator") as? Bool ?? false
         hidesInFullScreen = defaults.bool(forKey: "sidebarHidesInFullScreen")
         let delay = defaults.object(forKey: "sidebarEdgeOpenDelay") as? Double ?? 0.4

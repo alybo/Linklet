@@ -32,6 +32,7 @@ class PrepareDMGReleaseTests(unittest.TestCase):
             "CFBundleIdentifier": "Linklet",
             "CFBundleShortVersionString": "1.2",
             "CFBundleVersion": "3",
+            "LSMinimumSystemVersion": "14.0",
             "SUPublicEDKey": "fixture-public-key",
             "SUFeedURL": "https://alybo.github.io/Linklet/appcast.xml",
             "SUEnableAutomaticChecks": True,
@@ -119,6 +120,10 @@ if os.environ.get("TEST_MODIFY_DMG"):
         self.assertEqual((assets / "Linklet-1.2-source.tar.gz").read_bytes(), self.source.read_bytes())
         self.assertTrue((self.output / "feed/appcast.xml").exists())
         description = (self.output / "release-description.md").read_text()
+        self.assertIn("Скачать DMG / Download DMG", description)
+        self.assertIn("macOS 14+ · Apple Silicon / Intel", description)
+        self.assertIn("Полный архив / Full archive", description)
+        self.assertIn("<summary>SHA-256</summary>", description)
         for path in (self.dmg, self.source):
             self.assertIn(hashlib.sha256(path.read_bytes()).hexdigest(), description)
         self.assertTrue((self.root / "detached").exists())

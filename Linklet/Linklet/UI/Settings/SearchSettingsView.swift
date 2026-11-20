@@ -10,32 +10,29 @@ struct SearchSettingsView: View {
     @State private var eventMonitor: Any?
 
     var body: some View {
-        Form {
-            Section {
-                Picker(L("Search engine"), selection: Binding(get: { settings.engine }, set: settings.setEngine)) {
+        SettingsContent {
+            SettingsGroup(L("Quick Search"), note: L("Web addresses open directly. Other text is sent to your search engine.")) {
+                SettingsPicker(L("Search engine"), selection: Binding(get: { settings.engine }, set: settings.setEngine)) {
                     ForEach(SearchEngine.allCases) { Text($0.title).tag($0) }
                 }
-                HStack {
-                    Text(L("Open Quick Search"))
-                    Spacer()
-                    Button(recording ? L("Press a shortcut…") : settings.shortcut?.title ?? L("Set Shortcut…")) {
-                        if recording { stopRecording() } else { startRecording() }
-                    }.help(L("Press Escape to cancel recording"))
-                    if settings.shortcut != nil {
-                        Button { stopRecording(); settings.setShortcut(nil) } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain).foregroundStyle(.secondary)
-                            .accessibilityLabel(L("Remove shortcut"))
+                SettingsLabel(L("Keyboard shortcut")) {
+                    HStack(spacing: 8) {
+                        Button(recording ? L("Press a shortcut…") : settings.shortcut?.title ?? L("Set Shortcut…")) {
+                            if recording { stopRecording() } else { startRecording() }
+                        }.help(L("Press Escape to cancel recording"))
+                        if settings.shortcut != nil {
+                            Button { stopRecording(); settings.setShortcut(nil) } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .accessibilityLabel(L("Remove shortcut"))
+                        }
                     }
                 }
                 if let error = settings.shortcutError { Text(error).font(.caption).foregroundStyle(.red) }
-                Toggle(L("Show bookmarks"), isOn: Binding(get: { settings.showsFavoriteSites }, set: settings.setShowsFavoriteSites))
-                Button(L("Open Quick Search")) { stopRecording(); showSearch() }
-            } header: { Text(L("Quick Search")) } footer: {
-                Text(L("Web addresses open directly. Other text is sent to your search engine."))
+                SettingsToggle(L("Show bookmarks"), isOn: Binding(get: { settings.showsFavoriteSites }, set: settings.setShowsFavoriteSites))
+                Button(L("Open Quick Search"), systemImage: "magnifyingglass") { stopRecording(); showSearch() }
             }
             if let browserModel { BrowserSettingsSections(model: browserModel) }
         }
-        .formStyle(.grouped).toggleStyle(.switch)
         .task { await browserModel?.refreshTargetsForSettings() }
         .onDisappear { stopRecording() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in

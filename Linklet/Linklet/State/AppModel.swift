@@ -80,7 +80,7 @@ final class AppModel: ObservableObject {
     private let discoverTargetsAsync: (@Sendable () async -> [BrowserTarget])?
     private var discoveryTask: Task<[BrowserTarget], Never>?
     private let launchService = BrowserLaunchService()
-    private let defaultBrowserService = DefaultBrowserService()
+    private let defaultBrowserService: DefaultBrowserService
     private lazy var previewWindowController = PreviewWindowController(model: self)
     private lazy var searchWindowController = SearchWindowController(settings: searchSettings) { [weak self] url in
         self?.showPreview(url: url)
@@ -105,10 +105,12 @@ final class AppModel: ObservableObject {
         linkLibrary: LinkLibrary? = nil,
         windowRegistry: BrowserWindowRegistry? = nil,
         pageTranslation: PageTranslationController? = nil,
+        defaultBrowserService: DefaultBrowserService = DefaultBrowserService(),
         discoverTargets: (() -> [BrowserTarget])? = nil,
         discoverTargetsAsync: (@Sendable () async -> [BrowserTarget])? = nil
     ) {
         self.defaults = defaults
+        self.defaultBrowserService = defaultBrowserService
         self.searchSettings = searchSettings ?? SearchSettings(defaults: defaults)
         self.linkLibrary = linkLibrary ?? LinkLibrary(defaults: defaults)
         self.discoverTargets = discoverTargets ?? { BrowserDiscoveryService().discoverTargets() }
@@ -543,11 +545,11 @@ final class AppModel: ObservableObject {
     }
 
     func openDeveloperLink(_ address: String) {
-        guard let url = URL(string: address) else { return }
-        // Avoid routing our own links back through Linklet when it is the default browser.
-        guard let target = preferredTarget ?? targets.first else { return }
-        launchService.open(url, in: target) { [weak self] error in
-            if let error { self?.statusMessage = error.localizedDescription }
+        guard let url = URL(string: address), URLPolicy.canPreview(url) else { return }
+        if defaultBrowserService.isLinkletDefault(for: url) {
+            showPreview(url: url)
+        } else if !defaultBrowserService.open(url) {
+            statusMessage = L("Couldn't open the page")
         }
     }
 

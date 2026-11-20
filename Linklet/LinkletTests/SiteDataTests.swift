@@ -231,6 +231,33 @@ final class SiteDataTests: XCTestCase {
         XCTAssertEqual(AppModel(defaults: defaults, siteData: data).settingsPage, .sites)
     }
 
+    func testSettingsSupportLinksFollowTheSystemBrowserInsteadOfThePreferredTarget() throws {
+        let arc = BrowserTarget.browser(name: "Arc", applicationURL: URL(fileURLWithPath: "/Applications/Arc.app"))
+        var defaultApplicationURL = Bundle.main.bundleURL
+        var systemOpened: [URL] = []
+        let browserService = DefaultBrowserService(applicationForURL: { _ in defaultApplicationURL }, openURL: {
+            systemOpened.append($0)
+            return true
+        })
+        let model = AppModel(defaults: defaults, siteData: data, defaultBrowserService: browserService, discoverTargets: { [arc] })
+        defer { model.closeAllWindows() }
+        model.refreshTargets()
+        XCTAssertEqual(model.preferredTarget?.id, arc.id)
+
+        let localSupport = try XCTUnwrap(URL(string: "http://127.0.0.1:9/support"))
+        model.openDeveloperLink(localSupport.absoluteString)
+        XCTAssertEqual(model.previewSession.originalURL, localSupport)
+        XCTAssertTrue(systemOpened.isEmpty)
+
+        defaultApplicationURL = URL(fileURLWithPath: "/Applications/Safari.app")
+        let channel = try XCTUnwrap(URL(string: "https://t.me/go_bo"))
+        let contact = try XCTUnwrap(URL(string: "https://t.me/go_bo?direct"))
+        model.openDeveloperLink(channel.absoluteString)
+        model.openDeveloperLink(contact.absoluteString)
+        XCTAssertEqual(systemOpened, [channel, contact])
+        XCTAssertEqual(model.previewSession.originalURL, localSupport)
+    }
+
     func testExplicitBrowserChoiceSurvivesSortingHidingAndRestart() {
         let browsers = ["A", "B", "C"].map { BrowserTarget.browser(name: $0, applicationURL: URL(fileURLWithPath: "/Applications/\($0).app")) }
         let model = AppModel(defaults: defaults, siteData: data, discoverTargets: { browsers })
@@ -302,13 +329,12 @@ final class SiteDataTests: XCTestCase {
         let split = try XCTUnwrap(window.contentViewController as? SettingsSplitViewController)
         XCTAssertFalse(split.splitViewItems[0].canCollapse)
         let sidebarView = split.splitViewItems[0].viewController.view
-        XCTAssertGreaterThanOrEqual(sidebarView.frame.width, 250)
+        XCTAssertEqual(sidebarView.frame.width, SettingsDesignMetrics.sidebarWidth, accuracy: 1)
         let toolbar = try XCTUnwrap(window.toolbar)
         let divider = try XCTUnwrap(toolbar.items.compactMap { $0 as? NSTrackingSeparatorToolbarItem }.first)
         XCTAssertTrue(divider.splitView === split.splitView)
         XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier == .toggleSidebar })
-        let heading = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "Linklet.Settings.Heading" }?.view as? NSTextField)
-        XCTAssertGreaterThan(heading.convert(.zero, to: nil).x, sidebarView.convert(sidebarView.bounds, to: nil).maxX)
+        XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier.rawValue == "Linklet.Settings.Heading" })
         XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier.rawValue == "Linklet.Settings.Navigation" })
         func hasSearch(_ view: NSView) -> Bool {
             view is NSSearchField || view.subviews.contains(where: hasSearch)
@@ -316,7 +342,7 @@ final class SiteDataTests: XCTestCase {
         XCTAssertFalse(hasSearch(sidebarView))
         for page in SettingsPage.allCases {
             model.settingsPage = page
-            XCTAssertEqual(heading.stringValue, page.title)
+            XCTAssertEqual(window.title, page.title)
         }
     }
 
@@ -494,17 +520,20 @@ final class SiteDataTests: XCTestCase {
         let settingsController = SettingsWindowController(model: model)
         let settingsWindow = try XCTUnwrap(settingsController.window)
         defer { settingsWindow.close() }
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            settingsWindow.appearance = NSAppearance(named: appearance)
-            for page in SettingsPage.allCases {
-                model.settingsPage = page
-                settingsWindow.setContentSize(NSSize(width: 900, height: 720))
-                settingsController.showWindow(nil)
-                NSApp.activate(ignoringOtherApps: true)
-                settingsWindow.makeKeyAndOrderFront(nil)
-                settingsWindow.makeFirstResponder(nil)
-                try await Task.sleep(for: .milliseconds(250))
-                try snapshot(settingsWindow, name: "settings-\(page.rawValue)-\(appearance.rawValue)")
+        for code in ["ru", "en"] {
+            AppLanguage.shared.set(code)
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                settingsWindow.appearance = NSAppearance(named: appearance)
+                for page in SettingsPage.allCases {
+                    model.settingsPage = page
+                    settingsWindow.setContentSize(code == "ru" ? NSSize(width: 900, height: 720) : settingsWindow.contentMinSize)
+                    settingsController.showWindow(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    settingsWindow.makeKeyAndOrderFront(nil)
+                    settingsWindow.makeFirstResponder(nil)
+                    try await Task.sleep(for: .milliseconds(250))
+                    try snapshot(settingsWindow, name: "settings-\(page.rawValue)-\(code)-\(appearance.rawValue)")
+                }
             }
         }
         settingsWindow.close()

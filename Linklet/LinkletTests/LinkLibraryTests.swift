@@ -938,13 +938,14 @@ final class LinkLibraryTests: XCTestCase {
         XCTAssertFalse(DownloadManager.safeFilename("\n\r").isEmpty)
     }
 
-    func testSidebarAppearanceIsOptInAndPreservesExistingPreferences() throws {
+    func testSidebarAppearanceDefaultsToGlassAndPreservesExistingPreferences() throws {
         let suite = "SidebarAppearance.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let library = LinkLibrary(defaults: defaults)
         library.setEnabled(false)
-        XCTAssertEqual(library.sidebarAppearance, .black)
+        let defaultAppearance: SidebarAppearance = SidebarAppearance.supportsGlass ? .glass : .black
+        XCTAssertEqual(library.sidebarAppearance, defaultAppearance)
         library.setSidebarWidth(240)
         library.setEdgeOpenDelay(0.7)
         library.toggleSection(.recent)
@@ -961,7 +962,7 @@ final class LinkLibraryTests: XCTestCase {
         restored.setSidebarAppearance(.black)
         XCTAssertEqual(LinkLibrary(defaults: defaults).sidebarAppearance, .black)
         defaults.set("unknown-future-style", forKey: "sidebarAppearance")
-        XCTAssertEqual(LinkLibrary(defaults: defaults).sidebarAppearance, .black)
+        XCTAssertEqual(LinkLibrary(defaults: defaults).sidebarAppearance, defaultAppearance)
     }
 
     func testSidebarAppearanceRenderingAndReducedTransparencyFallback() async throws {
@@ -1073,7 +1074,9 @@ final class LinkLibraryTests: XCTestCase {
         let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 800),
                                 styleMask: [.titled], backing: .buffered, defer: false)
         settings.isReleasedWhenClosed = false
-        settings.contentView = NSHostingView(rootView: SidebarSettingsView(library: model.linkLibrary, show: {}, initiallyExpanded: true))
+        settings.contentView = NSHostingView(rootView: SettingsContent {
+            SidebarSettingsSections(library: model.linkLibrary, show: {})
+        })
         defer { settings.close(); controller.hide(animated: false); model.linkLibrary.setEnabled(false) }
         settings.orderFront(nil)
         settings.contentView?.layoutSubtreeIfNeeded()
@@ -1086,18 +1089,18 @@ final class LinkLibraryTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(100))
         let picker = try XCTUnwrap(settings.contentView.flatMap { segmented(in: $0) })
-        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .black)
+        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .glass)
         picker.selectedSegment = 1
         XCTAssertTrue(picker.sendAction(picker.action, to: picker.target))
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .glass)
+        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .black)
         XCTAssertEqual(panel.frame, frame)
         XCTAssertTrue(panel.isVisible)
         XCTAssertFalse(panel.isOpaque)
         picker.selectedSegment = 0
         XCTAssertTrue(picker.sendAction(picker.action, to: picker.target))
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .black)
+        XCTAssertEqual(model.linkLibrary.sidebarAppearance, .glass)
         XCTAssertEqual(panel.frame, frame)
     }
 
@@ -3104,6 +3107,8 @@ final class WebPopupTests: XCTestCase {
     }
 
     func testCloseButtonAcceptsFirstClickAndTargetsItsOwnPreviewWindow() async throws {
+        let pointer = CGEvent(source: nil)?.location
+        defer { if let pointer { CGWarpMouseCursorPosition(pointer) } }
         let server = try PopupHTTPFixture()
         let port = try await server.start()
         defer { server.stop() }
@@ -3117,16 +3122,36 @@ final class WebPopupTests: XCTestCase {
         try await waitUntil { model.previewSession.pageTitle == "Original site" && !model.previewSession.isLoading }
         let page = try XCTUnwrap(model.previewSession.webView)
         let originalWindow = try XCTUnwrap(page.window)
+        let content = try XCTUnwrap(originalWindow.contentView)
+        let closeButton = try XCTUnwrap(accessibilityNode(in: content, identifier: "PreviewClose") as? PreviewToolbarIconButton)
+        let closeLocation = closeButton.convert(NSPoint(x: closeButton.bounds.midX, y: closeButton.bounds.midY), to: nil)
+        let screenHeight = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+        func movePointer(to location: NSPoint) {
+            let point = originalWindow.convertPoint(toScreen: location)
+            CGWarpMouseCursorPosition(CGPoint(x: point.x, y: screenHeight - point.y))
+        }
+        let pageLocation = page.convert(NSPoint(x: page.bounds.midX, y: page.bounds.midY), to: nil)
+        movePointer(to: pageLocation)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(closeButton.showsHighlight, "The idle close button has no hover highlight")
+        let idle = try XCTUnwrap(closeButton.bitmapImageRepForCachingDisplay(in: closeButton.bounds))
+        closeButton.cacheDisplay(in: closeButton.bounds, to: idle)
+        let center = try XCTUnwrap(idle.colorAt(x: idle.pixelsWide / 2, y: idle.pixelsHigh / 2))
+        XCTAssertGreaterThan(center.alphaComponent, 0.5, "The close icon is drawn while the pointer is over the page")
+        movePointer(to: closeLocation)
+        try await waitUntil { closeButton.showsHighlight }
+        movePointer(to: pageLocation)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(closeButton.showsHighlight, "The highlight clears when the pointer leaves")
+
         _ = try await page.evaluateJavaScript("window.open('/hover-cards','first-mouse');true")
         try await waitUntil { model.windowRegistry.windows.count == 2 && model.windowRegistry.windows.last?.title == "Hover cards" }
         let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
         let popupWindow = try XCTUnwrap(popup.window)
         try await waitUntil { popupWindow.isKeyWindow && !originalWindow.isKeyWindow }
 
-        let content = try XCTUnwrap(originalWindow.contentView)
-        let closeButton = try XCTUnwrap(accessibilityNode(in: content, identifier: "PreviewClose") as? NSButton)
         let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
-            location: closeButton.convert(NSPoint(x: closeButton.bounds.midX, y: closeButton.bounds.midY), to: nil),
+            location: closeLocation,
             modifierFlags: [], timestamp: 0, windowNumber: originalWindow.windowNumber,
             context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
         XCTAssertTrue(closeButton.acceptsFirstMouse(for: click))

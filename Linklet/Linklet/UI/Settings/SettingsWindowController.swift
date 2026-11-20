@@ -19,8 +19,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let splitController = SettingsSplitViewController(model: model)
         splitController.view.setFrameSize(Self.contentSize)
         window.contentViewController = splitController
-        // Installing a content controller adopts its view's size. Apply the window
-        // bounds afterwards, so an initially empty Form cannot collapse the window.
+        // Installing the controller adopts its view's initial size.
         window.contentMinSize = NSSize(width: 800, height: 600)
         window.setContentSize(Self.contentSize)
         window.center()
@@ -41,15 +40,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 /// including on macOS versions where a hosted NavigationSplitView moves its title.
 @MainActor
 final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegate {
-    private let model: AppModel
     private var subscriptions = Set<AnyCancellable>()
     private var currentPage: SettingsPage
-    private let heading = NSTextField(labelWithString: "")
     private static let separatorID = NSToolbarItem.Identifier("Linklet.Settings.Divider")
-    private static let headingID = NSToolbarItem.Identifier("Linklet.Settings.Heading")
 
     init(model: AppModel) {
-        self.model = model
         currentPage = model.settingsPage
         super.init(nibName: nil, bundle: nil)
         splitView.isVertical = true
@@ -69,17 +64,14 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
         detailItem.minimumThickness = 500
         addSplitViewItem(sidebarItem)
         addSplitViewItem(detailItem)
-        heading.font = .systemFont(ofSize: 15, weight: .semibold)
-        heading.setContentCompressionResistancePriority(.required, for: .horizontal)
         model.$settingsPage.removeDuplicates().sink { [weak self] page in
             guard let self else { return }
             self.currentPage = page
-            self.updateToolbar()
+            self.updateWindowTitle()
         }.store(in: &subscriptions)
         AppLanguage.shared.objectWillChange.sink { [weak self] in
-            DispatchQueue.main.async { self?.updateToolbar() }
+            DispatchQueue.main.async { self?.updateWindowTitle() }
         }.store(in: &subscriptions)
-        updateToolbar()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -96,36 +88,27 @@ final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegat
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unified
         window.titlebarSeparatorStyle = .none
-        if window.toolbar?.delegate as? SettingsSplitViewController !== self {
-            let toolbar = NSToolbar(identifier: "Linklet.Settings.Toolbar")
-            toolbar.delegate = self
-            toolbar.allowsUserCustomization = false
-            toolbar.displayMode = .iconOnly
-            window.toolbar = toolbar
-        }
-        updateToolbar()
+        let toolbar = NSToolbar(identifier: "Linklet.Settings.Toolbar")
+        toolbar.delegate = self
+        toolbar.allowsUserCustomization = false
+        toolbar.displayMode = .iconOnly
+        window.toolbar = toolbar
+        updateWindowTitle()
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.separatorID, .space, Self.headingID, .flexibleSpace]
+        [Self.separatorID, .flexibleSpace]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar)
     }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        if identifier == Self.separatorID {
-            return NSTrackingSeparatorToolbarItem(identifier: identifier, splitView: splitView, dividerIndex: 0)
-        }
-        let item = NSToolbarItem(itemIdentifier: identifier)
-        if identifier == Self.headingID { item.view = heading; item.label = currentPage.title }
-        else { return nil }
-        return item
+        guard identifier == Self.separatorID else { return nil }
+        return NSTrackingSeparatorToolbarItem(identifier: identifier, splitView: splitView, dividerIndex: 0)
     }
 
-    private func updateToolbar() {
-        heading.stringValue = currentPage.title
-        heading.sizeToFit()
+    private func updateWindowTitle() {
         view.window?.title = currentPage.title
     }
 }

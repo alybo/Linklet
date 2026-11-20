@@ -46,6 +46,7 @@ app_plist="$app_path/Contents/Info.plist"
 bundle_id=$(/usr/bin/plutil -extract CFBundleIdentifier raw "$app_plist")
 version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$app_plist")
 build=$(/usr/bin/plutil -extract CFBundleVersion raw "$app_plist")
+minimum_macos=$(/usr/bin/plutil -extract LSMinimumSystemVersion raw "$app_plist")
 public_key=$(/usr/bin/plutil -extract SUPublicEDKey raw "$app_plist")
 expected_key=$(/usr/bin/plutil -extract SUPublicEDKey raw "$repo_root/Linklet/Linklet/Info.plist")
 feed_url=$(/usr/bin/plutil -extract SUFeedURL raw "$app_plist")
@@ -123,16 +124,27 @@ fi
 
 # Checksums go into the release description, not another downloadable asset.
 {
-    echo "Для установки скачайте **$archive_name** и перетащите Linklet в Программы."
-    echo
     if [[ -f "$repo_root/Linklet/docs/releases/$version.md" ]]; then
         cat "$repo_root/Linklet/docs/releases/$version.md"
         echo
     fi
-    echo 'Контрольные суммы SHA-256:'
+    download_base="https://github.com/alybo/Linklet/releases/download/v$version"
+    echo '---'
+    echo
+    echo "**Установка / Install.** [Скачать DMG / Download DMG]($download_base/$archive_name) · Перетащите Linklet в «Программы». Drag Linklet to Applications."
+    echo
+    echo "**Требования / Requirements.** macOS ${minimum_macos%.0}+ · Apple Silicon / Intel"
+    echo
+    echo "**Исходники / Source.** [Полный архив / Full archive]($download_base/$source_name)"
+    echo
+    echo '<details>'
+    echo '<summary>SHA-256</summary>'
+    echo
     echo '```text'
     (cd "$output_dir/release" && /usr/bin/shasum -a 256 "$archive_name" "$source_name")
     echo '```'
+    echo
+    echo '</details>'
 } > "$output_dir/release-description.md"
 echo "Upload ONLY these two release assets:"
 echo "$output_dir/release/$archive_name"

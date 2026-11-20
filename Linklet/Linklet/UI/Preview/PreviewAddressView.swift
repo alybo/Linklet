@@ -71,6 +71,7 @@ struct PreviewLocationView: View {
 @MainActor
 final class PreviewToolbarIconButton: NSButton {
     var acceptsClickThrough = false
+    var usesCircularHoverHighlight = false
     var onPress: ((NSWindow?) -> Void)? {
         didSet { target = self; action = #selector(press) }
     }
@@ -79,6 +80,13 @@ final class PreviewToolbarIconButton: NSButton {
     private var hoverArea: NSTrackingArea?
     private var isHovered = false
     private(set) var hasKeyboardFocus = false
+
+    var showsHighlight: Bool {
+        guard usesCircularHoverHighlight else { return isHovered || isHighlighted }
+        // An existing preview can receive stale tracking events as it comes to the front.
+        guard let window, window.isVisible else { return false }
+        return convert(bounds, to: nil).contains(window.mouseLocationOutsideOfEventStream)
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -103,10 +111,14 @@ final class PreviewToolbarIconButton: NSButton {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if isHovered || isHighlighted {
+        if showsHighlight {
             NSColor.labelColor.withAlphaComponent(PreviewLayout.toolbarHoverOpacity).setFill()
-            NSBezierPath(roundedRect: bounds, xRadius: PreviewLayout.toolbarCornerRadius,
-                         yRadius: PreviewLayout.toolbarCornerRadius).fill()
+            if usesCircularHoverHighlight {
+                NSBezierPath(ovalIn: bounds).fill()
+            } else {
+                NSBezierPath(roundedRect: bounds, xRadius: PreviewLayout.toolbarCornerRadius,
+                             yRadius: PreviewLayout.toolbarCornerRadius).fill()
+            }
         }
         super.draw(dirtyRect)
     }
@@ -117,12 +129,18 @@ final class PreviewToolbarIconButton: NSButton {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways, .inVisibleRect]
+        if usesCircularHoverHighlight { options.insert(.mouseMoved); needsDisplay = true }
+        let area = NSTrackingArea(rect: .zero, options: options, owner: self)
         addTrackingArea(area)
         hoverArea = area
     }
     override func mouseEntered(with event: NSEvent) { isHovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { clearHover() }
+    override func mouseMoved(with event: NSEvent) {
+        if usesCircularHoverHighlight { needsDisplay = true }
+        else { super.mouseMoved(with: event) }
+    }
     func clearHover() { isHovered = false; needsDisplay = true }
     override func rightMouseDown(with event: NSEvent) {
         if let onSecondaryClick { onSecondaryClick() }

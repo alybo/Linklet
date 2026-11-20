@@ -1168,67 +1168,58 @@ struct BookmarkEditor: View {
     }
 }
 
-struct SidebarSettingsView: View {
-    @ObservedObject var library: LinkLibrary
-    let show: () -> Void
-    var initiallyExpanded = false
-    var body: some View {
-        Form { SidebarSettingsSections(library: library, show: show, initiallyExpanded: initiallyExpanded) }
-            .formStyle(.grouped).toggleStyle(.switch)
-    }
-}
-
 struct SidebarSettingsSections: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var library: LinkLibrary
     let show: () -> Void
-    @State private var showsAdvanced: Bool
 
-    init(library: LinkLibrary, show: @escaping () -> Void, initiallyExpanded: Bool = false) {
-        self.library = library
-        self.show = show
-        _showsAdvanced = State(initialValue: initiallyExpanded)
-    }
     var body: some View {
-        Section {
-            Toggle(L("Enable sidebar"), isOn: Binding(get: { library.isEnabled }, set: library.setEnabled))
+        SettingsGroup(L("Sidebar")) {
+            SettingsToggle(L("Enable sidebar"), isOn: Binding(get: { library.isEnabled }, set: library.setEnabled))
             if library.isEnabled {
-                LabeledContent(L("Open sidebar")) { Text("⌃⌥B").foregroundStyle(.secondary) }
-                Toggle(L("Separate by section"), isOn: Binding(get: { library.separatesSections }, set: library.setSeparatesSections))
-                Toggle(L("Show sidebar search"), isOn: Binding(get: { library.showsSidebarSearch }, set: library.setShowsSidebarSearch))
-                Toggle(L("Hide in full screen"), isOn: Binding(get: { library.hidesInFullScreen }, set: library.setHidesInFullScreen))
-                Button(L("Show sidebar"), action: show)
-            }
-            if let error = library.shortcutError { Text(error).font(.caption).foregroundStyle(.red) }
-        } header: { Text(L("Sidebar")) } footer: {
-            if library.isEnabled {
-                Text(L("Move the pointer to the left edge of the screen to see windows, bookmarks, and history."))
-            }
-        }
-        if library.isEnabled {
-            Section {
-                DisclosureGroup(L("Advanced settings"), isExpanded: $showsAdvanced) {
-                    if !library.separatesSections {
-                        Toggle(L("Show sidebar indicator"), isOn: Binding(get: { library.showsRevealIndicator }, set: library.setShowsRevealIndicator))
-                    } else {
-                        Text(L("Each section has a fixed edge tab and remembers its own width. Drag the right edge to resize."))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if !library.separatesSections && !library.showsRevealIndicator {
-                        LabeledContent(L("Opening delay")) {
-                            Slider(value: Binding(get: { library.edgeOpenDelay }, set: library.setEdgeOpenDelay), in: 0.1...2, step: 0.1)
-                                .frame(maxWidth: 180)
-                            Text(library.edgeOpenDelay.formatted(.number.precision(.fractionLength(1))) + " " + L("s"))
-                                .monospacedDigit().frame(width: 48)
-                        }
-                    }
-                    if SidebarAppearance.supportsGlass {
+                if SidebarAppearance.supportsGlass {
+                    SettingsLabel(L("Appearance"), detail: L("Reduce Transparency uses the black appearance.")) {
                         Picker(L("Appearance"), selection: Binding(get: { library.sidebarAppearance }, set: { appearance in
                             DispatchQueue.main.async { library.setSidebarAppearance(appearance) }
                         })) {
                             ForEach(SidebarAppearance.allCases) { Text($0.title).tag($0) }
-                        }.pickerStyle(.segmented).accessibilityIdentifier("sidebar-appearance-picker")
-                        Text(L("Reduce Transparency uses the black appearance.")).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .pickerStyle(.segmented).labelsHidden().id(language.code).fixedSize()
+                        .accessibilityIdentifier("sidebar-appearance-picker")
+                    }
+                }
+                SettingsToggle(L("Show sidebar search"), isOn: Binding(get: { library.showsSidebarSearch }, set: library.setShowsSidebarSearch))
+                SettingsToggle(L("Separate by section"), detail: library.separatesSections
+                    ? L("Each section has a fixed edge tab and remembers its own width. Drag the right edge to resize.") : nil,
+                    isOn: Binding(get: { library.separatesSections }, set: library.setSeparatesSections))
+            }
+        }
+        if library.isEnabled {
+            SettingsGroup(L("Sidebar Activation")) {
+                SettingsLabel(L("Keyboard shortcut")) {
+                    HStack(spacing: 8) {
+                        Text("⌃⌥B").font(.system(.callout, design: .monospaced, weight: .medium))
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+                        Button(L("Show sidebar"), action: show)
+                    }
+                }
+                if let error = library.shortcutError { Text(error).font(.caption).foregroundStyle(.red) }
+                SettingsToggle(L("Hide in full screen"), isOn: Binding(get: { library.hidesInFullScreen }, set: library.setHidesInFullScreen))
+                if !library.separatesSections {
+                    SettingsToggle(L("Show sidebar indicator"), isOn: Binding(get: { library.showsRevealIndicator }, set: library.setShowsRevealIndicator))
+                }
+                if !library.separatesSections && !library.showsRevealIndicator {
+                    SettingsLabel(L("Opening delay"), detail: L("Move the pointer to the left edge of the screen to see windows, bookmarks, and history.")) {
+                        HStack(spacing: 6) {
+                            Slider(value: Binding(get: { library.edgeOpenDelay }, set: library.setEdgeOpenDelay),
+                                   in: 0.1...2, step: 0.1) { Text(L("Opening delay")) }
+                                .labelsHidden().frame(width: 126)
+                            Text(library.edgeOpenDelay.formatted(.number.precision(.fractionLength(1))
+                                .locale(Locale(identifier: language.code))) + " " + L("s"))
+                                .font(.callout).monospacedDigit().foregroundStyle(.secondary)
+                                .frame(minWidth: 35, alignment: .trailing)
+                        }
                     }
                 }
             }
@@ -1240,14 +1231,12 @@ struct HistorySettingsSection: View {
     @ObservedObject private var language = AppLanguage.shared
     @ObservedObject var library: LinkLibrary
     var body: some View {
-        Section {
-            Toggle(L("Save browsing history"), isOn: Binding(get: { library.savesHistory }, set: library.setSavesHistory))
+        SettingsGroup(L("History"), note: L(library.savesHistory
+            ? "History is kept on this Mac after you quit Linklet. Turning this off deletes saved history."
+            : "History is kept until you quit Linklet. This setting does not affect website sign-ins.")) {
+            SettingsToggle(L("Save browsing history"), isOn: Binding(get: { library.savesHistory }, set: library.setSavesHistory))
             Button(L("Clear history"), action: library.requestHistoryClear).disabled(library.recentLinks.isEmpty)
             if library.isHistoryClearPending { HistoryClearConfirmation(library: library) }
-        } header: { Text(L("History")) } footer: {
-            Text(L(library.savesHistory
-                ? "History is kept on this Mac after you quit Linklet. Turning this off deletes saved history."
-                : "History is kept until you quit Linklet. This setting does not affect website sign-ins."))
         }
     }
 }

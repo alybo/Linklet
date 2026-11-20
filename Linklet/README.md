@@ -227,9 +227,7 @@ through the preview's persistent website-data store. If loading fails, the tile
 uses the generic globe icon.
 
 The global shortcut opens the empty search panel synchronously on key-down.
-The panel is prepared at startup. There is no selection inspection, clipboard
-copying, polling, key-release wait, or Accessibility permission requirement.
-Built-in search of selected text is deferred to a future release.
+Linklet prepares the panel at startup.
 
 The optional [Raycast extension](../integrations/raycast-linklet/README.md) gets
 selected text through Raycast and sends it to Linklet. Linklet uses its configured

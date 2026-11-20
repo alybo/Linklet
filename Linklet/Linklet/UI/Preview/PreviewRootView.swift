@@ -346,6 +346,7 @@ private struct PreviewWindowControls: View {
             WindowControlButton(
                 imageName: "PreviewClose",
                 help: L("Close preview"),
+                usesCircularHoverHighlight: true,
                 action: { window in window?.performClose(nil) }
             )
 
@@ -375,10 +376,12 @@ struct WindowControlButton: View {
     let imageName: String
     let help: String
     var shortcut = ""
+    var usesCircularHoverHighlight = false
     let action: (NSWindow?) -> Void
 
     var body: some View {
-        NativeControl(imageName: imageName, help: help, shortcut: shortcut, action: action)
+        NativeControl(imageName: imageName, help: help, shortcut: shortcut,
+                      usesCircularHoverHighlight: usesCircularHoverHighlight, action: action)
             .frame(width: PreviewLayout.windowControlHitSize, height: PreviewLayout.windowControlHitSize)
     }
 
@@ -386,6 +389,7 @@ struct WindowControlButton: View {
         let imageName: String
         let help: String
         let shortcut: String
+        let usesCircularHoverHighlight: Bool
         let action: (NSWindow?) -> Void
 
         func makeNSView(context: Context) -> PreviewToolbarIconButton {
@@ -393,6 +397,7 @@ struct WindowControlButton: View {
             let image = NSImage(named: imageName)?.copy() as? NSImage
             image?.size = NSSize(width: PreviewLayout.windowControlSymbolSize, height: PreviewLayout.windowControlSymbolSize)
             button.image = image
+            button.usesCircularHoverHighlight = usesCircularHoverHighlight
             button.acceptsClickThrough = true
             button.keyEquivalent = shortcut
             button.keyEquivalentModifierMask = .command
