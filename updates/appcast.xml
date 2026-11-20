@@ -6,6 +6,14 @@
         <description>Official Linklet releases for macOS.</description>
         <language>en</language>
         <item>
+            <title>1.8</title>
+            <pubDate>Thu, 19 Nov 2026 21:08:38 +0100</pubDate>
+            <sparkle:version>48</sparkle:version>
+            <sparkle:shortVersionString>1.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/alybo/Linklet/releases/download/v1.8/Linklet-1.8.dmg" length="6411278" type="application/octet-stream" sparkle:edSignature="ed6OmgK3SWbR1vgG28fVhz4ViBYsB7DA4YhDEsg1SfQ9AUCA3pO2oRHwT+xnf43CusUXHYkQzlDeC2y4/b2zCQ=="/>
+        </item>
+        <item>
             <title>1.7</title>
             <pubDate>Mon, 02 Nov 2026 12:14:41 +0300</pubDate>
             <sparkle:version>31</sparkle:version>
@@ -111,16 +119,6 @@
 </html>
 ]]></description>
             <enclosure url="https://github.com/alybo/Linklet/releases/download/v1.5/Linklet-1.5.dmg" length="5241164" type="application/octet-stream" sparkle:edSignature="ijxyBQBlOhqIgKcyq0E7zaMcj1THuWFTgS2B9xJec/Vaor36lTLh8CMMu8wjt/9sBIZtJ3PdiD3g/QZCC+V9AA=="/>
-        </item>
-        <item>
-            <title>1.4.3</title>
-            <pubDate>Tue, 06 Oct 2026 00:05:20 +0300</pubDate>
-            <sparkle:version>8</sparkle:version>
-            <sparkle:shortVersionString>1.4.3</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<!doctype html><html lang="ru"><meta charset="utf-8"><title>Linklet 1.4.3</title><body><h1>Linklet 1.4.3</h1><ul><li>Очистка данных сайтов больше не задерживает открытие предпросмотра: в приватном режиме она запускается после закрытия последнего окна, а в режиме сохранения данных выполняется в фоне по расписанию.</li><li>При каждом открытии быстрого поиска список избранного возвращается к началу.</li><li>Убрано пустое системное окно автозаполнения, которое кратко появлялось под строкой поиска. Стеклянный вид панели сохранён.</li><li>Website data cleanup no longer delays opening a preview: private data is cleared after the last preview closes, while saved data is maintained on a background schedule.</li><li>The favorites list returns to its starting position each time Quick Search opens.</li><li>Prevented an empty system autofill window from briefly appearing below the search field. The glass panel appearance is unchanged.</li></ul></body></html>
-]]></description>
-            <enclosure url="https://github.com/alybo/Linklet/releases/download/v1.4.3/Linklet-1.4.3.dmg" length="4774182" type="application/octet-stream" sparkle:edSignature="DsNzTbI2a7a3bx7m6WnWYicU4/PUyNy9i8kGBfXOegE31gTKZD9ttW7W3jwUcMEahx4KEkpAg9Cq+qngg1mUAA=="/>
         </item>
     </channel>
 </rss>
