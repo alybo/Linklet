@@ -44,8 +44,7 @@ enum PreviewWindowAppearance {
     }
 }
 
-private final class PreviewWindow: NSWindow {
-    var onEscape: (() -> Void)?
+final class PreviewWindow: NSWindow {
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .keyDown,
               !event.isARepeat
@@ -68,7 +67,7 @@ private final class PreviewWindow: NSWindow {
                 super.sendEvent(event)
                 return
             }
-            if let onEscape { onEscape() } else { performClose(nil) }
+            performClose(nil)
             return
         }
 
@@ -117,7 +116,6 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
             .removeDuplicates()
             .sink { [weak panel] title in panel?.title = title }
             .store(in: &cancellables)
-        panel.onEscape = { [weak panel] in panel?.performClose(nil) }
         let hostingController = NSHostingController(rootView: PreviewRootView(model: model))
         // AppKit owns the window size; the initially empty WebView must not shrink it.
         hostingController.sizingOptions = []

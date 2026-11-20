@@ -1860,6 +1860,35 @@ final class LinkLibraryTests: XCTestCase {
 
 @MainActor
 final class WebPopupTests: XCTestCase {
+    func testEscapeClosesSiteWindowWithWebContentFocused() async throws {
+        let server = try PopupHTTPFixture()
+        let port = try await server.start()
+        defer { server.stop() }
+        let suite = "PopupEscape.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let model = AppModel(defaults: defaults, discoverTargets: { [] })
+        model.siteData.selectModeForPreview(false)
+        defer { model.closeAllWindows(); defaults.removePersistentDomain(forName: suite) }
+
+        model.showPreview(url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/site")))
+        try await waitUntil { model.previewSession.pageTitle == "Original site" }
+        let opener = try XCTUnwrap(model.previewSession.webView)
+        let openerWindow = try XCTUnwrap(opener.window)
+        _ = try await opener.evaluateJavaScript("window.open('/destination', 'escape-test'); true")
+        try await waitUntil {
+            model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first?.window?.isVisible == true
+        }
+        let popup = try XCTUnwrap(model.windowRegistry.webWindows(openedBy: model.previewSession.windowID).values.first)
+        let window = try XCTUnwrap(popup.window)
+        XCTAssertTrue(window.makeFirstResponder(popup.webView))
+        try sendAddressKey(to: window, code: 53, characters: "\u{1b}")
+
+        XCTAssertFalse(window.isVisible)
+        XCTAssertFalse(popup.session.isActive)
+        XCTAssertTrue(openerWindow.isVisible)
+        XCTAssertTrue(model.previewSession.isActive)
+    }
+
     func testPopularSearchResultsRestoreImmediatelyAndKeepTargetGeometryThroughRedirectDocuments() throws {
         let suite = "SearchResultFrames.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
