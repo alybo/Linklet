@@ -12,9 +12,13 @@ struct SearchSettingsView: View {
     var body: some View {
         SettingsContent {
             SettingsGroup(L("Quick Search"), note: L("Web addresses open directly. Other text is sent to your search engine.")) {
+                SettingsPicker(L("Design"), selection: Binding(get: { settings.panelDesign }, set: settings.setPanelDesign)) {
+                    ForEach(SearchPanelDesign.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
                 SettingsPicker(L("Search engine"), selection: Binding(get: { settings.engine }, set: settings.setEngine)) {
                     ForEach(SearchEngine.allCases) { Text($0.title).tag($0) }
                 }
+                SettingsToggle(L("Show search engine icon"), isOn: Binding(get: { settings.showsEngineIcon }, set: settings.setShowsEngineIcon))
                 SettingsLabel(L("Keyboard shortcut")) {
                     HStack(spacing: 8) {
                         Button(recording ? L("Press a shortcut…") : settings.shortcut?.title ?? L("Set Shortcut…")) {

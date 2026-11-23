@@ -57,6 +57,7 @@
         E10000000000000000000004 = {isa = PBXBuildFile; fileRef = E20000000000000000000004; };
         E10000000000000000000005 = {isa = PBXBuildFile; fileRef = E20000000000000000000005; };
         E10000000000000000000006 = {isa = PBXBuildFile; fileRef = E20000000000000000000006; };
+        E10000000000000000000007 = {isa = PBXBuildFile; fileRef = E20000000000000000000007; };
         F10000000000000000000001 = {isa = PBXBuildFile; fileRef = F20000000000000000000001; };
         F10000000000000000000002 = {isa = PBXBuildFile; fileRef = F20000000000000000000002; };
         AM10000000000000000000001 = {isa = PBXBuildFile; fileRef = AM20000000000000000000001; };
@@ -128,6 +129,7 @@
         E20000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Settings/SearchSettingsView.swift; sourceTree = "<group>"; };
         E20000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchTests.swift; sourceTree = "<group>"; };
         E20000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Search/SearchEngineControl.swift; sourceTree = "<group>"; };
+        E20000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UI/Search/SearchNotchSurface.swift; sourceTree = "<group>"; };
         F20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/FavoriteSiteIconService.swift; sourceTree = "<group>"; };
         F20000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowGeometryService.swift; sourceTree = "<group>"; };
         AM20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PageTranslation.swift; sourceTree = "<group>"; };
@@ -192,6 +194,7 @@
                 E20000000000000000000003,
                 E20000000000000000000004,
                 E20000000000000000000006,
+                E20000000000000000000007,
                 AM20000000000000000000001,
                 AM20000000000000000000002,
                 AM20000000000000000000003,
@@ -449,6 +452,7 @@
                 E10000000000000000000003,
                 E10000000000000000000004,
                 E10000000000000000000006,
+                E10000000000000000000007,
                 AM10000000000000000000001,
                 AM10000000000000000000002,
                 AM10000000000000000000003,
@@ -621,7 +625,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 57;
+				CURRENT_PROJECT_VERSION = 64;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -630,7 +634,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Linklet;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -646,7 +650,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 57;
+				CURRENT_PROJECT_VERSION = 64;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -655,7 +659,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Linklet;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

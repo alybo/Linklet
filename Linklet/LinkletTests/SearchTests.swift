@@ -96,6 +96,383 @@ final class SearchSettingsTests: XCTestCase {
         XCTAssertNil(SearchSettings(defaults: defaults).shortcut)
     }
 
+    func testPanelDesignDefaultsToFloatingAndPersistsExplicitChoices() {
+        let suite = "LinkletSearchDesignTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        XCTAssertEqual(settings.panelDesign, .floating)
+
+        settings.setPanelDesign(.notch)
+        XCTAssertEqual(SearchSettings(defaults: defaults).panelDesign, .notch)
+        settings.setPanelDesign(.floating)
+        XCTAssertEqual(SearchSettings(defaults: defaults).panelDesign, .floating)
+
+        defaults.set("unrecognized", forKey: "searchPanelDesign")
+        XCTAssertEqual(SearchSettings(defaults: defaults).panelDesign, .floating)
+    }
+
+    func testHidingEngineIconPersistsAndFreesSpaceInBothDesigns() {
+        let suite = "LinkletSearchEngineIconTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        XCTAssertTrue(settings.showsEngineIcon)
+        settings.setEngine(.duckDuckGo)
+        var opened: URL?
+        let controller = SearchWindowController(settings: settings, reduceMotion: { true }) { opened = $0 }
+        defer { controller.close() }
+
+        for design in SearchPanelDesign.allCases {
+            settings.setPanelDesign(design)
+            settings.setShowsEngineIcon(true)
+            controller.present()
+            let openWindow = controller.window
+            openWindow?.contentView?.layoutSubtreeIfNeeded()
+            let widthWithIcon = controller.input.frame.width
+
+            settings.setShowsEngineIcon(false)
+            XCTAssertFalse(SearchSettings(defaults: defaults).showsEngineIcon)
+            openWindow?.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertGreaterThan(controller.input.frame.width, widthWithIcon)
+            XCTAssertTrue(controller.window === openWindow)
+            XCTAssertTrue(controller.isVisible)
+            XCTAssertNil(controller.input.nextKeyView)
+            XCTAssertNotNil(controller.input.currentEditor())
+            XCTAssertEqual(controller.selection.engine, .duckDuckGo)
+            settings.setShowsEngineIcon(true)
+            openWindow?.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertEqual(controller.input.frame.width, widthWithIcon)
+            XCTAssertNotNil(controller.input.nextKeyView)
+            settings.setShowsEngineIcon(false)
+            controller.input.stringValue = "test query"
+            controller.submit()
+            XCTAssertEqual(opened?.host, "duckduckgo.com")
+        }
+    }
+
+    func testNotchPlaceholderUsesMutedColorAndKeepsTheInputFont() throws {
+        let suite = "LinkletSearchPlaceholderTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        settings.setPanelDesign(.notch)
+        let controller = SearchWindowController(settings: settings, reduceMotion: { true }) { _ in }
+        defer { controller.close() }
+        controller.present()
+
+        let placeholder = try XCTUnwrap(controller.input.placeholderAttributedString)
+        XCTAssertEqual(placeholder.string, L("Search or enter address"))
+        let color = try XCTUnwrap(placeholder.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        let font = try XCTUnwrap(placeholder.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        let expectedOpacity = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.72 : 0.44
+        XCTAssertEqual(color.alphaComponent, expectedOpacity, accuracy: 0.001)
+        XCTAssertEqual(font.pointSize, 20)
+        XCTAssertEqual(font, controller.input.font)
+        XCTAssertEqual(controller.input.textColor, .labelColor)
+
+        settings.setPanelDesign(.floating)
+        controller.present()
+        XCTAssertEqual(controller.input.placeholderString, placeholder.string)
+        XCTAssertEqual(controller.input.font?.pointSize, 24)
+    }
+
+    func testNotchStaysAtScreenEdgeAndKeepsTheCompactHeightWithoutBookmarks() {
+        let screen = CGRect(x: -1440, y: 150, width: 1440, height: 900)
+        let cutout = CGRect(x: -800, y: screen.maxY - 32, width: 160, height: 32)
+        let placement = SearchNotchPlacement(screenFrame: screen, menuBarHeight: 32, hardwareNotch: cutout)
+        let full = placement.panelFrame(showsFavorites: true)
+        let compact = placement.panelFrame(showsFavorites: false)
+        XCTAssertEqual(full.maxY, screen.maxY)
+        XCTAssertEqual(compact.maxY, screen.maxY)
+        XCTAssertEqual(full.midX, cutout.midX)
+        XCTAssertEqual(compact.width, full.width)
+        XCTAssertEqual(full.height - compact.height, SearchNotchLayout.favoritesHeight + SearchNotchLayout.rowGap)
+        XCTAssertEqual(placement.outline(in: full.size, motion: .closed).rect.width, cutout.width)
+        let open = placement.outline(in: full.size, motion: .open).rect
+        XCTAssertEqual(open, CGRect(x: 0, y: 0, width: full.width, height: full.height - SearchNotchLayout.animationClearance))
+        let rebound = placement.outline(in: full.size, motion: .closed.moving(toward: .open, fraction: 0.66)).rect
+        XCTAssertGreaterThan(rebound.height, open.height)
+        XCTAssertLessThanOrEqual(rebound.height, full.height)
+        XCTAssertTrue(placement.containsHoverPoint(CGPoint(x: cutout.midX, y: cutout.minY - 2)))
+        XCTAssertTrue(placement.containsHoverPoint(CGPoint(x: cutout.minX, y: screen.maxY)))
+        XCTAssertTrue(placement.containsHoverPoint(CGPoint(x: cutout.maxX, y: screen.maxY)))
+        XCTAssertFalse(placement.containsHoverPoint(CGPoint(x: cutout.maxX + 1, y: screen.maxY)))
+        XCTAssertFalse(placement.containsHoverPoint(CGPoint(x: cutout.midX, y: screen.maxY + 1)))
+
+        let external = SearchNotchPlacement(screenFrame: screen, menuBarHeight: 24, hardwareNotch: nil)
+        XCTAssertFalse(external.containsHoverPoint(CGPoint(x: screen.midX, y: screen.maxY)))
+        XCTAssertEqual(external.panelFrame(showsFavorites: false).midX, screen.midX)
+    }
+
+    func testNotchMotionSpreadsFirstAndRevealsSearchBeforeBookmarks() {
+        let spread = SearchNotchMotion.closed.moving(toward: .open, fraction: 0.2)
+        XCTAssertGreaterThan(spread.width, spread.depth)
+        let revealing = SearchNotchMotion.closed.moving(toward: .open, fraction: 0.44)
+        XCTAssertGreaterThan(revealing.searchOpacity, 0)
+        XCTAssertEqual(revealing.favoritesOpacity, 0)
+        XCTAssertEqual(revealing.moving(toward: .closed, fraction: 0), revealing)
+        XCTAssertEqual(revealing.moving(toward: .closed, fraction: 1), .closed)
+        XCTAssertEqual(SearchNotchMotion.closed.moving(toward: .open, fraction: 1), .open)
+    }
+
+    func testNotchShouldersExpandSymmetricallyWhileLeavingThePanelBodyInPlace() {
+        let screen = CGRect(x: 0, y: 0, width: 1280, height: 800)
+        let cutout = CGRect(x: 560, y: 768, width: 160, height: 32)
+        let placement = SearchNotchPlacement(screenFrame: screen, menuBarHeight: 32, hardwareNotch: cutout)
+        let size = placement.panelFrame(showsFavorites: true, preferredWidth: SearchNotchLayout.maximumWindowWidth).size
+        let closed = placement.outline(in: size, motion: .closed)
+        let unfolding = placement.outline(in: size, motion: .closed.moving(toward: .open, fraction: 0.30))
+        let open = placement.outline(in: size, motion: .open)
+
+        XCTAssertEqual(closed.contour.shoulder, 0)
+        XCTAssertGreaterThan(unfolding.contour.shoulder, 0)
+        XCTAssertLessThan(unfolding.contour.shoulder, open.contour.shoulder)
+        XCTAssertEqual(unfolding.rect.midX, size.width / 2)
+        XCTAssertEqual(open.rect.width - 2 * open.contour.shoulder, 660)
+
+        let path = open.contour.path(in: open.rect)
+        let shoulder = open.contour.shoulder
+        for x in [open.rect.minX + shoulder / 2, open.rect.maxX - shoulder / 2] {
+            XCTAssertTrue(path.contains(CGPoint(x: x, y: 1)), "The transition reaches the top edge")
+            XCTAssertFalse(path.contains(CGPoint(x: x, y: shoulder / 2)), "The shoulder curves back into the body")
+        }
+        XCTAssertTrue(path.contains(CGPoint(x: open.rect.midX, y: open.rect.maxY - 1)))
+    }
+
+    func testNotchHoverWaitsForIntentAndDoesNotReopenUntilPointerLeaves() throws {
+        let suite = "LinkletSearchHoverTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        settings.setPanelDesign(.notch)
+        let screen = try XCTUnwrap(NSScreen.main).frame
+        let cutout = CGRect(x: screen.midX - 80, y: screen.maxY - 32, width: 160, height: 32)
+        let placement = SearchNotchPlacement(screenFrame: screen, menuBarHeight: 32, hardwareNotch: cutout)
+        let edge = CGPoint(x: cutout.midX, y: screen.maxY)
+        let outside = CGPoint(x: cutout.midX, y: screen.midY)
+        let controller = SearchWindowController(settings: settings, reduceMotion: { true }) { _ in }
+        defer { controller.close() }
+
+        controller.pollNotchHover(at: edge, now: 1, placements: [placement])
+        controller.pollNotchHover(at: edge, now: 1.08, placements: [placement])
+        XCTAssertFalse(controller.isVisible)
+        controller.pollNotchHover(at: edge, now: 1.17, placements: [placement])
+        XCTAssertTrue(controller.isVisible)
+        XCTAssertEqual(controller.window?.frame, placement.panelFrame(showsFavorites: false))
+
+        controller.close()
+        controller.pollNotchHover(at: edge, now: 2, placements: [placement])
+        controller.pollNotchHover(at: edge, now: 3, placements: [placement])
+        XCTAssertFalse(controller.isVisible)
+        controller.pollNotchHover(at: outside, now: 4, placements: [placement])
+        controller.pollNotchHover(at: edge, now: 5, placements: [placement])
+        controller.pollNotchHover(at: edge, now: 5.17, placements: [placement])
+        XCTAssertTrue(controller.isVisible)
+        controller.pollNotchHover(at: outside, now: 6, placements: [placement])
+        controller.pollNotchHover(at: outside, now: 6.26, placements: [placement])
+        XCTAssertFalse(controller.isVisible)
+    }
+
+    func testNotchFitsNativeEditorTextAndCapsWidthWhilePreservingFocus() throws {
+        let suite = "LinkletAdaptiveSearchWidthTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        settings.setPanelDesign(.notch)
+        let controller = SearchWindowController(settings: settings, reduceMotion: { true }) { _ in }
+        controller.present()
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window)
+        let screen = try XCTUnwrap(window.screen)
+        let maximum = SearchNotchPlacement(screen: screen).panelFrame(
+            showsFavorites: false, preferredWidth: SearchNotchLayout.maximumWindowWidth
+        )
+        let compact = window.frame
+        let editor = try XCTUnwrap(controller.input.currentEditor() as? NSTextView)
+        func enter(_ text: String) {
+            editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        }
+
+        enter("Swift")
+        XCTAssertEqual(window.frame, compact)
+        enter(String(repeating: "W", count: 22))
+        let mediumWidth = window.frame.width
+        XCTAssertGreaterThan(mediumWidth, compact.width)
+        XCTAssertLessThan(mediumWidth, maximum.width)
+        settings.setShowsEngineIcon(false)
+        XCTAssertLessThan(window.frame.width, mediumWidth)
+
+        let longQuery = String(repeating: "длинный запрос 👋 ", count: 200)
+        enter(longQuery)
+        XCTAssertEqual(window.frame, maximum)
+        XCTAssertTrue(controller.input.currentEditor() === editor)
+        XCTAssertEqual(editor.string, longQuery)
+        XCTAssertEqual(editor.selectedRange().location, longQuery.utf16.count)
+        enter("Short")
+        XCTAssertEqual(window.frame, compact)
+
+        controller.close()
+        settings.setPanelDesign(.floating)
+        controller.present()
+        let floatingWindow = try XCTUnwrap(controller.window)
+        let floatingFrame = floatingWindow.frame
+        let floatingEditor = try XCTUnwrap(controller.input.currentEditor() as? NSTextView)
+        floatingEditor.insertText(longQuery, replacementRange: floatingEditor.selectedRange())
+        XCTAssertEqual(floatingWindow.frame, floatingFrame)
+    }
+
+    func testNotchAnimatesWidthWhileKeepingTheSameWindowAndScreenAnchor() async throws {
+        let suite = "LinkletAnimatedSearchWidthTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        settings.setPanelDesign(.notch)
+        let controller = SearchWindowController(settings: settings, reduceMotion: { false }) { _ in }
+        controller.present()
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window)
+        let editor = try XCTUnwrap(controller.input.currentEditor() as? NSTextView)
+        let compact = window.frame
+
+        editor.insertText(String(repeating: "W", count: 80), replacementRange: editor.selectedRange())
+        XCTAssertEqual(window.frame, compact, "A long paste should start a width animation")
+        try await Task.sleep(for: .milliseconds(550))
+        XCTAssertGreaterThan(window.frame.width, compact.width)
+        XCTAssertEqual(window.frame.midX, compact.midX, accuracy: 0.5)
+        XCTAssertEqual(window.frame.maxY, compact.maxY)
+        XCTAssertTrue(controller.input.currentEditor() === editor)
+
+        editor.insertText("short", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        try await Task.sleep(for: .milliseconds(550))
+        XCTAssertEqual(window.frame, compact)
+        XCTAssertTrue(controller.window === window)
+    }
+
+    func testChangingToFloatingClosesNotchAndDisablesHover() throws {
+        let suite = "LinkletHoverDesignTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        let screen = try XCTUnwrap(NSScreen.main).frame
+        let cutout = CGRect(x: screen.midX - 80, y: screen.maxY - 32, width: 160, height: 32)
+        let placement = SearchNotchPlacement(screenFrame: screen, menuBarHeight: 32, hardwareNotch: cutout)
+        let edge = CGPoint(x: cutout.midX, y: screen.maxY)
+        let controller = SearchWindowController(settings: settings, reduceMotion: { true }) { _ in }
+        controller.startNotchHover()
+        defer { controller.close() }
+
+        settings.setPanelDesign(.notch)
+        controller.pollNotchHover(at: edge, now: 1, placements: [placement])
+        controller.pollNotchHover(at: edge, now: 1.2, placements: [placement])
+        XCTAssertTrue(controller.isVisible)
+
+        settings.setPanelDesign(.floating)
+        XCTAssertFalse(controller.window?.isVisible ?? true)
+        controller.pollNotchHover(at: edge, now: 2, placements: [placement])
+        controller.pollNotchHover(at: edge, now: 3, placements: [placement])
+        XCTAssertFalse(controller.isVisible)
+        controller.present()
+        XCTAssertEqual(controller.window?.level, .floating)
+        controller.pollNotchHover(at: edge, now: 4, placements: [placement])
+        XCTAssertEqual(controller.window?.level, .floating)
+    }
+
+    func testBothSearchDesignsFollowTheSameBookmarkLibraryOrder() throws {
+        let suite = "LinkletSharedSearchBookmarksTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults) { _ in throw URLError(.resourceUnavailable) }
+        let library = LinkLibrary(defaults: defaults)
+        library.bind(to: settings)
+        let first = try settings.addFavoriteSite(name: "First", address: "first.example")
+        let second = try settings.addFavoriteSite(name: "Second", address: "second.example")
+        let folder = try XCTUnwrap(library.addFolder(name: "Work"))
+        library.moveItem(second.id, before: nil, into: folder.id)
+        library.moveItem(folder.id, before: first.id)
+        XCTAssertEqual(settings.favoriteSites.map(\.id), [second.id, first.id])
+
+        var opened: URL?
+        let controller = SearchWindowController(settings: settings, reduceMotion: { true }) { opened = $0 }
+        defer { controller.close() }
+        let firstBookmark = keyEvent(keyCode: 18, characters: "1", modifiers: .command)
+        for design in SearchPanelDesign.allCases {
+            settings.setPanelDesign(design)
+            controller.present()
+            XCTAssertTrue(controller.handlePanelKeyEvent(firstBookmark))
+            XCTAssertEqual(opened, second.url)
+        }
+
+        settings.removeFavoriteSite(second)
+        for design in SearchPanelDesign.allCases {
+            settings.setPanelDesign(design)
+            controller.present()
+            XCTAssertTrue(controller.handlePanelKeyEvent(firstBookmark))
+            XCTAssertEqual(opened, first.url)
+        }
+    }
+
+    func testSwitchingDesignKeepsSearchFocusAndKeyboardNavigationAcrossTenBookmarks() throws {
+        let suite = "LinkletSearchDesignKeyboardTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        for index in 1...10 {
+            _ = try settings.addFavoriteSite(name: "Saved bookmark \(index)", address: "example.com/\(index)")
+        }
+        var opened: URL?
+        let controller = SearchWindowController(settings: settings, reduceMotion: { true }) { opened = $0 }
+        defer { controller.close() }
+        controller.present()
+        XCTAssertEqual(controller.window?.frame.height, 220)
+        XCTAssertNotNil(controller.input.currentEditor())
+
+        settings.setPanelDesign(.notch)
+        controller.present()
+        XCTAssertEqual(controller.window?.level, .statusBar)
+        XCTAssertNotNil(controller.input.currentEditor())
+        XCTAssertTrue(controller.control(controller.input, textView: NSTextView(), doCommandBy: #selector(NSResponder.moveDown(_:))))
+        for _ in 1..<10 {
+            XCTAssertTrue(controller.handlePanelKeyEvent(keyEvent(keyCode: 124, characters: "", modifiers: [])))
+        }
+        XCTAssertTrue(controller.handlePanelKeyEvent(keyEvent(keyCode: 36, characters: "\r", modifiers: [])))
+        XCTAssertEqual(opened?.absoluteString, "https://example.com/10")
+
+        settings.setPanelDesign(.floating)
+        controller.present()
+        XCTAssertEqual(controller.window?.frame.height, 220)
+        XCTAssertNotNil(controller.input.currentEditor())
+    }
+
+    func testNotchAnimationCanReverseAndFinishDismissing() async throws {
+        let suite = "LinkletSearchAnimationTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SearchSettings(defaults: defaults)
+        settings.setPanelDesign(.notch)
+        let controller = SearchWindowController(settings: settings, reduceMotion: { false }) { _ in }
+        defer { controller.close() }
+
+        controller.toggle()
+        try await Task.sleep(for: .milliseconds(100))
+        controller.toggle()
+        XCTAssertFalse(controller.isVisible)
+        controller.toggle()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(controller.isVisible)
+        XCTAssertNotNil(controller.input.currentEditor())
+        controller.toggle()
+        try await Task.sleep(for: .milliseconds(320))
+        XCTAssertFalse(controller.window?.isVisible ?? true)
+
+        controller.toggle()
+        controller.toggle()
+        controller.toggle()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(controller.window?.isKeyWindow ?? false)
+        XCTAssertTrue(controller.isVisible)
+    }
+
     func testFavoriteSitesValidatePersistAndKeepTheirOrder() throws {
         let suite = "LinkletFavoriteSitesTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!

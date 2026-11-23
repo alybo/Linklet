@@ -82,8 +82,12 @@ final class AppModel: ObservableObject {
     private let launchService = BrowserLaunchService()
     private let defaultBrowserService: DefaultBrowserService
     private lazy var previewWindowController = PreviewWindowController(model: self)
-    private lazy var searchWindowController = SearchWindowController(settings: searchSettings) { [weak self] url in
+    private weak var searchOwner: AppModel?
+    private lazy var ownedSearchWindowController = SearchWindowController(settings: searchSettings) { [weak self] url in
         self?.showPreview(url: url)
+    }
+    private var searchWindowController: SearchWindowController {
+        searchOwner?.searchWindowController ?? ownedSearchWindowController
     }
     private lazy var sidebarWindowController = SidebarWindowController(model: self)
     private var settingsWindowController: SettingsWindowController?
@@ -275,7 +279,7 @@ final class AppModel: ObservableObject {
 
     func startSearchShortcut() {
         // Prepare the panel once; the hotkey path performs no asynchronous work.
-        _ = searchWindowController
+        searchWindowController.startNotchHover()
         searchSettings.start { [weak self] in self?.toggleSearch() }
     }
 
@@ -597,6 +601,7 @@ final class AppModel: ObservableObject {
             discoverTargets: discoverTargets,
             discoverTargetsAsync: discoverTargetsAsync
         )
+        child.searchOwner = self
         child.refreshTargets()
         if let referenceFrame {
             child.previewWindowController.positionInitially(after: referenceFrame)

@@ -60,15 +60,15 @@ private struct SidebarGlassSurface: View {
                 let radius = min(24, geometry.size.height / 4)
                 let extensionWidth: CGFloat = 48
                 ZStack(alignment: .topLeading) {
-                    SidebarSmokeTint(layer: .backing)
+                    ScreenEdgeSmokeTint(layer: .backing)
                         .frame(width: revealedWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .clipShape(contour)
-                    SidebarNativeGlassBody(cornerRadius: radius)
+                    ScreenEdgeNativeGlass(shape: SidebarGlassBody(cornerRadius: radius))
                         .frame(width: revealedWidth + extensionWidth,
                                height: max(0, geometry.size.height - 2 * radius))
                         .offset(x: -extensionWidth, y: radius)
-                    SidebarSmokeTint(layer: .correction)
+                    ScreenEdgeSmokeTint(layer: .correction)
                         .frame(width: revealedWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .clipShape(contour)
@@ -83,37 +83,46 @@ private struct SidebarGlassSurface: View {
 /// Broad, static mesh lobes soften the tint boundary without moving the
 /// background or adding grain. The left stays opaque and the far right clear.
 @available(macOS 26.0, *)
-private struct SidebarSmokeTint: View {
+struct ScreenEdgeSmokeTint: View {
     enum Layer { case backing, correction }
     let layer: Layer
-
-    private var points: [SIMD2<Float>] {
-        let shifts: [Float] = [0, 0.006, 0.010, 0.007, -0.003, -0.005, 0]
-        let heights: [Float] = [0, 0.10, 0.27, 0.51, 0.73, 0.91, 1]
-        let columns: [Float] = [0, 0.50, 0.65, 0.86, 1]
-        let weights: [Float] = [0, 1, 0.8, 0.4, 0]
-        return shifts.enumerated().flatMap { row, shift in
-            columns.enumerated().map { column, x in
-                SIMD2(x + shift * weights[column], heights[row])
-            }
-        }
-    }
+    var axis: Axis = .horizontal
 
     var body: some View {
-        let row: [Color] = layer == .backing
+        let shifts: [Float] = [0, 0.006, 0.010, 0.007, -0.003, -0.005, 0]
+        let across: [Float] = [0, 0.10, 0.27, 0.51, 0.73, 0.91, 1]
+        let stops: [Float] = axis == .horizontal ? [0, 0.50, 0.65, 0.86, 1] : [0, 0.33, 0.64, 0.85, 1]
+        let weights: [Float] = [0, 1, 0.8, 0.4, 0]
+        let colors: [Color] = layer == .backing
             ? [.black, .black, .black.opacity(0.90), .black.opacity(0.28), .clear]
             : [.black, .black, .black.opacity(0.40), .clear, .clear]
-        MeshGradient(width: 5, height: 7, points: points,
-                     colors: Array(repeating: row, count: 7).flatMap { $0 },
-                     smoothsColors: true)
+
+        switch axis {
+        case .horizontal:
+            let points = across.indices.flatMap { row in
+                stops.indices.map { column in
+                    SIMD2(stops[column] + shifts[row] * weights[column], across[row])
+                }
+            }
+            MeshGradient(width: 5, height: 7, points: points,
+                         colors: Array(repeating: colors, count: 7).flatMap { $0 }, smoothsColors: true)
+        case .vertical:
+            let points = stops.indices.flatMap { row in
+                across.indices.map { column in
+                    SIMD2(across[column], stops[row] + shifts[column] * weights[row])
+                }
+            }
+            MeshGradient(width: 7, height: 5, points: points,
+                         colors: colors.flatMap { Array(repeating: $0, count: 7) }, smoothsColors: true)
+        }
     }
 }
 
 /// A separate hosting view confines native glass vibrancy to the material.
 /// Sidebar labels and icons keep their own colors when the backdrop changes.
 @available(macOS 26.0, *)
-private struct SidebarNativeGlassBody: NSViewRepresentable {
-    let cornerRadius: CGFloat
+struct ScreenEdgeNativeGlass<Contour: Shape>: NSViewRepresentable {
+    let shape: Contour
 
     func makeNSView(context: Context) -> NSHostingView<AnyView> {
         let host = NSHostingView(rootView: glass)
@@ -127,7 +136,7 @@ private struct SidebarNativeGlassBody: NSViewRepresentable {
 
     private var glass: AnyView {
         AnyView(Color.clear
-            .glassEffect(.clear.tint(.black.opacity(0.28)), in: SidebarGlassBody(cornerRadius: cornerRadius))
+            .glassEffect(.clear.tint(.black.opacity(0.28)), in: shape)
             .environment(\.colorScheme, .dark))
     }
 }

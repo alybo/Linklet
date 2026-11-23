@@ -35,6 +35,18 @@ enum FavoriteSiteError: LocalizedError, Equatable {
     }
 }
 
+enum SearchPanelDesign: String, CaseIterable {
+    case floating
+    case notch
+
+    var title: String {
+        switch self {
+        case .floating: return L("Floating panel")
+        case .notch: return L("Notch")
+        }
+    }
+}
+
 struct SearchShortcut: Codable, Equatable {
     let keyCode: UInt32
     let modifiers: UInt32
@@ -137,10 +149,14 @@ final class SearchSettings: ObservableObject {
     private enum PreferenceKey {
         static let favoriteSites = "favoriteSites"
         static let showsFavoriteSites = "showsFavoriteSites"
+        static let panelDesign = "searchPanelDesign"
+        static let showsEngineIcon = "showsSearchEngineIcon"
     }
 
     @Published private(set) var engine: SearchEngine
     @Published private(set) var shortcut: SearchShortcut?
+    @Published private(set) var panelDesign: SearchPanelDesign
+    @Published private(set) var showsEngineIcon: Bool
     @Published private(set) var favoriteSites: [FavoriteSite]
     @Published private(set) var showsFavoriteSites: Bool
     @Published private(set) var loadingFavoriteIconIDs = Set<UUID>()
@@ -160,6 +176,9 @@ final class SearchSettings: ObservableObject {
         self.fetchIcon = fetchIcon
         self.defaults = defaults
         engine = SearchEngine(rawValue: defaults.string(forKey: "searchEngine") ?? "") ?? .google
+        panelDesign = defaults.string(forKey: PreferenceKey.panelDesign)
+            .flatMap(SearchPanelDesign.init(rawValue:)) ?? .floating
+        showsEngineIcon = defaults.object(forKey: PreferenceKey.showsEngineIcon) as? Bool ?? true
         if defaults.bool(forKey: "searchShortcutDisabled") {
             shortcut = nil
         } else {
@@ -186,6 +205,18 @@ final class SearchSettings: ObservableObject {
     func setEngine(_ engine: SearchEngine) {
         self.engine = engine
         defaults.set(engine.rawValue, forKey: "searchEngine")
+    }
+
+    func setPanelDesign(_ design: SearchPanelDesign) {
+        guard panelDesign != design else { return }
+        panelDesign = design
+        defaults.set(design.rawValue, forKey: PreferenceKey.panelDesign)
+    }
+
+    func setShowsEngineIcon(_ visible: Bool) {
+        guard showsEngineIcon != visible else { return }
+        showsEngineIcon = visible
+        defaults.set(visible, forKey: PreferenceKey.showsEngineIcon)
     }
 
     var shouldShowFavoriteSites: Bool { showsFavoriteSites && !favoriteSites.isEmpty }
