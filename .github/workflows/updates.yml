@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       pages: write
       id-token: write
     environment:
@@ -33,6 +34,23 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
+          name: github-pages-${{ github.run_attempt }}
           path: updates
+      - name: Wait for the Pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: github-pages-${{ github.run_attempt }}
+        run: |
+          endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts"
+          for attempt in {1..12}; do
+            if count=$(gh api --method GET "$endpoint" -f "name=$ARTIFACT_NAME" --jq '.total_count') && [ "$count" = 1 ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Pages artifact $ARTIFACT_NAME did not become available"
+          exit 1
       - uses: actions/deploy-pages@v4
         id: deployment
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
